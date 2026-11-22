@@ -1,0 +1,27 @@
+# Gradle & Android build outputs
+.gradle/
+build/
+app/build/
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# Local machine config & signing secrets
+local.properties
+*.jks
+*.keystore
+keystore.properties
+
+# IDE files
+*.iml
+.idea/
+.DS_Store
+Thumbs.db
+
+# Impeccable local machine overrides (keep .impeccable/config.json, surfaces/, design.json, critique/ignore.md)
+.impeccable/config.local.json
+.impeccable/reference/

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Swift fox head silhouette in crisp geometric Fox Amber -->
+    <path
+        android:fillColor="#E86A17"
+        android:pathData="M31,34 L45,44 L63,44 L77,34 L73,58 L54,75 L35,58 Z" />
+    <!-- Bright sunlit amber crown/cheek facet -->
+    <path
+        android:fillColor="#FF964A"
+        android:pathData="M31,34 L45,44 L54,58 L35,58 Z" />
+    <!-- Deep ember right facet -->
+    <path
+        android:fillColor="#C6500A"
+        android:pathData="M77,34 L63,44 L54,58 L73,58 Z" />
+    <!-- Warm ivory muzzle -->
+    <path
+        android:fillColor="#FFF1E6"
+        android:pathData="M43,58 L54,75 L65,58 L54,63 Z" />
+    <!-- Nose tip -->
+    <path
+        android:fillColor="#18161B"
+        android:pathData="M50.5,69.5 L54,75 L57.5,69.5 Z" />
+</vector>

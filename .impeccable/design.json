@@ -1,0 +1,602 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-22T21:54:00Z",
+  "title": "Design System: Swiftfox",
+  "extensions": {
+    "colorMeta": {
+      "fox-amber-brand": {
+        "role": "primary",
+        "displayName": "Fox Amber Brand Splash",
+        "canonical": "#E86A17",
+        "tonalRamp": ["#2B0F00", "#3A1F0D", "#782C00", "#B04200", "#E86A17", "#FF9147", "#FFBC8F", "#FFE2CC"]
+      },
+      "fox-amber-day-primary": {
+        "role": "primary",
+        "displayName": "Fox Amber Day Primary",
+        "canonical": "#B04200",
+        "tonalRamp": ["#2B0F00", "#3A1F0D", "#782C00", "#B04200", "#E86A17", "#FF9147", "#FFBC8F", "#FFE2CC"]
+      },
+      "fox-amber-day-container": {
+        "role": "primary",
+        "displayName": "Fox Amber Day Container",
+        "canonical": "#FFE2CC",
+        "tonalRamp": ["#2B0F00", "#3A1F0D", "#782C00", "#B04200", "#E86A17", "#FF9147", "#FFBC8F", "#FFE2CC"]
+      },
+      "fox-amber-day-on-container": {
+        "role": "primary",
+        "displayName": "Fox Amber Day On-Container",
+        "canonical": "#4A1B00",
+        "tonalRamp": ["#2B0F00", "#3A1F0D", "#4A1B00", "#B04200", "#E86A17", "#FF9147", "#FFBC8F", "#FFE2CC"]
+      },
+      "fox-amber-dark-primary": {
+        "role": "primary",
+        "displayName": "Fox Amber Dark Primary",
+        "canonical": "#FF9147",
+        "tonalRamp": ["#2B0F00", "#3A1F0D", "#782C00", "#B04200", "#E86A17", "#FF9147", "#FFBC8F", "#FFE2CC"]
+      },
+      "fox-amber-dark-on-primary": {
+        "role": "primary",
+        "displayName": "Fox Amber Dark On-Primary",
+        "canonical": "#2B0F00",
+        "tonalRamp": ["#2B0F00", "#3A1F0D", "#782C00", "#B04200", "#E86A17", "#FF9147", "#FFBC8F", "#FFE2CC"]
+      },
+      "fox-amber-dark-container": {
+        "role": "primary",
+        "displayName": "Fox Amber Dark Container",
+        "canonical": "#3A1F0D",
+        "tonalRamp": ["#2B0F00", "#3A1F0D", "#782C00", "#B04200", "#E86A17", "#FF9147", "#FFBC8F", "#FFE2CC"]
+      },
+      "fox-amber-dark-on-container": {
+        "role": "primary",
+        "displayName": "Fox Amber Dark On-Container",
+        "canonical": "#FFDEC7",
+        "tonalRamp": ["#2B0F00", "#3A1F0D", "#782C00", "#B04200", "#E86A17", "#FF9147", "#FFBC8F", "#FFDEC7"]
+      },
+      "indigo-day-primary": {
+        "role": "primary",
+        "displayName": "Midnight Indigo Day Primary",
+        "canonical": "#3D4ED8",
+        "tonalRamp": ["#0D1763", "#202652", "#2C39A6", "#3D4ED8", "#5B6CFA", "#93A0FF", "#BCC4FF", "#DFE3FF"]
+      },
+      "indigo-day-container": {
+        "role": "primary",
+        "displayName": "Midnight Indigo Day Container",
+        "canonical": "#DFE3FF",
+        "tonalRamp": ["#0D1763", "#202652", "#2C39A6", "#3D4ED8", "#5B6CFA", "#93A0FF", "#BCC4FF", "#DFE3FF"]
+      },
+      "indigo-dark-primary": {
+        "role": "primary",
+        "displayName": "Midnight Indigo Dark Primary",
+        "canonical": "#93A0FF",
+        "tonalRamp": ["#0D1763", "#202652", "#2C39A6", "#3D4ED8", "#5B6CFA", "#93A0FF", "#BCC4FF", "#DFE3FF"]
+      },
+      "indigo-dark-container": {
+        "role": "primary",
+        "displayName": "Midnight Indigo Dark Container",
+        "canonical": "#202652",
+        "tonalRamp": ["#0D1763", "#202652", "#2C39A6", "#3D4ED8", "#5B6CFA", "#93A0FF", "#BCC4FF", "#DFE3FF"]
+      },
+      "forest-day-primary": {
+        "role": "primary",
+        "displayName": "Forest Day Primary",
+        "canonical": "#1D6E42",
+        "tonalRamp": ["#002B14", "#123622", "#165232", "#1D6E42", "#2E8B57", "#6CD998", "#9EE6BA", "#CFF3DC"]
+      },
+      "forest-day-container": {
+        "role": "primary",
+        "displayName": "Forest Day Container",
+        "canonical": "#CFF3DC",
+        "tonalRamp": ["#002B14", "#123622", "#165232", "#1D6E42", "#2E8B57", "#6CD998", "#9EE6BA", "#CFF3DC"]
+      },
+      "forest-dark-primary": {
+        "role": "primary",
+        "displayName": "Forest Dark Primary",
+        "canonical": "#6CD998",
+        "tonalRamp": ["#002B14", "#123622", "#165232", "#1D6E42", "#2E8B57", "#6CD998", "#9EE6BA", "#CFF3DC"]
+      },
+      "forest-dark-container": {
+        "role": "primary",
+        "displayName": "Forest Dark Container",
+        "canonical": "#123622",
+        "tonalRamp": ["#002B14", "#123622", "#165232", "#1D6E42", "#2E8B57", "#6CD998", "#9EE6BA", "#CFF3DC"]
+      },
+      "mono-day-primary": {
+        "role": "primary",
+        "displayName": "Monochrome Day Primary",
+        "canonical": "#2C2A2F",
+        "tonalRamp": ["#19171C", "#2C2A2F", "#47444D", "#6B6A70", "#95929C", "#BAB6C2", "#DCD8E0", "#EFECF2"]
+      },
+      "mono-day-container": {
+        "role": "primary",
+        "displayName": "Monochrome Day Container",
+        "canonical": "#E3E0E6",
+        "tonalRamp": ["#19171C", "#2C2A2F", "#47444D", "#6B6A70", "#95929C", "#BAB6C2", "#DCD8E0", "#EFECF2"]
+      },
+      "mono-dark-primary": {
+        "role": "primary",
+        "displayName": "Monochrome Dark Primary",
+        "canonical": "#DCD8E0",
+        "tonalRamp": ["#19171C", "#2C2A2F", "#47444D", "#6B6A70", "#95929C", "#BAB6C2", "#DCD8E0", "#EFECF2"]
+      },
+      "mono-dark-container": {
+        "role": "primary",
+        "displayName": "Monochrome Dark Container",
+        "canonical": "#312E36",
+        "tonalRamp": ["#19171C", "#2C2A2F", "#312E36", "#6B6A70", "#95929C", "#BAB6C2", "#DCD8E0", "#EFECF2"]
+      },
+      "private-day-accent": {
+        "role": "tertiary",
+        "displayName": "Private Violet Day Accent",
+        "canonical": "#6342B5",
+        "tonalRamp": ["#1F0947", "#281B45", "#432882", "#6342B5", "#8667D9", "#A689F0", "#C1A6FF", "#ECE2FF"]
+      },
+      "private-day-container": {
+        "role": "tertiary",
+        "displayName": "Private Violet Day Container",
+        "canonical": "#ECE2FF",
+        "tonalRamp": ["#1F0947", "#281B45", "#432882", "#6342B5", "#8667D9", "#A689F0", "#C1A6FF", "#ECE2FF"]
+      },
+      "private-dark-accent": {
+        "role": "tertiary",
+        "displayName": "Private Violet Dark Accent",
+        "canonical": "#C1A6FF",
+        "tonalRamp": ["#1F0947", "#281B45", "#432882", "#6342B5", "#8667D9", "#A689F0", "#C1A6FF", "#ECE2FF"]
+      },
+      "private-dark-on-accent": {
+        "role": "tertiary",
+        "displayName": "Private Violet Dark On-Accent",
+        "canonical": "#1F0947",
+        "tonalRamp": ["#1F0947", "#281B45", "#432882", "#6342B5", "#8667D9", "#A689F0", "#C1A6FF", "#ECE2FF"]
+      },
+      "private-dark-container": {
+        "role": "tertiary",
+        "displayName": "Private Violet Dark Container",
+        "canonical": "#281B45",
+        "tonalRamp": ["#1F0947", "#281B45", "#432882", "#6342B5", "#8667D9", "#A689F0", "#C1A6FF", "#ECE2FF"]
+      },
+      "private-dark-on-container": {
+        "role": "tertiary",
+        "displayName": "Private Violet Dark On-Container",
+        "canonical": "#EBDFFF",
+        "tonalRamp": ["#1F0947", "#281B45", "#432882", "#6342B5", "#8667D9", "#A689F0", "#C1A6FF", "#EBDFFF"]
+      },
+      "day-surface": {
+        "role": "neutral",
+        "displayName": "Day Warm Paper Surface",
+        "canonical": "#FAF8F6",
+        "tonalRamp": ["#1C1917", "#57504B", "#837870", "#D5CCC4", "#DCD3CA", "#E6DFD8", "#EFEAE4", "#FAF8F6"]
+      },
+      "day-surface-low": {
+        "role": "neutral",
+        "displayName": "Day Surface Container Low",
+        "canonical": "#F5F1ED",
+        "tonalRamp": ["#1C1917", "#57504B", "#837870", "#D5CCC4", "#DCD3CA", "#E6DFD8", "#EFEAE4", "#FAF8F6"]
+      },
+      "day-surface-container": {
+        "role": "neutral",
+        "displayName": "Day Surface Container",
+        "canonical": "#EFEAE4",
+        "tonalRamp": ["#1C1917", "#57504B", "#837870", "#D5CCC4", "#DCD3CA", "#E6DFD8", "#EFEAE4", "#FAF8F6"]
+      },
+      "day-surface-high": {
+        "role": "neutral",
+        "displayName": "Day Surface Container High",
+        "canonical": "#E6DFD8",
+        "tonalRamp": ["#1C1917", "#57504B", "#837870", "#D5CCC4", "#DCD3CA", "#E6DFD8", "#EFEAE4", "#FAF8F6"]
+      },
+      "day-surface-highest": {
+        "role": "neutral",
+        "displayName": "Day Surface Container Highest",
+        "canonical": "#DCD3CA",
+        "tonalRamp": ["#1C1917", "#57504B", "#837870", "#D5CCC4", "#DCD3CA", "#E6DFD8", "#EFEAE4", "#FAF8F6"]
+      },
+      "day-on-surface": {
+        "role": "neutral",
+        "displayName": "Day On-Surface Ink",
+        "canonical": "#1C1917",
+        "tonalRamp": ["#1C1917", "#57504B", "#837870", "#D5CCC4", "#DCD3CA", "#E6DFD8", "#EFEAE4", "#FAF8F6"]
+      },
+      "day-on-surface-variant": {
+        "role": "neutral",
+        "displayName": "Day Muted Ink",
+        "canonical": "#57504B",
+        "tonalRamp": ["#1C1917", "#57504B", "#837870", "#D5CCC4", "#DCD3CA", "#E6DFD8", "#EFEAE4", "#FAF8F6"]
+      },
+      "day-outline-variant": {
+        "role": "neutral",
+        "displayName": "Day Outline Variant",
+        "canonical": "#D5CCC4",
+        "tonalRamp": ["#1C1917", "#57504B", "#837870", "#D5CCC4", "#DCD3CA", "#E6DFD8", "#EFEAE4", "#FAF8F6"]
+      },
+      "dark-surface": {
+        "role": "neutral",
+        "displayName": "Dark Charcoal-Plum Surface",
+        "canonical": "#18161B",
+        "tonalRamp": ["#121015", "#18161B", "#1E1C22", "#232028", "#2D2933", "#383340", "#8C8494", "#ECE7F0"]
+      },
+      "dark-surface-low": {
+        "role": "neutral",
+        "displayName": "Dark Surface Container Low",
+        "canonical": "#1E1C22",
+        "tonalRamp": ["#121015", "#18161B", "#1E1C22", "#232028", "#2D2933", "#383340", "#8C8494", "#ECE7F0"]
+      },
+      "dark-surface-container": {
+        "role": "neutral",
+        "displayName": "Dark Surface Container",
+        "canonical": "#232028",
+        "tonalRamp": ["#121015", "#18161B", "#1E1C22", "#232028", "#2D2933", "#383340", "#8C8494", "#ECE7F0"]
+      },
+      "dark-surface-high": {
+        "role": "neutral",
+        "displayName": "Dark Surface Container High",
+        "canonical": "#2D2933",
+        "tonalRamp": ["#121015", "#18161B", "#1E1C22", "#232028", "#2D2933", "#383340", "#8C8494", "#ECE7F0"]
+      },
+      "dark-surface-highest": {
+        "role": "neutral",
+        "displayName": "Dark Surface Container Highest",
+        "canonical": "#383340",
+        "tonalRamp": ["#121015", "#18161B", "#1E1C22", "#232028", "#2D2933", "#383340", "#8C8494", "#ECE7F0"]
+      },
+      "dark-on-surface": {
+        "role": "neutral",
+        "displayName": "Dark On-Surface Alabaster",
+        "canonical": "#ECE7F0",
+        "tonalRamp": ["#121015", "#18161B", "#1E1C22", "#232028", "#2D2933", "#383340", "#8C8494", "#ECE7F0"]
+      },
+      "dark-on-surface-variant": {
+        "role": "neutral",
+        "displayName": "Dark Muted Ink",
+        "canonical": "#C2BAC9",
+        "tonalRamp": ["#121015", "#18161B", "#1E1C22", "#232028", "#2D2933", "#383340", "#C2BAC9", "#ECE7F0"]
+      },
+      "dark-outline-variant": {
+        "role": "neutral",
+        "displayName": "Dark Outline Variant",
+        "canonical": "#3E3947",
+        "tonalRamp": ["#121015", "#18161B", "#1E1C22", "#2D2933", "#3E3947", "#8C8494", "#C2BAC9", "#ECE7F0"]
+      },
+      "amoled-surface": {
+        "role": "neutral",
+        "displayName": "AMOLED True-Black Surface",
+        "canonical": "#000000",
+        "tonalRamp": ["#000000", "#0A090D", "#121016", "#1C1922", "#272330", "#2E2A36", "#8A8294", "#F3EEF7"]
+      },
+      "amoled-surface-low": {
+        "role": "neutral",
+        "displayName": "AMOLED Surface Container Low",
+        "canonical": "#0A090D",
+        "tonalRamp": ["#000000", "#0A090D", "#121016", "#1C1922", "#272330", "#2E2A36", "#8A8294", "#F3EEF7"]
+      },
+      "amoled-surface-container": {
+        "role": "neutral",
+        "displayName": "AMOLED Surface Container",
+        "canonical": "#121016",
+        "tonalRamp": ["#000000", "#0A090D", "#121016", "#1C1922", "#272330", "#2E2A36", "#8A8294", "#F3EEF7"]
+      },
+      "amoled-surface-high": {
+        "role": "neutral",
+        "displayName": "AMOLED Surface Container High",
+        "canonical": "#1C1922",
+        "tonalRamp": ["#000000", "#0A090D", "#121016", "#1C1922", "#272330", "#2E2A36", "#8A8294", "#F3EEF7"]
+      },
+      "amoled-surface-highest": {
+        "role": "neutral",
+        "displayName": "AMOLED Surface Container Highest",
+        "canonical": "#272330",
+        "tonalRamp": ["#000000", "#0A090D", "#121016", "#1C1922", "#272330", "#2E2A36", "#8A8294", "#F3EEF7"]
+      },
+      "amoled-on-surface": {
+        "role": "neutral",
+        "displayName": "AMOLED On-Surface Ink",
+        "canonical": "#F3EEF7",
+        "tonalRamp": ["#000000", "#0A090D", "#121016", "#1C1922", "#272330", "#2E2A36", "#8A8294", "#F3EEF7"]
+      },
+      "amoled-on-surface-variant": {
+        "role": "neutral",
+        "displayName": "AMOLED Muted Ink",
+        "canonical": "#C4BCD0",
+        "tonalRamp": ["#000000", "#0A090D", "#121016", "#1C1922", "#272330", "#8A8294", "#C4BCD0", "#F3EEF7"]
+      },
+      "amoled-outline-variant": {
+        "role": "neutral",
+        "displayName": "AMOLED Outline Variant",
+        "canonical": "#2E2A36",
+        "tonalRamp": ["#000000", "#0A090D", "#121016", "#1C1922", "#2E2A36", "#8A8294", "#C4BCD0", "#F3EEF7"]
+      },
+      "error-day": {
+        "role": "error",
+        "displayName": "Material 3 Day Error",
+        "canonical": "#BA1A1A",
+        "tonalRamp": ["#410002", "#690005", "#93000A", "#BA1A1A", "#DE4B41", "#F28279", "#FFB4AB", "#FFDAD6"]
+      },
+      "error-dark": {
+        "role": "error",
+        "displayName": "Material 3 Night Error",
+        "canonical": "#FFB4AB",
+        "tonalRamp": ["#410002", "#690005", "#93000A", "#BA1A1A", "#DE4B41", "#F28279", "#FFB4AB", "#FFDAD6"]
+      }
+    },
+    "typographyMeta": {
+      "display-small": {
+        "displayName": "Display Small (32sp Bold)",
+        "purpose": "Start Page Swiftfox brand wordmark paired with SwiftfoxEmblem."
+      },
+      "headline-medium": {
+        "displayName": "Headline Medium (26sp Bold)",
+        "purpose": "Private Space Start Page primary heading."
+      },
+      "headline-small": {
+        "displayName": "Headline Small (22sp SemiBold)",
+        "purpose": "SpacesTabSwitcher active Space and Private Tabs screen title."
+      },
+      "title-large": {
+        "displayName": "Title Large (19sp SemiBold)",
+        "purpose": "Quick Controls sheet page header, Essential tile monograms, and empty-state headings."
+      },
+      "title-medium": {
+        "displayName": "Title Medium (16sp SemiBold)",
+        "purpose": "Settings section headings, Start Page section titles, and sidebar wordmark."
+      },
+      "title-small": {
+        "displayName": "Title Small (14sp SemiBold)",
+        "purpose": "Quick Control tile titles, Tab Preview card titles, jump cards, and Settings row labels."
+      },
+      "body-large": {
+        "displayName": "Body Large (16sp Regular)",
+        "purpose": "Focused omnibox input text, Start Page search capsule prompt, suggestion titles, and context menu rows."
+      },
+      "body-medium": {
+        "displayName": "Body Medium (14sp Regular / Medium active host)",
+        "purpose": "Resting omnibox hostname, Find-in-Page query input, dialog text, and empty-state copy."
+      },
+      "body-small": {
+        "displayName": "Body Small (12sp Regular)",
+        "purpose": "Quick Control tile subtitles, page HTTPS/posture meta line, Settings subtitles, and suggestion URLs."
+      },
+      "label-large": {
+        "displayName": "Label Large (14sp SemiBold)",
+        "purpose": "Space pills, Quick Action pills, Split-bar Controls pill, Extended FAB, sidebar tab titles, and Settings groups."
+      },
+      "label-medium": {
+        "displayName": "Label Medium (12sp SemiBold / Bold count)",
+        "purpose": "Tab Count badge counts, !bang trigger chips, open-tab Switch badge, and Find-in-Page match counter."
+      },
+      "label-small": {
+        "displayName": "Label Small (11sp Medium)",
+        "purpose": "Essential tile captions, Tab Preview card hostlines, and sidebar tab domains."
+      }
+    },
+    "shadows": [
+      {
+        "name": "tonal-level-1",
+        "value": "none",
+        "purpose": "UnfoldedSpacesSidebar uses 1dp Material 3 tonal surface stepping (surfaceContainerLow) with no drop shadow."
+      },
+      {
+        "name": "tonal-level-2",
+        "value": "none",
+        "purpose": "FullOmniboxToolbar, SplitBottomActionBar, and ErgonomicSideRail rely on 2dp tonal elevation plus 35% outlineVariant hairlines."
+      },
+      {
+        "name": "tonal-level-3",
+        "value": "none",
+        "purpose": "FindInPageBar steps to surfaceContainerHigh with 3dp tonal elevation."
+      },
+      {
+        "name": "fab-resting",
+        "value": "0 4px 12px rgba(0, 0, 0, 0.28)",
+        "purpose": "Material 3 ExtendedFloatingActionButton resting elevation above the SpacesTabSwitcher grid."
+      },
+      {
+        "name": "modal-sheet-scrim",
+        "value": "0 -8px 28px rgba(0, 0, 0, 0.42)",
+        "purpose": "QuickControlsSheet and ContextMenuBottomSheet modal bottom sheet separation above dimmed browser viewport."
+      }
+    ],
+    "motion": [
+      {
+        "name": "omnibox-fade",
+        "value": "220ms cubic-bezier(0.2, 0, 0, 1)",
+        "purpose": "AnimatedVisibility fadeIn/fadeOut transition when focusing or dismissing OmniboxOverlay."
+      },
+      {
+        "name": "find-bar-slide",
+        "value": "220ms cubic-bezier(0.2, 0, 0, 1)",
+        "purpose": "AnimatedVisibility slideInVertically + fadeIn reveal of FindInPageBar beneath the top toolbar."
+      },
+      {
+        "name": "url-bar-gesture-thresholds",
+        "value": "96px horizontal / 88px vertical pointer drag",
+        "purpose": "FullOmniboxToolbar horizontal swipe switches adjacent tabs; vertical swipe toward content opens SpacesTabSwitcher."
+      },
+      {
+        "name": "reduced-motion",
+        "value": "Settings.Global.ANIMATOR_DURATION_SCALE == 0f -> EnterTransition.None / ExitTransition.None",
+        "purpose": "Respects Android system Remove animations preference across all AnimatedVisibility transitions."
+      },
+      {
+        "name": "frame-budget-120hz",
+        "value": "8.33ms per frame (drawWithCache + keyed Lazy lists)",
+        "purpose": "Keeps 120Hz scrolling and chrome transitions jank-free by avoiding allocations in draw and scroll paths."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "folded",
+        "value": "<600dp (0px–599px)",
+        "purpose": "Cover screen one-handed posture: SPLIT toolbar default, MOBILE site mode, no sidebar, 540dp Start Page max width, 4-column Essentials."
+      },
+      {
+        "name": "unfolded-compact",
+        "value": "600dp–779dp (or FoldingFeature FLAT / HALF_OPENED)",
+        "purpose": "Inner foldable posture: TOP toolbar default, DESKTOP site mode, SIDE_RAIL (68dp) unlocked, UnfoldedSpacesSidebar 72dp collapsed / 216dp expanded."
+      },
+      {
+        "name": "unfolded-expanded",
+        "value": ">=780dp",
+        "purpose": "Wide foldable / tablet posture: UnfoldedSpacesSidebar expands to 248dp, Start Page widens to 720dp (4–5 column Essentials), adaptive 164dp tab card grid."
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Omnibox Pill",
+      "kind": "input",
+      "refersTo": "omnibox-pill",
+      "description": "Resting toolbar URL capsule (26dp radius, 48dp height) that illuminates with a 2dp Fox Amber focus ring on interaction.",
+      "html": "<div class=\"ds-omnibox\" role=\"button\" tabindex=\"0\" aria-label=\"Address bar: docs.android.com\"><span class=\"ds-omnibox-icon\" aria-hidden=\"true\"><svg width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" fill=\"currentColor\"><path d=\"M12 2L4 5v6.09c0 5.05 3.41 9.76 8 10.91 4.59-1.15 8-5.86 8-10.91V5l-8-3zm0 10.99h6c-.47 3.74-2.85 7.06-6 8.11V13H6V6.3l6-2.25v8.94z\"/></svg></span><span class=\"ds-omnibox-host\">docs.android.com</span><span class=\"ds-omnibox-reload\" aria-hidden=\"true\"><svg width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" fill=\"currentColor\"><path d=\"M17.65 6.35A7.96 7.96 0 0 0 12 4a8 8 0 1 0 7.73 10h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z\"/></svg></span></div>",
+      "css": ".ds-omnibox { display: inline-flex; align-items: center; gap: 8px; min-width: 260px; height: 48px; padding: 0 4px 0 12px; border-radius: 26px; background: #2D2933; color: #ECE7F0; border: 1px solid rgba(62, 57, 71, 0.55); font-family: Roboto, system-ui, sans-serif; font-size: 14px; font-weight: 500; cursor: pointer; transition: border-color 180ms ease, background 180ms ease; } .ds-omnibox:hover { background: #383340; border-color: rgba(255, 145, 71, 0.55); } .ds-omnibox:focus-visible { outline: none; border: 2px solid #FF9147; border-radius: 28px; } .ds-omnibox-icon { display: inline-flex; color: #FF9147; flex-shrink: 0; } .ds-omnibox-host { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .ds-omnibox-reload { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; border-radius: 9999px; color: #C2BAC9; }"
+    },
+    {
+      "name": "Omnibox Pill (Private Mode)",
+      "kind": "input",
+      "refersTo": "omnibox-pill-private",
+      "description": "ProfileStore-isolated Private omnibox pill shifting chrome cleanly to Private Violet.",
+      "html": "<div class=\"ds-omnibox-private\" role=\"button\" tabindex=\"0\" aria-label=\"Private address bar: duckduckgo.com\"><span class=\"ds-omnibox-private-icon\" aria-hidden=\"true\"><svg width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" fill=\"currentColor\"><path d=\"M12 2L4 5v6.09c0 5.05 3.41 9.76 8 10.91 4.59-1.15 8-5.86 8-10.91V5l-8-3z\"/></svg></span><span class=\"ds-omnibox-private-host\">duckduckgo.com</span></div>",
+      "css": ".ds-omnibox-private { display: inline-flex; align-items: center; gap: 8px; min-width: 240px; height: 48px; padding: 0 14px 0 12px; border-radius: 26px; background: #281B45; color: #EBDFFF; border: 1px solid rgba(193, 166, 255, 0.55); font-family: Roboto, system-ui, sans-serif; font-size: 14px; font-weight: 500; cursor: pointer; transition: border-color 180ms ease, filter 180ms ease; } .ds-omnibox-private:hover { filter: brightness(1.08); border-color: #C1A6FF; } .ds-omnibox-private:focus-visible { outline: 2px solid #C1A6FF; outline-offset: 2px; } .ds-omnibox-private-icon { display: inline-flex; color: #C1A6FF; flex-shrink: 0; } .ds-omnibox-private-host { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }"
+    },
+    {
+      "name": "Quick Control Tile (Active)",
+      "kind": "card",
+      "refersTo": "quick-control-tile-active",
+      "description": "Enabled toggle inside the Quick Controls 2x2 bottom-sheet grid with roasted Fox Amber container and circular icon badge.",
+      "html": "<button class=\"ds-qc-tile-active\" type=\"button\"><span class=\"ds-qc-tile-active-badge\" aria-hidden=\"true\"><svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"currentColor\"><path d=\"M21 2H3a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h7v2H8v2h8v-2h-2v-2h7a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2zm0 14H3V4h18v12z\"/></svg></span><span class=\"ds-qc-tile-active-text\"><span class=\"ds-qc-tile-active-title\">Desktop site</span><span class=\"ds-qc-tile-active-sub\">Unfolded: Desktop</span></span></button>",
+      "css": ".ds-qc-tile-active { display: inline-flex; align-items: center; gap: 12px; min-width: 196px; min-height: 82px; padding: 14px; border-radius: 20px; background: #3A1F0D; color: #FFDEC7; border: 1.5px solid rgba(255, 145, 71, 0.55); font-family: Roboto, system-ui, sans-serif; text-align: left; cursor: pointer; transition: background 180ms ease, border-color 180ms ease, transform 120ms ease; } .ds-qc-tile-active:hover { background: #482711; border-color: #FF9147; } .ds-qc-tile-active:active { transform: scale(0.985); } .ds-qc-tile-active:focus-visible { outline: 2px solid #FF9147; outline-offset: 2px; } .ds-qc-tile-active-badge { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; border-radius: 9999px; background: rgba(255, 145, 71, 0.16); color: #FF9147; flex-shrink: 0; } .ds-qc-tile-active-text { display: flex; flex-direction: column; gap: 2px; } .ds-qc-tile-active-title { font-size: 14px; font-weight: 600; line-height: 20px; letter-spacing: 0.1px; } .ds-qc-tile-active-sub { font-size: 12px; font-weight: 400; line-height: 16px; color: rgba(255, 222, 199, 0.88); }"
+    },
+    {
+      "name": "Quick Control Tile (Inactive)",
+      "kind": "card",
+      "refersTo": "quick-control-tile",
+      "description": "Resting neutral toggle inside the Quick Controls 2x2 grid stepping onto surfaceContainerHigh.",
+      "html": "<button class=\"ds-qc-tile\" type=\"button\"><span class=\"ds-qc-tile-badge\" aria-hidden=\"true\"><svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"currentColor\"><path d=\"M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a5.389 5.389 0 0 1-4.4 2.26 5.403 5.403 0 0 1-3.14-9.8c-.44-.06-.9-.1-1.36-.1z\"/></svg></span><span class=\"ds-qc-tile-text\"><span class=\"ds-qc-tile-title\">Web dark</span><span class=\"ds-qc-tile-sub\">Site native</span></span></button>",
+      "css": ".ds-qc-tile { display: inline-flex; align-items: center; gap: 12px; min-width: 196px; min-height: 82px; padding: 14px; border-radius: 20px; background: #2D2933; color: #ECE7F0; border: 1px solid rgba(62, 57, 71, 0.35); font-family: Roboto, system-ui, sans-serif; text-align: left; cursor: pointer; transition: background 180ms ease, border-color 180ms ease, transform 120ms ease; } .ds-qc-tile:hover { background: #383340; border-color: rgba(255, 145, 71, 0.4); } .ds-qc-tile:active { transform: scale(0.985); } .ds-qc-tile:focus-visible { outline: 2px solid #FF9147; outline-offset: 2px; } .ds-qc-tile-badge { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; border-radius: 9999px; background: #383340; color: #C2BAC9; flex-shrink: 0; } .ds-qc-tile-text { display: flex; flex-direction: column; gap: 2px; } .ds-qc-tile-title { font-size: 14px; font-weight: 600; line-height: 20px; letter-spacing: 0.1px; } .ds-qc-tile-sub { font-size: 12px; font-weight: 400; line-height: 16px; color: #C2BAC9; }"
+    },
+    {
+      "name": "Space Pill Chip",
+      "kind": "chip",
+      "refersTo": "space-pill-selected",
+      "description": "Zen-inspired Space selector pill (22dp radius, 48dp height) showing selected Fox Amber state alongside a resting Space.",
+      "html": "<div class=\"ds-space-row\"><button class=\"ds-space-pill ds-space-pill--selected\" type=\"button\"><svg width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" fill=\"currentColor\" aria-hidden=\"true\"><path d=\"M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z\"/></svg><span>Personal</span><span class=\"ds-space-count\">4</span></button><button class=\"ds-space-pill\" type=\"button\"><svg width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" fill=\"currentColor\" aria-hidden=\"true\"><path d=\"M20 6h-4V4a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2H4a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2zm-6 0h-4V4h4v2z\"/></svg><span>Work</span><svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"#FF9147\" aria-hidden=\"true\"><path d=\"M18 8h-1V6a5 5 0 0 0-10 0v2H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V10a2 2 0 0 0-2-2zm-6 9a2 2 0 1 1 0-4 2 2 0 0 1 0 4zm3.1-9H8.9V6a3.1 3.1 0 0 1 6.2 0v2z\"/></svg><span class=\"ds-space-count\">2</span></button></div>",
+      "css": ".ds-space-row { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; } .ds-space-pill { display: inline-flex; align-items: center; gap: 8px; height: 48px; padding: 12px 16px; border-radius: 22px; background: #2D2933; color: #ECE7F0; border: 1.5px solid transparent; font-family: Roboto, system-ui, sans-serif; font-size: 14px; font-weight: 600; letter-spacing: 0.1px; cursor: pointer; transition: background 160ms ease, border-color 160ms ease; } .ds-space-pill svg:first-child { color: #C2BAC9; } .ds-space-pill .ds-space-count { font-size: 12px; letter-spacing: 0.25px; color: #C2BAC9; } .ds-space-pill:hover { background: #383340; } .ds-space-pill:focus-visible { outline: 2px solid #FF9147; outline-offset: 2px; } .ds-space-pill--selected { background: #3A1F0D; color: #FFDEC7; border-color: #FF9147; } .ds-space-pill--selected svg:first-child, .ds-space-pill--selected .ds-space-count { color: #FF9147; } .ds-space-pill--selected:hover { background: #482711; }"
+    },
+    {
+      "name": "Tab Count Badge",
+      "kind": "nav",
+      "refersTo": "tab-count-badge",
+      "description": "48dp toolbar hit target framing a 10dp-rounded Fox Amber bordered count pill capped at 99+.",
+      "html": "<button class=\"ds-tab-badge-btn\" type=\"button\" aria-label=\"12 open tabs\"><span class=\"ds-tab-badge-pill\">12</span></button>",
+      "css": ".ds-tab-badge-btn { display: inline-flex; align-items: center; justify-content: center; width: 48px; height: 48px; border: none; border-radius: 9999px; background: transparent; cursor: pointer; transition: background 160ms ease; } .ds-tab-badge-btn:hover { background: rgba(255, 145, 71, 0.12); } .ds-tab-badge-btn:focus-visible { outline: 2px solid #FF9147; outline-offset: 2px; } .ds-tab-badge-pill { display: inline-flex; align-items: center; justify-content: center; min-width: 28px; min-height: 28px; padding: 2px 6px; border-radius: 10px; background: #3A1F0D; color: #FFDEC7; border: 1.5px solid #FF9147; font-family: Roboto, system-ui, sans-serif; font-size: 12px; font-weight: 700; line-height: 16px; letter-spacing: 0.25px; transition: transform 120ms ease; } .ds-tab-badge-btn:active .ds-tab-badge-pill { transform: scale(0.93); }"
+    },
+    {
+      "name": "Quick Action Pill",
+      "kind": "button",
+      "refersTo": "action-pill",
+      "description": "Secondary 24dp-rounded sheet action pill pairing a Fox Amber rounded icon with 48dp minimum height.",
+      "html": "<button class=\"ds-action-pill\" type=\"button\"><svg width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" fill=\"currentColor\" aria-hidden=\"true\"><path d=\"M20 19.59V8l-6-6H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12c.45 0 .85-.15 1.19-.4l-4.43-4.43a4.5 4.5 0 1 1 1.41-1.41l3.83 3.83zM9 13a2.5 2.5 0 1 0 5 0 2.5 2.5 0 0 0-5 0z\"/></svg><span>Find in page</span></button>",
+      "css": ".ds-action-pill { display: inline-flex; align-items: center; gap: 8px; height: 48px; padding: 12px 16px; border-radius: 24px; border: none; background: #2D2933; color: #ECE7F0; font-family: Roboto, system-ui, sans-serif; font-size: 14px; font-weight: 600; line-height: 20px; letter-spacing: 0.1px; cursor: pointer; transition: background 160ms ease, transform 120ms ease; } .ds-action-pill svg { color: #FF9147; flex-shrink: 0; } .ds-action-pill:hover { background: #383340; } .ds-action-pill:active { transform: scale(0.98); } .ds-action-pill:focus-visible { outline: 2px solid #FF9147; outline-offset: 2px; }"
+    },
+    {
+      "name": "Extended FAB (New Tab)",
+      "kind": "button",
+      "refersTo": "extended-fab",
+      "description": "Primary SpacesTabSwitcher floating action button (24dp radius, 56dp height) filled with active accent primary.",
+      "html": "<button class=\"ds-fab\" type=\"button\"><svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"currentColor\" aria-hidden=\"true\"><path d=\"M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z\"/></svg><span>New tab</span></button>",
+      "css": ".ds-fab { display: inline-flex; align-items: center; gap: 10px; height: 56px; padding: 16px 20px; border-radius: 24px; border: none; background: #FF9147; color: #2B0F00; font-family: Roboto, system-ui, sans-serif; font-size: 14px; font-weight: 600; line-height: 20px; letter-spacing: 0.1px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.28); cursor: pointer; transition: filter 160ms ease, transform 120ms ease, box-shadow 160ms ease; } .ds-fab:hover { filter: brightness(1.06); box-shadow: 0 6px 16px rgba(0, 0, 0, 0.36); } .ds-fab:active { transform: scale(0.97); } .ds-fab:focus-visible { outline: 2px solid #FFDEC7; outline-offset: 3px; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Warm Amber Cockpit",
+    "overview": "Swiftfox is a native Android Material Design 3 browser engineered for 120Hz foldable hardware. Its chrome behaves like a calm, responsive cockpit wrapped around live web content: warm tonal surfaces stay visually quiet so scrolling pages hold center stage, while generous splashes of Fox Amber light up the controls that matter right now—active Space pills, the Tab Count badge, security indicators, focused search rings, and tactile Quick Control toggles.\n\nRather than forcing a single layout across cover and inner displays, Swiftfox treats folded one-handed reach and unfolded tablet browsing as independent ergonomic states. Every surface avoids sterile flat-grey utility chrome and harsh right-angle corners, favoring soft pill capsules, generous `48dp` thumb targets, and clear tonal elevation across Day, Dark, and true AMOLED Black themes.",
+    "keyCharacteristics": [
+      "Webpage-first tonal chrome in Warm Paper Day, Charcoal-Plum Dark, and true `#000000` AMOLED Black.",
+      "Deliberate Fox Amber accent splashes on active state, switchable across Midnight Indigo, Forest, Monochrome, and Android Material You dynamic color.",
+      "Unmistakable violet chrome shift for `ProfileStore`-isolated Private browsing sessions.",
+      "Rounded capsule geometry (`10dp`–`28dp`) culminating in the 2×2 Quick Controls modal bottom sheet.",
+      "Independent Folded and Unfolded toolbar profiles, collapsible Spaces sidebar, `sp` system font scaling, and `ANIMATOR_DURATION_SCALE` reduced-motion compliance."
+    ],
+    "rules": [
+      {
+        "name": "The Warm Splash Rule",
+        "body": "Reserve saturated accent fills (`primaryContainer` paired with `primary` icons and tinted borders) for live state—active Quick Control tiles, selected Space pills, the Tab Count badge, the Split-bar Controls pill, focused omnibox borders, and primary CTAs—so resting toolbars remain calm and webpage-first.",
+        "section": "colors"
+      },
+      {
+        "name": "The Dual-Contrast Amber Rule",
+        "body": "Never place brand Fox Amber (`#E86A17`) behind body copy or interactive button labels; use the brand splash strictly for `SwiftfoxEmblem` and palette swatches, while text, icons, and interactive surfaces resolve to WCAG AA primaries (`#B04200` in Day, `#FF9147` in Dark and AMOLED).",
+        "section": "colors"
+      },
+      {
+        "name": "The Violet Boundary Rule",
+        "body": "Private browsing must always switch chrome identity from the active accent preset to the Private Violet tokens (`#6342B5` / `#ECE2FF` Day; `#C1A6FF` / `#281B45` Dark and AMOLED) across the omnibox pill, Tab Count badge, Start Page emblem, Private chip, and New Private Tab FAB.",
+        "section": "colors"
+      },
+      {
+        "name": "The True-Black Preservation Rule",
+        "body": "Whenever AMOLED Black is selected, base canvas and lowest surfaces must remain `#000000`—even when Material You dynamic color is active—stepping upward exclusively through the low-luminance AMOLED container ladder (`#0A090D` → `#121016` → `#1C1922` → `#272330`).",
+        "section": "colors"
+      },
+      {
+        "name": "The Scalable Type Rule",
+        "body": "Define every text style in `sp` with explicit line-height headroom and explicit `maxLines` + `TextOverflow.Ellipsis` guards on titles, hostnames, and pill labels so 1.3x+ Android system font scaling never clips interactive chrome.",
+        "section": "typography"
+      },
+      {
+        "name": "The Semibold Affordance Rule",
+        "body": "Use SemiBold (`600`) or Bold (`700`) with slight positive tracking (`0.1sp`–`0.3sp`) for buttons, pills, badges, and section headings, reserving Regular (`400`) for URLs, subtitles, and descriptive copy so interactive targets read cleanly at a glance.",
+        "section": "typography"
+      },
+      {
+        "name": "The Independent Posture Rule",
+        "body": "Folded and Unfolded postures own separate toolbar placement, default site mode, and Spaces sidebar settings; unfolding never stretches a phone bar, and unfolded-only placements (`SIDE_RAIL`) fall back cleanly to `SPLIT` whenever the device folds.",
+        "section": "layout"
+      },
+      {
+        "name": "The 48dp Thumb Floor Rule",
+        "body": "Every primary interactive control—toolbar buttons, omnibox pills, Space chips, Quick Action pills, Settings chips, and tab close icons—must provide at least a `48×48dp` (`48px`) hit area separated by `8dp`–`12dp` gaps so one-handed reach remains reliable at 120Hz.",
+        "section": "layout"
+      },
+      {
+        "name": "The Deduplicated Chrome Rule",
+        "body": "When the unfolded Spaces sidebar is visible, Start Page suppresses its inline Space switcher row (and suppresses open-tab Jump cards whenever the sidebar is expanded) so workspace controls appear once per viewport.",
+        "section": "layout"
+      },
+      {
+        "name": "The Tonal Ladder Rule",
+        "body": "Express surface hierarchy by stepping up one container tier—`surfaceContainerLow` for persistent bars, sidebars, and modal sheets; `surfaceContainer` for grouped cards and tab tiles; `surfaceContainerHigh` for interactive pills and resting toggles—rather than adding decorative box shadows.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Hairline State Ring Rule",
+        "body": "Use `1dp` `outlineVariant` borders at `35%–55%` alpha only to define resting shapes on dark and AMOLED surfaces, escalating to `1.5dp–2dp` `primary` (or `privateAccent`) borders strictly to signal active selection, enabled Quick Controls, or omnibox focus.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Flat Settings Rule",
+        "body": "Group related preferences inside a single `surfaceContainer` section card (`22dp` radius, `18dp` padding) separated internally by `outlineVariant` hairline dividers (`35%` alpha); never nest secondary cards inside settings sections.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Capsule Hierarchy Rule",
+        "body": "Match corner radius directly to visual role: compact numeral badges at `10dp`, nested thumbnails and inline chips at `14dp–16dp`, cards and toggle tiles at `18dp–22dp`, action pills and FABs at `24dp`, omnibox capsules at `26dp–28dp`, and modal bottom sheets at `28dp` top corners—never sharp `0dp` corners on browser chrome.",
+        "section": "shapes"
+      }
+    ],
+    "dos": [
+      "Do use the tonal surface container ladder (`surface` → `surfaceContainerLow` → `surfaceContainer` → `surfaceContainerHigh`) to separate bars, cards, and pills rather than adding drop shadows.",
+      "Do enforce `48×48dp` minimum touch targets and `sp` typography with `TextOverflow.Ellipsis` across all new toolbar buttons, pills, chips, and sheet controls.",
+      "Do apply `primaryContainer` + `primary` accents to signal active toggles, selected Spaces, focused inputs, and live status badges while keeping resting chrome neutral.",
+      "Do switch every chrome surface cleanly to Private Violet (`privateContainer` / `privateAccent`) whenever displaying a Private tab or Private Space.",
+      "Do preserve `#000000` canvas surfaces in AMOLED Black mode, including when Material You dynamic color is turned on.",
+      "Do check `Settings.Global.ANIMATOR_DURATION_SCALE == 0f` before introducing new `AnimatedVisibility` or transition effects so Android's \"Remove animations\" setting is always respected."
+    ],
+    "donts": [
+      "Don't place raw Fox Amber Brand (`#E86A17`) behind body copy or interactive labels; always resolve interactive text and fills through `MaterialTheme.colorScheme.primary` / `primaryContainer`.",
+      "Don't use sharp `0dp` rectangular corners on browser buttons, chips, cards, omnibox inputs, or modal sheets.",
+      "Don't nest secondary cards inside `SettingsSection` containers; flatten radio lists and site-override rows directly inside the section with hairline `outlineVariant` dividers.",
+      "Don't duplicate unfolded sidebar controls (Spaces switcher row or open-tab jump cards) onto the Start Page when the sidebar is already presenting them.",
+      "Don't couple Folded and Unfolded toolbar placements or default site modes into a single shared toggle, or render `SIDE_RAIL` on `<600dp` folded screens.",
+      "Don't force `WebView` or browser chrome to drop below 120Hz responsiveness by allocating paths or paint objects inside hot Compose draw/scroll loops; use `drawWithCache` and stable lazy list keys with `contentType`."
+    ]
+  }
+}

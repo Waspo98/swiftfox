@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Swiftfox</string>
+    <string name="media_channel_name">Background Media Playback</string>
+    <string name="media_channel_desc">Controls for active audio and video playback in Swiftfox</string>
+</resources>

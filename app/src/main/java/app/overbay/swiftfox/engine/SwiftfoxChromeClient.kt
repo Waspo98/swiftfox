@@ -1,0 +1,122 @@
+package app.overbay.swiftfox.engine
+
+import android.content.Intent
+import android.graphics.Bitmap
+import android.net.Uri
+import android.os.Message
+import android.view.View
+import android.webkit.GeolocationPermissions
+import android.webkit.PermissionRequest
+import android.webkit.ValueCallback
+import android.webkit.WebChromeClient
+import android.webkit.WebView
+
+data class SitePermissionPrompt(
+    val host: String,
+    val resources: List<String>,
+    val isGeolocation: Boolean,
+    val webRequest: PermissionRequest? = null,
+    val geoOrigin: String? = null,
+    val geoCallback: GeolocationPermissions.Callback? = null
+)
+
+interface WebChromeCallbacks {
+    fun onProgressChanged(tabId: String, progress: Int)
+    fun onTitleChanged(tabId: String, title: String)
+    fun onFaviconReceived(tabId: String, icon: Bitmap?)
+    fun onShowCustomView(view: View, callback: WebChromeClient.CustomViewCallback)
+    fun onHideCustomView()
+    fun onShowFileChooser(
+        filePathCallback: ValueCallback<Array<Uri>>,
+        chooserIntent: Intent
+    ): Boolean
+    fun onPermissionRequested(tabId: String, prompt: SitePermissionPrompt)
+    fun onOpenNewWindow(parentTabId: String, resultMsg: Message?): Boolean
+}
+
+class SwiftfoxChromeClient(
+    private val tabId: String,
+    private val callbacks: WebChromeCallbacks
+) : WebChromeClient() {
+
+    override fun onProgressChanged(view: WebView?, newProgress: Int) {
+        callbacks.onProgressChanged(tabId, newProgress)
+    }
+
+    override fun onReceivedTitle(view: WebView?, title: String?) {
+        if (!title.isNullOrBlank()) {
+            callbacks.onTitleChanged(tabId, title)
+        }
+    }
+
+    override fun onReceivedIcon(view: WebView?, icon: Bitmap?) {
+        callbacks.onFaviconReceived(tabId, icon)
+    }
+
+    override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
+        if (view != null && callback != null) {
+            callbacks.onShowCustomView(view, callback)
+        }
+    }
+
+    override fun onHideCustomView() {
+        callbacks.onHideCustomView()
+    }
+
+    override fun onShowFileChooser(
+        webView: WebView?,
+        filePathCallback: ValueCallback<Array<Uri>>?,
+        fileChooserParams: FileChooserParams?
+    ): Boolean {
+        if (filePathCallback == null || fileChooserParams == null) return false
+        val intent = runCatching { fileChooserParams.createIntent() }.getOrElse {
+            Intent(Intent.ACTION_GET_CONTENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "*/*"
+            }
+        }
+        return callbacks.onShowFileChooser(filePathCallback, intent)
+    }
+
+    override fun onPermissionRequest(request: PermissionRequest?) {
+        if (request == null) return
+        val host = request.origin?.host?.lowercase().orEmpty()
+        val resources = request.resources?.toList().orEmpty()
+        callbacks.onPermissionRequested(
+            tabId,
+            SitePermissionPrompt(
+                host = host,
+                resources = resources,
+                isGeolocation = false,
+                webRequest = request
+            )
+        )
+    }
+
+    override fun onGeolocationPermissionsShowPrompt(
+        origin: String?,
+        callback: GeolocationPermissions.Callback?
+    ) {
+        if (origin == null || callback == null) return
+        val host = runCatching { Uri.parse(origin).host?.lowercase().orEmpty() }.getOrDefault(origin)
+        callbacks.onPermissionRequested(
+            tabId,
+            SitePermissionPrompt(
+                host = host,
+                resources = listOf("LOCATION"),
+                isGeolocation = true,
+                geoOrigin = origin,
+                geoCallback = callback
+            )
+        )
+    }
+
+    override fun onCreateWindow(
+        view: WebView?,
+        isDialog: Boolean,
+        isUserGesture: Boolean,
+        resultMsg: Message?
+    ): Boolean {
+        return callbacks.onOpenNewWindow(tabId, resultMsg)
+    }
+}

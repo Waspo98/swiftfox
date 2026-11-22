@@ -55,6 +55,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import app.overbay.swiftfox.BuildConfig
 import app.overbay.swiftfox.data.prefs.AccentPreset
 import app.overbay.swiftfox.data.prefs.DevicePosture
 import app.overbay.swiftfox.data.prefs.ExternalAppLinkPolicy
@@ -469,7 +470,7 @@ fun SettingsScreen(
                     Text("Set Swiftfox as default browser")
                 }
                 Text(
-                    text = "Swiftfox v0.1.0-beta · Android WebView 120Hz Engine · System Autofill enabled",
+                    text = "Swiftfox v${BuildConfig.VERSION_NAME} · Android WebView 120Hz Engine · System Autofill enabled",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

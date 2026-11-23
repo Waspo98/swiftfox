@@ -16,7 +16,7 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
-import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
@@ -66,7 +66,6 @@ val AmoledOutline = Color(0xFF8A8294)
 val AmoledOutlineVariant = Color(0xFF2E2A36)
 
 // Signature Fox Amber tokens
-val FoxAmberBrand = Color(0xFFE86A17)
 val FoxAmberDayPrimary = Color(0xFFB04200)
 val FoxAmberDayContainer = Color(0xFFFFE2CC)
 val FoxAmberDayOnContainer = Color(0xFF4A1B00)
@@ -315,38 +314,42 @@ fun SwiftfoxTheme(
     val isAmoled = isDark && nightSurfaceStyle == NightSurfaceStyle.AMOLED
     val context = LocalContext.current
 
-    val colorScheme = when {
-        useDynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
-            val base = if (isDark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-            if (isAmoled) {
-                base.copy(
-                    background = AmoledSurface,
-                    surface = AmoledSurface,
-                    surfaceContainerLowest = AmoledSurface,
-                    surfaceContainerLow = AmoledSurfaceLow,
-                    surfaceContainer = AmoledSurfaceContainer,
-                    surfaceContainerHigh = AmoledSurfaceHigh,
-                    surfaceContainerHighest = AmoledSurfaceHighest
-                )
-            } else {
-                base
+    val colorScheme = remember(isDark, isAmoled, accentPreset, useDynamicColor, context) {
+        when {
+            useDynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
+                val base = if (isDark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+                if (isAmoled) {
+                    base.copy(
+                        background = AmoledSurface,
+                        surface = AmoledSurface,
+                        surfaceContainerLowest = AmoledSurface,
+                        surfaceContainerLow = AmoledSurfaceLow,
+                        surfaceContainer = AmoledSurfaceContainer,
+                        surfaceContainerHigh = AmoledSurfaceHigh,
+                        surfaceContainerHighest = AmoledSurfaceHighest
+                    )
+                } else {
+                    base
+                }
             }
+            isDark -> buildNightScheme(accentPreset, isAmoled)
+            else -> buildDayScheme(accentPreset)
         }
-        isDark -> buildNightScheme(accentPreset, isAmoled)
-        else -> buildDayScheme(accentPreset)
     }
 
-    val extendedColors = SwiftfoxExtendedColors(
-        privateContainer = if (isDark) Color(0xFF281B45) else Color(0xFFECE2FF),
-        onPrivateContainer = if (isDark) Color(0xFFEBDFFF) else Color(0xFF261057),
-        privateAccent = if (isDark) Color(0xFFC1A6FF) else Color(0xFF6342B5),
-        onPrivateAccent = if (isDark) Color(0xFF1F0947) else Color.White
-    )
+    val extendedColors = remember(isDark) {
+        SwiftfoxExtendedColors(
+            privateContainer = if (isDark) Color(0xFF281B45) else Color(0xFFECE2FF),
+            onPrivateContainer = if (isDark) Color(0xFFEBDFFF) else Color(0xFF261057),
+            privateAccent = if (isDark) Color(0xFFC1A6FF) else Color(0xFF6342B5),
+            onPrivateAccent = if (isDark) Color(0xFF1F0947) else Color.White
+        )
+    }
 
     val view = LocalView.current
     if (!view.isInEditMode) {
-        SideEffect {
-            val window = (view.context as? Activity)?.window ?: return@SideEffect
+        LaunchedEffect(view, isDark) {
+            val window = (view.context as? Activity)?.window ?: return@LaunchedEffect
             val controller = WindowCompat.getInsetsController(window, view)
             controller.isAppearanceLightStatusBars = !isDark
             controller.isAppearanceLightNavigationBars = !isDark

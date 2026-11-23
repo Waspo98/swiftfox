@@ -15,10 +15,32 @@
 
   function firstUrlFromSrcset(srcset) {
     if (!srcset) return '';
-    var parts = String(srcset).split(',');
-    for (var i = 0; i < parts.length; i++) {
-      var candidate = parts[i].trim().split(/\s+/)[0];
-      if (candidate && !/^data:/i.test(candidate)) {
+    var s = String(srcset).trim();
+    var i = 0;
+    var len = s.length;
+    while (i < len) {
+      while (i < len && (/\s/.test(s[i]) || s[i] === ',')) i++;
+      if (i >= len) break;
+      var start = i;
+      while (i < len && !/\s/.test(s[i])) {
+        if (s[i] === ',' && (i + 1 >= len || /\s/.test(s[i + 1]))) {
+          break;
+        }
+        i++;
+      }
+      var candidate = s.slice(start, i).replace(/,+$/, '');
+      var inParens = false;
+      while (i < len) {
+        var c = s[i];
+        if (c === '(') inParens = true;
+        else if (c === ')') inParens = false;
+        else if (c === ',' && !inParens) {
+          i++;
+          break;
+        }
+        i++;
+      }
+      if (candidate && !/^\d+(?:\.\d+)?[wx]$/i.test(candidate) && !/^data:/i.test(candidate)) {
         return candidate;
       }
     }

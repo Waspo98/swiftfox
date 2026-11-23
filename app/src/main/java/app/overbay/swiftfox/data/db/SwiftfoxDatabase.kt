@@ -5,7 +5,10 @@ import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
+import androidx.room.withTransaction
 import androidx.sqlite.db.SupportSQLiteDatabase
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 @Database(
     entities = [
@@ -41,122 +44,126 @@ abstract class SwiftfoxDatabase : RoomDatabase() {
     abstract fun syncedRemoteTabDao(): SyncedRemoteTabDao
     abstract fun zenPinnedItemDao(): ZenPinnedItemDao
 
-    suspend fun seedDefaultsIfEmpty(seedInitialContent: Boolean = true) {
-        if (spaceDao().getAll().isEmpty()) {
-            spaceDao().upsertAll(
-                listOf(
-                    SpaceEntity(
-                        id = DEFAULT_SPACE_ID,
-                        name = "Personal",
-                        iconKey = "home",
-                        containerProfileName = null,
-                        sortOrder = 0
-                    ),
-                    SpaceEntity(
-                        id = "space_work",
-                        name = "Work",
-                        iconKey = "work",
-                        containerProfileName = "space_work",
-                        sortOrder = 1
-                    ),
-                    SpaceEntity(
-                        id = "space_reading",
-                        name = "Reading",
-                        iconKey = "book",
-                        containerProfileName = null,
-                        sortOrder = 2
+    private val seedMutex = Mutex()
+
+    suspend fun seedDefaultsIfEmpty(seedInitialContent: Boolean = true) = seedMutex.withLock {
+        withTransaction {
+            if (spaceDao().getAll().isEmpty()) {
+                spaceDao().upsertAll(
+                    listOf(
+                        SpaceEntity(
+                            id = DEFAULT_SPACE_ID,
+                            name = "Personal",
+                            iconKey = "home",
+                            containerProfileName = null,
+                            sortOrder = 0
+                        ),
+                        SpaceEntity(
+                            id = "space_work",
+                            name = "Work",
+                            iconKey = "work",
+                            containerProfileName = "space_work",
+                            sortOrder = 1
+                        ),
+                        SpaceEntity(
+                            id = "space_reading",
+                            name = "Reading",
+                            iconKey = "book",
+                            containerProfileName = null,
+                            sortOrder = 2
+                        )
                     )
                 )
-            )
-        }
-        if (seedInitialContent && essentialDao().count() == 0) {
-            essentialDao().upsertAll(
-                listOf(
-                    EssentialEntity(
-                        id = "ess_google",
-                        title = "Google",
-                        url = "https://www.google.com",
-                        domain = "google.com",
-                        sortOrder = 0
-                    ),
-                    EssentialEntity(
-                        id = "ess_github",
-                        title = "GitHub",
-                        url = "https://github.com",
-                        domain = "github.com",
-                        sortOrder = 1
-                    ),
-                    EssentialEntity(
-                        id = "ess_youtube",
-                        title = "YouTube",
-                        url = "https://m.youtube.com",
-                        domain = "youtube.com",
-                        sortOrder = 2
-                    ),
-                    EssentialEntity(
-                        id = "ess_reddit",
-                        title = "Reddit",
-                        url = "https://www.reddit.com",
-                        domain = "reddit.com",
-                        sortOrder = 3
-                    ),
-                    EssentialEntity(
-                        id = "ess_wiki",
-                        title = "Wikipedia",
-                        url = "https://en.wikipedia.org",
-                        domain = "wikipedia.org",
-                        sortOrder = 4
-                    ),
-                    EssentialEntity(
-                        id = "ess_hn",
-                        title = "Hacker News",
-                        url = "https://news.ycombinator.com",
-                        domain = "news.ycombinator.com",
-                        sortOrder = 5
+            }
+            if (seedInitialContent && essentialDao().count() == 0) {
+                essentialDao().upsertAll(
+                    listOf(
+                        EssentialEntity(
+                            id = "ess_google",
+                            title = "Google",
+                            url = "https://www.google.com",
+                            domain = "google.com",
+                            sortOrder = 0
+                        ),
+                        EssentialEntity(
+                            id = "ess_github",
+                            title = "GitHub",
+                            url = "https://github.com",
+                            domain = "github.com",
+                            sortOrder = 1
+                        ),
+                        EssentialEntity(
+                            id = "ess_youtube",
+                            title = "YouTube",
+                            url = "https://m.youtube.com",
+                            domain = "youtube.com",
+                            sortOrder = 2
+                        ),
+                        EssentialEntity(
+                            id = "ess_reddit",
+                            title = "Reddit",
+                            url = "https://www.reddit.com",
+                            domain = "reddit.com",
+                            sortOrder = 3
+                        ),
+                        EssentialEntity(
+                            id = "ess_wiki",
+                            title = "Wikipedia",
+                            url = "https://en.wikipedia.org",
+                            domain = "wikipedia.org",
+                            sortOrder = 4
+                        ),
+                        EssentialEntity(
+                            id = "ess_hn",
+                            title = "Hacker News",
+                            url = "https://news.ycombinator.com",
+                            domain = "news.ycombinator.com",
+                            sortOrder = 5
+                        )
                     )
                 )
-            )
-        }
-        if (seedInitialContent && filterListDao().count() == 0) {
-            filterListDao().upsertAll(
-                listOf(
-                    FilterListEntity(
-                        id = "fl_easylist",
-                        name = "EasyList",
-                        url = "https://easylist.to/easylist/easylist.txt",
-                        enabled = true,
-                        isBuiltIn = true
-                    ),
-                    FilterListEntity(
-                        id = "fl_easyprivacy",
-                        name = "EasyPrivacy",
-                        url = "https://easylist.to/easylist/easyprivacy.txt",
-                        enabled = true,
-                        isBuiltIn = true
-                    ),
-                    FilterListEntity(
-                        id = "fl_ubo_filters",
-                        name = "uBlock Origin Filters",
-                        url = "https://ublockorigin.github.io/uAssetsCDN/filters/filters.min.txt",
-                        enabled = true,
-                        isBuiltIn = true
-                    ),
-                    FilterListEntity(
-                        id = "fl_ubo_badware",
-                        name = "uBlock Badware Risks",
-                        url = "https://ublockorigin.github.io/uAssetsCDN/filters/badware.min.txt",
-                        enabled = true,
-                        isBuiltIn = true
-                    ),
-                    FilterListEntity(
-                        id = "fl_ubo_annoyances",
-                        name = "uBlock Annoyances",
-                        url = "https://ublockorigin.github.io/uAssetsCDN/filters/annoyances-others.min.txt",
-                        enabled = false,
-                        isBuiltIn = true
+            }
+            if (seedInitialContent && filterListDao().count() == 0) {
+                filterListDao().upsertAll(
+                    listOf(
+                        FilterListEntity(
+                            id = "fl_easylist",
+                            name = "EasyList",
+                            url = "https://easylist.to/easylist/easylist.txt",
+                            enabled = true,
+                            isBuiltIn = true
+                        ),
+                        FilterListEntity(
+                            id = "fl_easyprivacy",
+                            name = "EasyPrivacy",
+                            url = "https://easylist.to/easylist/easyprivacy.txt",
+                            enabled = true,
+                            isBuiltIn = true
+                        ),
+                        FilterListEntity(
+                            id = "fl_ubo_filters",
+                            name = "uBlock Origin Filters",
+                            url = "https://ublockorigin.github.io/uAssetsCDN/filters/filters.min.txt",
+                            enabled = true,
+                            isBuiltIn = true
+                        ),
+                        FilterListEntity(
+                            id = "fl_ubo_badware",
+                            name = "uBlock Badware Risks",
+                            url = "https://ublockorigin.github.io/uAssetsCDN/filters/badware.min.txt",
+                            enabled = true,
+                            isBuiltIn = true
+                        ),
+                        FilterListEntity(
+                            id = "fl_ubo_annoyances",
+                            name = "uBlock Annoyances",
+                            url = "https://ublockorigin.github.io/uAssetsCDN/filters/annoyances-others.min.txt",
+                            enabled = false,
+                            isBuiltIn = true
+                        )
                     )
                 )
-            )
+            }
         }
     }
 

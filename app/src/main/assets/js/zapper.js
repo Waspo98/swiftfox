@@ -472,6 +472,8 @@
       }
     }
 
+    var MAX_SELECTOR_LENGTH = 1024;
+
     // Full path from nearest unique anchor or body to guarantee precision
     var fallbackSegments = [];
     cur = el;
@@ -491,7 +493,17 @@
       cur = cur.parentElement;
     }
     var fallbackSel = fallbackSegments.join(' > ');
-    if (fallbackSel && !isUnsafeBareSelector(fallbackSel) && queryCountContaining(fallbackSel, el) > 0) {
+    // Trim leading ancestor segments if deeply nested DOM exceeds Kotlin's 1024-char selector cap
+    while (fallbackSel.length > MAX_SELECTOR_LENGTH && fallbackSegments.length > 2) {
+      fallbackSegments.shift();
+      fallbackSel = fallbackSegments.join(' > ');
+    }
+    if (
+      fallbackSel &&
+      fallbackSel.length <= MAX_SELECTOR_LENGTH &&
+      !isUnsafeBareSelector(fallbackSel) &&
+      queryCountContaining(fallbackSel, el) > 0
+    ) {
       return fallbackSel;
     }
     return '';
@@ -680,13 +692,13 @@
   }
 
   function selectAtDepth(depth) {
-    if (state.chain.length === 0) return;
+    if (state.chain.length === 0) return false;
     var maxDepth = state.chain.length - 1;
     var clamped = Math.max(0, Math.min(maxDepth, depth | 0));
     var el = state.chain[clamped];
     var selector = buildResilientSelector(el);
-    if (!selector) {
-      return;
+    if (!selector || selector.length > 1024) {
+      return false;
     }
     state.scopeDepth = clamped;
     var summary = buildSummary(el);
@@ -705,6 +717,7 @@
       matchCount: matchCount,
       viewportCenterY: computeViewportCenterY(el)
     });
+    return true;
   }
 
   function buildAncestorChain(tappedEl) {
@@ -834,7 +847,11 @@
     if (!state.active) return;
     e.stopPropagation();
     e.stopImmediatePropagation();
-    if (!e.touches || e.touches.length !== 1) return;
+    if (!e.touches || e.touches.length !== 1) {
+      // Multi-touch pinch-zoom must not fire a tap selection when fingers lift
+      state.touchMoved = true;
+      return;
+    }
     state.touchStartX = e.touches[0].clientX;
     state.touchStartY = e.touches[0].clientY;
     state.touchMoved = false;
@@ -935,12 +952,26 @@
 
   function setScopeDepth(depth) {
     if (!state.active || state.chain.length === 0) return;
-    selectAtDepth(depth);
+    var maxDepth = state.chain.length - 1;
+    var target = Math.max(0, Math.min(maxDepth, depth | 0));
+    if (selectAtDepth(target)) return;
+    // Step past rejected ancestors toward requested direction
+    var dir = target >= state.scopeDepth ? 1 : -1;
+    for (var d = target + dir; d >= 0 && d <= maxDepth; d += dir) {
+      if (selectAtDepth(d)) return;
+    }
   }
 
   function adjustScope(delta) {
     if (!state.active || state.chain.length === 0) return;
-    selectAtDepth(state.scopeDepth + (delta | 0));
+    var d = delta | 0;
+    if (d === 0) return;
+    var maxDepth = state.chain.length - 1;
+    var dir = d > 0 ? 1 : -1;
+    var start = Math.max(0, Math.min(maxDepth, state.scopeDepth + d));
+    for (var cur = start; cur >= 0 && cur <= maxDepth; cur += dir) {
+      if (selectAtDepth(cur)) return;
+    }
   }
 
   function zapOnce() {
@@ -983,6 +1014,9 @@
       } else {
         entry.el.style.removeProperty('display');
       }
+    }
+    if (state.chain.length > 0) {
+      updateOverlayPosition();
     }
     emitBridge('onUndoTemporaryZap', {
       temporaryZapCount: state.undoStack.length
@@ -1060,8 +1094,7 @@
     zapOnce: zapOnce,
     undoLastZap: undoLastZap,
     confirmBlockPermanently: confirmBlockPermanently,
-    stop: stop,
-    buildResilientSelector: buildResilientSelector
+    stop: stop
   };
   try {
     Object.defineProperty(window, runtimeKey, {

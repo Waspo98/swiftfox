@@ -354,7 +354,6 @@ fun SyncOverlayPreview() {
             state = previewState(DevicePosture.FOLDED, startPageActive = true).copy(
                 syncStatus = SyncStatusSnapshot(
                     accountState = SyncAccountState.Connected(
-                        uid = "uid-preview",
                         email = "user@example.com",
                         displayName = "Alex"
                     ),

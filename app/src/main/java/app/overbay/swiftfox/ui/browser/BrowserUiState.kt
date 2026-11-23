@@ -65,7 +65,7 @@ data class BrowserTabUi(
     val lastAccessedAt: Long = System.currentTimeMillis()
 ) {
     val isStartPage: Boolean
-        get() = url.isBlank() || url == OmniboxEngine.NEW_TAB_URL
+        get() = !isPopupWindow && (url.isBlank() || url == OmniboxEngine.NEW_TAB_URL)
 
     val displayHost: String
         get() = if (isStartPage) "" else OmniboxEngine.extractHost(url).ifBlank { url }
@@ -122,7 +122,6 @@ data class BrowserUiState(
     val isSystemDark: Boolean = true,
     val snackbarMessage: String? = null,
     val snackbarId: Long = 0L,
-    val snackbarUndoZapper: Boolean = false,
     val recentlyClosedTab: BrowserTabUi? = null,
     val syncStatus: SyncStatusSnapshot = SyncStatusSnapshot(),
     val syncedRemoteTabs: List<SyncedRemoteTabEntity> = emptyList(),

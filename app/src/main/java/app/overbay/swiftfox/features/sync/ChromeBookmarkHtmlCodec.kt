@@ -16,6 +16,10 @@ data class ImportedBookmark(
  */
 object ChromeBookmarkHtmlCodec {
 
+    private val tokenRegex = Regex(
+        """<H3\b[^>]*>.*?</H3>|<A\b[^>]*>.*?</A>|<DL\b[^>]*>|</DL>""",
+        setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
+    )
     private val h3Regex = Regex("""<H3\b[^>]*>(.*?)</H3>""", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
     private val anchorRegex = Regex("""<A\b([^>]*)>(.*?)</A>""", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
     private val dlOpenRegex = Regex("""<DL\b[^>]*>""", RegexOption.IGNORE_CASE)
@@ -31,11 +35,6 @@ object ChromeBookmarkHtmlCodec {
         val folderStack = ArrayDeque<String>()
         var pendingFolderName: String? = null
         var seenRootDl = false
-
-        val tokenRegex = Regex(
-            """<H3\b[^>]*>.*?</H3>|<A\b[^>]*>.*?</A>|<DL\b[^>]*>|</DL>""",
-            setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
-        )
 
         for (match in tokenRegex.findAll(html)) {
             val token = match.value
@@ -64,6 +63,8 @@ object ChromeBookmarkHtmlCodec {
                 }
 
                 else -> {
+                    // Stray <H3> without an immediately following <DL> must not attach to a later <DL>
+                    pendingFolderName = null
                     val anchorMatch = anchorRegex.find(token) ?: continue
                     val attrs = anchorMatch.groupValues[1]
                     val rawTitle = anchorMatch.groupValues[2]
@@ -72,15 +73,17 @@ object ChromeBookmarkHtmlCodec {
                     val url = unescapeHtml(rawHref).trim()
                     if (!isSupportedUrl(url)) continue
 
-                    val addDateSeconds = addDateAttrRegex.find(attrs)
+                    val addDateRaw = addDateAttrRegex.find(attrs)
                         ?.groupValues
                         ?.drop(1)
                         ?.firstOrNull { it.isNotEmpty() }
                         ?.toLongOrNull()
-                    val addedAtMs = if (addDateSeconds != null && addDateSeconds > 0L) {
-                        addDateSeconds * 1000L
-                    } else {
-                        System.currentTimeMillis()
+                    val addedAtMs = when {
+                        addDateRaw == null || addDateRaw <= 0L -> System.currentTimeMillis()
+                        addDateRaw > 1_000_000_000_000_000L -> addDateRaw / 1000L // microseconds
+                        addDateRaw > 1_000_000_000_000L -> addDateRaw // already milliseconds
+                        addDateRaw <= Long.MAX_VALUE / 1000L -> addDateRaw * 1000L
+                        else -> System.currentTimeMillis()
                     }
 
                     val title = unescapeHtml(rawTitle).trim().ifBlank { url }
@@ -198,16 +201,29 @@ object ChromeBookmarkHtmlCodec {
                 entity.equals("quot", ignoreCase = true) -> "\""
                 entity.equals("apos", ignoreCase = true) -> "'"
                 entity.equals("nbsp", ignoreCase = true) -> " "
+                entity.equals("mdash", ignoreCase = true) -> "\u2014"
+                entity.equals("ndash", ignoreCase = true) -> "\u2013"
+                entity.equals("rsquo", ignoreCase = true) -> "\u2019"
+                entity.equals("lsquo", ignoreCase = true) -> "\u2018"
+                entity.equals("rdquo", ignoreCase = true) -> "\u201D"
+                entity.equals("ldquo", ignoreCase = true) -> "\u201C"
+                entity.equals("hellip", ignoreCase = true) -> "\u2026"
+                entity.equals("copy", ignoreCase = true) -> "\u00A9"
                 entity.startsWith("#x", ignoreCase = true) -> {
                     val code = entity.substring(2).toIntOrNull(16)
-                    if (code != null && Character.isValidCodePoint(code)) String(Character.toChars(code)) else match.value
+                    if (isSafeUnicodeCodePoint(code)) String(Character.toChars(code!!)) else match.value
                 }
                 entity.startsWith("#") -> {
                     val code = entity.substring(1).toIntOrNull(10)
-                    if (code != null && Character.isValidCodePoint(code)) String(Character.toChars(code)) else match.value
+                    if (isSafeUnicodeCodePoint(code)) String(Character.toChars(code!!)) else match.value
                 }
                 else -> match.value
             }
         }
+    }
+
+    private fun isSafeUnicodeCodePoint(code: Int?): Boolean {
+        if (code == null || code <= 0 || !Character.isValidCodePoint(code)) return false
+        return code !in 0xD800..0xDFFF
     }
 }

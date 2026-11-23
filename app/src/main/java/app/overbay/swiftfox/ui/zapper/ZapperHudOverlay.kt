@@ -1,6 +1,5 @@
 package app.overbay.swiftfox.ui.zapper
 
-import android.provider.Settings
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
@@ -8,7 +7,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
@@ -30,14 +28,20 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.overbay.swiftfox.features.zapper.ZapperUiState
+import app.overbay.swiftfox.ui.theme.rememberReduceMotion
 import kotlin.math.roundToInt
 
 @Composable
@@ -49,22 +53,11 @@ fun ZapperHudOverlay(
     onBlockPermanently: () -> Unit,
     onUndoTemporaryZap: () -> Unit,
     onDone: () -> Unit,
-    modifier: Modifier = Modifier,
-    applyNavigationBarPadding: Boolean = false
+    modifier: Modifier = Modifier
 ) {
-    val context = LocalContext.current
-    val reduceMotion = remember(context) {
-        runCatching {
-            Settings.Global.getFloat(
-                context.contentResolver,
-                Settings.Global.ANIMATOR_DURATION_SCALE,
-                1f
-            ) == 0f
-        }.getOrDefault(false)
-    }
+    val reduceMotion = rememberReduceMotion()
 
     val containerModifier = modifier
-        .let { base -> if (applyNavigationBarPadding) base.navigationBarsPadding() else base }
         .padding(horizontal = 16.dp, vertical = 12.dp)
         .widthIn(max = 560.dp)
         .fillMaxWidth()
@@ -182,6 +175,17 @@ private fun SelectedZapperHudContent(
     val matchLabel = if (state.matchCount == 1) "1 match" else "${state.matchCount} matches"
     val maxDepth = state.maxScopeDepth.coerceAtLeast(0)
     val clampedDepth = state.scopeDepth.coerceIn(0, maxDepth)
+    var sliderDepth by remember(maxDepth) { mutableFloatStateOf(clampedDepth.toFloat()) }
+    var lastDispatchedDepth by remember(maxDepth) { mutableIntStateOf(clampedDepth) }
+    var isDraggingSlider by remember(maxDepth) { mutableStateOf(false) }
+
+    LaunchedEffect(clampedDepth, maxDepth) {
+        if (!isDraggingSlider) {
+            sliderDepth = clampedDepth.toFloat()
+            lastDispatchedDepth = clampedDepth
+        }
+    }
+    val displayedDepth = if (isDraggingSlider) lastDispatchedDepth else clampedDepth
 
     Column(
         modifier = Modifier
@@ -269,7 +273,7 @@ private fun SelectedZapperHudContent(
                 )
                 if (maxDepth > 0) {
                     Text(
-                        text = "${clampedDepth + 1} / ${maxDepth + 1}",
+                        text = "${displayedDepth + 1} / ${maxDepth + 1}",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.primary,
                         maxLines = 1,
@@ -299,12 +303,19 @@ private fun SelectedZapperHudContent(
 
                 if (maxDepth > 0) {
                     Slider(
-                        value = clampedDepth.toFloat(),
+                        value = sliderDepth.coerceIn(0f, maxDepth.toFloat()),
                         onValueChange = { value ->
+                            isDraggingSlider = true
+                            sliderDepth = value
                             val next = value.roundToInt().coerceIn(0, maxDepth)
-                            if (next != clampedDepth) {
+                            if (next != lastDispatchedDepth) {
+                                lastDispatchedDepth = next
                                 onSetScopeDepth(next)
                             }
+                        },
+                        onValueChangeFinished = {
+                            isDraggingSlider = false
+                            sliderDepth = lastDispatchedDepth.toFloat()
                         },
                         valueRange = 0f..maxDepth.toFloat(),
                         steps = (maxDepth - 1).coerceAtLeast(0),

@@ -244,6 +244,29 @@ object ScriptInjector {
         return handlers
     }
 
+    fun buildAppendGenericCosmeticCssScript(css: String): String {
+        val cssLit = json.encodeToString(css)
+        return """
+            (function(){
+              try {
+                var css = $cssLit;
+                if (!css) return;
+                var id = 'swiftfox-cosmetic-generic';
+                var el = document.getElementById(id);
+                if (!el) {
+                  el = document.createElement('style');
+                  el.id = id;
+                  el.type = 'text/css';
+                  (document.head || document.documentElement).appendChild(el);
+                }
+                if (el.textContent.indexOf(css) === -1) {
+                  el.textContent += '\n' + css;
+                }
+              } catch (e) {}
+            })();
+        """.trimIndent()
+    }
+
     fun injectOnPageStarted(
         webView: WebView,
         tokens: BridgeTokenSet,
@@ -253,8 +276,10 @@ object ScriptInjector {
         darkState: ResolvedWebDarkState,
         darkReaderInjector: DarkReaderInjector,
         docStartUserscripts: List<Pair<UserscriptEntity, Map<String, String>>>,
-        userscriptBridge: UserscriptBridge
+        userscriptBridge: UserscriptBridge,
+        isDestroyed: () -> Boolean = { false }
     ) {
+        if (isDestroyed()) return
         webView.evaluateJavascript(buildCssStyleScript("swiftfox-cosmetic", cosmetic.css), null)
         webView.evaluateJavascript(buildCssStyleScript("swiftfox-cosmetic-generic", ""), null)
         if (cosmetic.injectedScript.isNotBlank()) {
@@ -278,7 +303,7 @@ object ScriptInjector {
             }
         }
 
-        injectDarkReaderFastOrFull(webView, tokens, darkState, darkReaderInjector)
+        injectDarkReaderFastOrFull(webView, tokens, darkState, darkReaderInjector, isDestroyed)
     }
 
     fun injectOnPageFinished(
@@ -292,8 +317,10 @@ object ScriptInjector {
         darkReaderInjector: DarkReaderInjector,
         docEndUserscripts: List<Pair<UserscriptEntity, Map<String, String>>>,
         docIdleUserscripts: List<Pair<UserscriptEntity, Map<String, String>>>,
-        userscriptBridge: UserscriptBridge
+        userscriptBridge: UserscriptBridge,
+        isDestroyed: () -> Boolean = { false }
     ) {
+        if (isDestroyed()) return
         if (cosmetic.css.isNotBlank()) {
             webView.evaluateJavascript(buildCssStyleScript("swiftfox-cosmetic", cosmetic.css), null)
         }
@@ -305,7 +332,7 @@ object ScriptInjector {
         }
         webView.evaluateJavascript(zapperController.buildApplyZappedCssScript(zappedRules), null)
 
-        injectDarkReaderFastOrFull(webView, tokens, darkState, darkReaderInjector)
+        injectDarkReaderFastOrFull(webView, tokens, darkState, darkReaderInjector, isDestroyed)
 
         val hasAnyUserscripts = docEndUserscripts.isNotEmpty() || docIdleUserscripts.isNotEmpty()
         if (hasAnyUserscripts) {
@@ -340,8 +367,10 @@ object ScriptInjector {
         webView: WebView,
         tokens: BridgeTokenSet,
         darkState: ResolvedWebDarkState,
-        darkReaderInjector: DarkReaderInjector
+        darkReaderInjector: DarkReaderInjector,
+        isDestroyed: () -> Boolean
     ) {
+        if (isDestroyed()) return
         if (!darkState.useDarkReader) {
             webView.evaluateJavascript(darkReaderInjector.buildDisableScript(tokens.darkReaderKey), null)
             return
@@ -349,6 +378,7 @@ object ScriptInjector {
         val originAtCall = extractOrigin(webView.url.orEmpty()) ?: return
         val keyLit = json.encodeToString(tokens.darkReaderKey)
         webView.evaluateJavascript("Object.prototype.hasOwnProperty.call(window, $keyLit)") { loaded ->
+            if (isDestroyed()) return@evaluateJavascript
             if (extractOrigin(webView.url.orEmpty()) != originAtCall) return@evaluateJavascript
             val script = if (loaded?.trim().equals("true", ignoreCase = true)) {
                 darkReaderInjector.buildFastApplyScript(darkState, tokens.darkReaderKey)

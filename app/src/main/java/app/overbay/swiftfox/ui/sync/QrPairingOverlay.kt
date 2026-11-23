@@ -57,6 +57,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import app.overbay.swiftfox.features.sync.MozillaSyncCoordinator
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.BinaryBitmap
 import com.google.zxing.DecodeHintType
@@ -135,23 +136,53 @@ fun QrPairingOverlay(
                 contentAlignment = Alignment.Center
             ) {
                 if (hasCameraPermission) {
-                    QrCameraPreview(
-                        lifecycleOwner = lifecycleOwner,
-                        onQrDecoded = { text ->
-                            if (text.startsWith("https://accounts.firefox.com/pair", ignoreCase = true)) {
-                                onPairingUrlDetected(text)
-                            } else {
-                                invalidCodeHint = "Scanned QR code is not a Mozilla pairing link"
+                    var cameraBindError by remember { mutableStateOf<String?>(null) }
+                    if (cameraBindError == null) {
+                        QrCameraPreview(
+                            lifecycleOwner = lifecycleOwner,
+                            onQrDecoded = { text ->
+                                if (MozillaSyncCoordinator.isValidPairingUrl(text)) {
+                                    onPairingUrlDetected(text)
+                                } else {
+                                    invalidCodeHint = "Scanned QR code is not a Mozilla pairing link"
+                                }
+                            },
+                            onCameraError = { errMsg ->
+                                cameraBindError = errMsg
                             }
-                        }
-                    )
+                        )
 
-                    Surface(
-                        shape = RoundedCornerShape(24.dp),
-                        color = Color.Transparent,
-                        border = BorderStroke(2.5.dp, MaterialTheme.colorScheme.primary),
-                        modifier = Modifier.size(232.dp)
-                    ) {}
+                        Surface(
+                            shape = RoundedCornerShape(24.dp),
+                            color = Color.Transparent,
+                            border = BorderStroke(2.5.dp, MaterialTheme.colorScheme.primary),
+                            modifier = Modifier.size(232.dp)
+                        ) {}
+                    } else {
+                        Column(
+                            modifier = Modifier.padding(32.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.QrCodeScanner,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(48.dp)
+                            )
+                            Text(
+                                text = "Camera preview unavailable",
+                                style = MaterialTheme.typography.titleMedium,
+                                textAlign = TextAlign.Center
+                            )
+                            Text(
+                                text = cameraBindError ?: "Could not open back camera. Paste the pairing link below instead.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    }
                 } else {
                     Column(
                         modifier = Modifier.padding(32.dp),
@@ -261,7 +292,8 @@ fun QrPairingOverlay(
 @Composable
 private fun QrCameraPreview(
     lifecycleOwner: androidx.lifecycle.LifecycleOwner,
-    onQrDecoded: (String) -> Unit
+    onQrDecoded: (String) -> Unit,
+    onCameraError: (String) -> Unit
 ) {
     val context = LocalContext.current
     val previewView = remember {
@@ -281,6 +313,7 @@ private fun QrCameraPreview(
     val delivered = remember { AtomicBoolean(false) }
     val lastRejectedQr = remember { AtomicReference<String?>(null) }
     val currentOnQrDecoded by rememberUpdatedState(onQrDecoded)
+    val currentOnCameraError by rememberUpdatedState(onCameraError)
 
     DisposableEffect(lifecycleOwner) {
         val disposed = AtomicBoolean(false)
@@ -293,7 +326,12 @@ private fun QrCameraPreview(
         providerFuture.addListener(
             {
                 if (disposed.get()) return@addListener
-                val provider = runCatching { providerFuture.get() }.getOrNull() ?: return@addListener
+                val provider = runCatching { providerFuture.get() }.getOrElse { err ->
+                    if (!disposed.get()) {
+                        currentOnCameraError(err.message ?: "Camera provider unavailable")
+                    }
+                    return@addListener
+                }
                 if (disposed.get()) return@addListener
                 val preview = Preview.Builder().build().also {
                     it.surfaceProvider = previewView.surfaceProvider
@@ -342,12 +380,16 @@ private fun QrCameraPreview(
                         val bitmap = BinaryBitmap(HybridBinarizer(source))
                         val result = runCatching { reader.decodeWithState(bitmap) }.getOrNull()
                         val text = result?.text?.trim()
-                        if (!text.isNullOrEmpty() && text.startsWith("https://accounts.firefox.com/pair", ignoreCase = true)) {
+                        if (!text.isNullOrEmpty() && !disposed.get() && MozillaSyncCoordinator.isValidPairingUrl(text)) {
                             if (delivered.compareAndSet(false, true)) {
-                                mainExecutor.execute { currentOnQrDecoded(text) }
+                                mainExecutor.execute {
+                                    if (!disposed.get()) currentOnQrDecoded(text)
+                                }
                             }
-                        } else if (!text.isNullOrEmpty() && lastRejectedQr.getAndSet(text) != text) {
-                            mainExecutor.execute { currentOnQrDecoded(text) }
+                        } else if (!text.isNullOrEmpty() && !disposed.get() && lastRejectedQr.getAndSet(text) != text) {
+                            mainExecutor.execute {
+                                if (!disposed.get()) currentOnQrDecoded(text)
+                            }
                         }
                     } finally {
                         reader.reset()
@@ -363,6 +405,10 @@ private fun QrCameraPreview(
                         preview,
                         analysis
                     )
+                }.onFailure { err ->
+                    if (!disposed.get()) {
+                        currentOnCameraError(err.message ?: "Unable to start camera on this device")
+                    }
                 }
             },
             mainExecutor

@@ -239,4 +239,38 @@ class ZapperControllerTest {
         assertTrue(applyScript.contains("swiftfox-zapped"))
         assertTrue(applyScript.contains("div.annoying { display: none !important; }"))
     }
+
+    @Test
+    fun zapperScriptsWrapInIifeAndSanitizerValidatesDelimitersAndLengthCap() {
+        val scripts = listOf(
+            controller.buildStartScript("#FF9147", bridgeToken = "t1"),
+            controller.buildStopScript(),
+            controller.buildSetScopeScript(2),
+            controller.buildAdjustScopeScript(1),
+            controller.buildZapOnceScript(),
+            controller.buildUndoLastZapScript(),
+            controller.buildConfirmBlockPermanentScript()
+        )
+        scripts.forEach { script ->
+            val trimmed = script.trim()
+            assertTrue("Expected IIFE start: $trimmed", trimmed.startsWith("(function(){"))
+            assertTrue("Expected IIFE end: $trimmed", trimmed.endsWith("})();"))
+        }
+
+        // Comma-separated unsafe segments and unbalanced quotes/brackets/parens must be rejected
+        assertNull(controller.sanitizeSelector("body, .ad"))
+        assertNull(controller.sanitizeSelector(".ad, html"))
+        assertNull(controller.sanitizeSelector("div[data-x=\"unclosed]"))
+        assertNull(controller.sanitizeSelector("div:not(.ad"))
+        assertNull(controller.sanitizeSelector(".ad]"))
+        assertNull(controller.sanitizeSelector(".ad)"))
+        assertNotNull(controller.sanitizeSelector("div.banner, aside.promo"))
+
+        // 1024-char selector length cap
+        val atCap = "div." + "a".repeat(1020)
+        val overCap = "div." + "a".repeat(1021)
+        assertEquals(1024, atCap.length)
+        assertNotNull(controller.sanitizeSelector(atCap))
+        assertNull(controller.sanitizeSelector(overCap))
+    }
 }

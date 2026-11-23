@@ -1,6 +1,7 @@
 package app.overbay.swiftfox.features.sharing
 
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
+import java.util.Locale
 
 data class SanitizedUrlResult(
     val url: String,
@@ -76,7 +77,7 @@ object CleanUrlSanitizer {
 
         for (pair in query.split('&')) {
             if (pair.isEmpty()) continue
-            val key = pair.substringBefore('=').lowercase()
+            val key = pair.substringBefore('=').lowercase(Locale.ROOT)
             val isYouTubeFeature = key == "feature" && isYouTube
             val isScopedSi = key == "si" && (isYouTube || isSpotify)
             val isTracking = key in exactTrackingParams ||

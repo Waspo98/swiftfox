@@ -6,7 +6,6 @@ sealed class SyncAccountState {
     data object SignedOut : SyncAccountState()
     data object Authenticating : SyncAccountState()
     data class Connected(
-        val uid: String? = null,
         val email: String? = null,
         val displayName: String? = null
     ) : SyncAccountState()
@@ -16,6 +15,11 @@ sealed class SyncAccountState {
         val message: String = "Session expired. Please sign in again."
     ) : SyncAccountState()
 }
+
+/**
+ * Permanent auth/configuration failure that periodic background workers should not retry.
+ */
+class SyncAuthRequiredException(message: String) : IllegalStateException(message)
 
 data class SyncStatusSnapshot(
     val accountState: SyncAccountState = SyncAccountState.SignedOut,

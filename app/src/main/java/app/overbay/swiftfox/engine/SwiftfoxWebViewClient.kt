@@ -38,8 +38,8 @@ data class HttpsUpgradeErrorPrompt(
 
 interface WebNavigationCallbacks {
     fun getHttpsOnlyEnabled(): Boolean
-    fun isHttpsBypassedForHost(host: String): Boolean
-    fun getExternalAppPolicy(host: String): ExternalAppLinkPolicy
+    fun isHttpsBypassedForHost(tabId: String, host: String): Boolean
+    fun getExternalAppPolicy(tabId: String, host: String): ExternalAppLinkPolicy
     fun shouldBlockNetworkRequest(
         tabId: String,
         requestUrl: String,
@@ -111,9 +111,27 @@ class SwiftfoxWebViewClient(
                 request.isForMainFrame &&
                 callbacks.getHttpsOnlyEnabled() &&
                 !OmniboxEngine.isLocalHostOrLan(rawHost) &&
-                !callbacks.isHttpsBypassedForHost(canonicalHost)
+                !callbacks.isHttpsBypassedForHost(tabId, canonicalHost)
             ) {
                 val upgraded = uri.buildUpon().scheme("https").build().toString()
+                val alreadyUpgraded = upgradedFromHttpByUrl.containsKey(upgraded) ||
+                    (canonicalHost.isNotBlank() && upgradedFromHttpByHost.containsKey(canonicalHost))
+                if (alreadyUpgraded) {
+                    // Server redirected https:// back down to http:// — break infinite loop and prompt user
+                    upgradedFromHttpByUrl.remove(upgraded)
+                    if (canonicalHost.isNotBlank()) {
+                        upgradedFromHttpByHost.remove(canonicalHost)
+                    }
+                    callbacks.onHttpsOnlyFailure(
+                        HttpsUpgradeErrorPrompt(
+                            tabId = tabId,
+                            host = canonicalHost.ifBlank { rawHost },
+                            originalHttpUrl = url,
+                            reason = "Site redirected HTTPS back to an unencrypted HTTP address"
+                        )
+                    )
+                    return true
+                }
                 registerProgrammaticHttpsUpgrade(upgraded, url)
                 view.loadUrl(upgraded)
                 return true
@@ -243,7 +261,7 @@ class SwiftfoxWebViewClient(
         targetHost: String
     ): Boolean {
         val currentHost = OmniboxEngine.extractHost(view.url.orEmpty())
-        val policy = callbacks.getExternalAppPolicy(targetHost.ifBlank { currentHost })
+        val policy = callbacks.getExternalAppPolicy(tabId, targetHost.ifBlank { currentHost })
         if (policy == ExternalAppLinkPolicy.ALWAYS_IN_SWIFTFOX) return false
 
         // Don't prompt on same-site in-page navigation if the user is already browsing that host
@@ -298,14 +316,7 @@ class SwiftfoxWebViewClient(
         }.getOrDefault(emptyList())
         if (candidates.isEmpty()) return null
 
-        val genericBrowserPackages = runCatching {
-            val probe = Intent(Intent.ACTION_VIEW, Uri.parse("https://example.invalid/")).apply {
-                addCategory(Intent.CATEGORY_BROWSABLE)
-            }
-            pm.queryIntentActivities(probe, PackageManager.MATCH_ALL)
-                .mapNotNull { it.activityInfo?.packageName }
-                .toSet()
-        }.getOrDefault(emptySet())
+        val genericBrowserPackages = cachedGenericBrowserPackages(pm)
 
         return candidates.firstOrNull { info ->
             val pkg = info.activityInfo?.packageName
@@ -333,7 +344,8 @@ class SwiftfoxWebViewClient(
         parsed.component = null
         parsed.selector = null
         parsed.addCategory(Intent.CATEGORY_BROWSABLE)
-        parsed.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REQUIRE_NON_BROWSER)
+        // Replace (not OR) flags so attacker-controlled intent:// launchFlags cannot survive
+        parsed.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REQUIRE_NON_BROWSER
 
         // Block targeting Swiftfox itself or local file/content/packageless http(s) URIs
         if (parsed.`package` == context.packageName) return null
@@ -364,7 +376,7 @@ class SwiftfoxWebViewClient(
             scheme == "http" &&
             callbacks.getHttpsOnlyEnabled() &&
             !OmniboxEngine.isLocalHostOrLan(rawHost) &&
-            !callbacks.isHttpsBypassedForHost(canonicalHost)
+            !callbacks.isHttpsBypassedForHost(tabId, canonicalHost)
         ) {
             val upgraded = parsedUri.buildUpon().scheme("https").build().toString()
             registerProgrammaticHttpsUpgrade(upgraded, fallbackUrl)
@@ -379,7 +391,7 @@ class SwiftfoxWebViewClient(
     private fun handleNonHttpUri(view: WebView, uri: Uri, url: String): Boolean {
         val context = view.context
         val host = OmniboxEngine.extractHost(view.url.orEmpty())
-        val policy = callbacks.getExternalAppPolicy(host)
+        val policy = callbacks.getExternalAppPolicy(tabId, host)
 
         val (parsedIntent, fallbackUrl) = sanitizeExternalIntent(context, uri, url) ?: return true
 
@@ -457,8 +469,10 @@ class SwiftfoxWebViewClient(
         if (finishedHost.isNotBlank()) {
             upgradedFromHttpByHost.remove(finishedHost)
         }
-        injectRuntimeHelpers(view, mediaTokenProvider())
+        // Rotate origin tokens inside onInjectOnPageFinished BEFORE capturing mediaTokenProvider()
+        // so cross-origin redirects and restored loads embed the active post-rotation media token.
         callbacks.onInjectOnPageFinished(tabId, safeUrl)
+        injectRuntimeHelpers(view, mediaTokenProvider())
         callbacks.onPageFinished(
             tabId = tabId,
             url = safeUrl,
@@ -583,6 +597,33 @@ class SwiftfoxWebViewClient(
     }
 
     companion object {
+        private const val BROWSER_CACHE_TTL_MS = 60_000L
+
+        @Volatile
+        private var browserPackagesCache: Set<String>? = null
+
+        @Volatile
+        private var browserPackagesCachedAtMs: Long = 0L
+
+        private fun cachedGenericBrowserPackages(pm: PackageManager): Set<String> {
+            val now = System.currentTimeMillis()
+            val cached = browserPackagesCache
+            if (cached != null && (now - browserPackagesCachedAtMs) < BROWSER_CACHE_TTL_MS) {
+                return cached
+            }
+            val fresh = runCatching {
+                val probe = Intent(Intent.ACTION_VIEW, Uri.parse("https://example.invalid/")).apply {
+                    addCategory(Intent.CATEGORY_BROWSABLE)
+                }
+                pm.queryIntentActivities(probe, PackageManager.MATCH_ALL)
+                    .mapNotNull { it.activityInfo?.packageName }
+                    .toSet()
+            }.getOrDefault(emptySet())
+            browserPackagesCache = fresh
+            browserPackagesCachedAtMs = now
+            return fresh
+        }
+
         // Minimal 1x1 transparent PNG so blocked ad/tracker images never render broken-image boxes
         private val TRANSPARENT_1X1_PNG = byteArrayOf(
             0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,

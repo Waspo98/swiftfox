@@ -19,6 +19,36 @@ class OmniboxEngineTest {
     }
 
     @Test
+    fun resolvesCustomSearchEngineAndFallsBackWhenInvalid() {
+        val customValid = BrowserSettings(
+            searchEngine = SearchEngineId.CUSTOM,
+            customSearchUrlTemplate = "https://kagi.com/search?q=%s"
+        )
+        assertEquals(
+            "https://kagi.com/search?q=swiftfox+browser",
+            OmniboxEngine.resolveInput("swiftfox browser", customValid)
+        )
+
+        val customMissingPlaceholder = BrowserSettings(
+            searchEngine = SearchEngineId.CUSTOM,
+            customSearchUrlTemplate = "https://kagi.com/search?q="
+        )
+        assertEquals(
+            "https://www.google.com/search?q=swiftfox",
+            OmniboxEngine.resolveInput("swiftfox", customMissingPlaceholder)
+        )
+
+        val customNonHttpScheme = BrowserSettings(
+            searchEngine = SearchEngineId.CUSTOM,
+            customSearchUrlTemplate = "javascript:alert(%s)"
+        )
+        assertEquals(
+            "https://www.google.com/search?q=swiftfox",
+            OmniboxEngine.resolveInput("swiftfox", customNonHttpScheme)
+        )
+    }
+
+    @Test
     fun resolvesDirectDomainAndLanIp() {
         val settings = BrowserSettings()
         assertEquals("https://github.com/overbay", OmniboxEngine.resolveInput("github.com/overbay", settings))

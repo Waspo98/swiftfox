@@ -10,6 +10,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.print.PrintDocumentAdapter
+import android.util.Log
 import android.view.View
 import android.webkit.CookieManager
 import android.webkit.URLUtil
@@ -149,7 +150,6 @@ class BrowserSession(
     private var currentCustomUa: String? = null
     private var currentJsEnabled: Boolean = true
     private var currentCookiesEnabled: Boolean = true
-    private var currentBlockThirdParty: Boolean = true
 
     val userAgentString: String
         get() = runCatching { webView.settings.userAgentString }.getOrDefault(defaultMobileUserAgent)
@@ -193,7 +193,11 @@ class BrowserSession(
         if (WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) {
             runCatching {
                 WebViewCompat.setProfile(webView, profileName)
+            }.onFailure { err ->
+                Log.w("BrowserSession", "Failed to bind WebView profile '$profileName': ${err.message}")
             }
+        } else if (profileName != DEFAULT_PROFILE_NAME) {
+            Log.w("BrowserSession", "WebView MULTI_PROFILE unsupported; cannot isolate '$profileName'")
         }
     }
 
@@ -229,7 +233,8 @@ class BrowserSession(
 
         runCatching {
             val cm = cookieManagerForProfile()
-            cm.setAcceptCookie(true)
+            // Do not blindly call cm.setAcceptCookie(true) here because CookieManager.setAcceptCookie
+            // is profile-wide and background tab creation would override an active tab's site block.
             cm.setAcceptThirdPartyCookies(webView, false)
         }
     }
@@ -247,6 +252,7 @@ class BrowserSession(
             if (url.startsWith("blob:", ignoreCase = true)) {
                 triggerBlobDownload(url, URLUtil.guessFileName(url, contentDisposition, mimeType), mimeType)
             } else if (url.startsWith("data:", ignoreCase = true)) {
+                if (url.length > MAX_BLOB_BASE64_CHARS + 128) return@setDownloadListener
                 val meta = if (url.length >= 5) url.substring(5).substringBefore(",") else ""
                 val guessedMime = meta.substringBefore(";").trim().ifBlank { "application/octet-stream" }
                 val safeName = URLUtil.guessFileName(url, contentDisposition, guessedMime)
@@ -532,7 +538,6 @@ class BrowserSession(
         currentCustomUa = normalizedCustomUa
         currentJsEnabled = javascriptEnabled
         currentCookiesEnabled = cookiesEnabled
-        currentBlockThirdParty = blockThirdParty
 
         webView.settings.apply {
             javaScriptEnabled = javascriptEnabled

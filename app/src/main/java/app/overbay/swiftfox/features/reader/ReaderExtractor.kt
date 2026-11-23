@@ -35,6 +35,11 @@ class ReaderExtractor(private val context: Context?) {
         readAsset("js/readability_bridge.js")
     }
 
+    fun warmUpAssets() {
+        readabilityJs
+        bridgeJs
+    }
+
     private fun readAsset(assetPath: String): String {
         val appContext = context?.applicationContext ?: context ?: return ""
         return runCatching {
@@ -96,6 +101,10 @@ class ReaderExtractor(private val context: Context?) {
     fun parseExtractionResult(rawJsResult: String?): ReaderArticle? {
         val trimmed = rawJsResult?.trim() ?: return null
         if (trimmed.isEmpty() || trimmed == "null" || trimmed == "undefined") {
+            return null
+        }
+        // Guard before decoding the outer JSON string literal to avoid unbounded allocation
+        if (trimmed.length > MAX_EXTRACTION_CHARS * 2) {
             return null
         }
 

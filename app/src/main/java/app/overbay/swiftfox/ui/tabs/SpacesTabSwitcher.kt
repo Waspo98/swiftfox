@@ -21,7 +21,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -713,13 +712,14 @@ fun UnfoldedSpacesSidebar(
 
             // Open tabs in active Space
             LazyColumn(
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                horizontalAlignment = if (expanded) Alignment.Start else Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(
                     items = state.visibleTabs,
                     key = { it.id },
-                    contentType = { "sidebar_tab" }
+                    contentType = { if (expanded) "sidebar_tab_expanded" else "sidebar_tab_collapsed" }
                 ) { tab ->
                     val isActive = tab.id == state.activeTabId
                     if (expanded) {

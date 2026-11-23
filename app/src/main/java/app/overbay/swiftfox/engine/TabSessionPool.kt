@@ -41,7 +41,10 @@ class TabSessionPool(
         }
     }
 
-    fun hibernateBackgroundSessions(keepTabId: String? = currentActiveTabId) {
+    fun hibernateBackgroundSessions(
+        keepTabId: String? = currentActiveTabId,
+        evictThumbnails: Boolean = true
+    ) {
         val evicted = mutableListOf<BrowserSession>()
         synchronized(lock) {
             val keysToEvict = warmSessions.entries
@@ -51,11 +54,14 @@ class TabSessionPool(
                 .map { it.key }
             for (key in keysToEvict) {
                 val session = warmSessions.remove(key) ?: continue
-                session.captureThumbnail()?.let { thumbnails[key] = it }
                 val bundle = Bundle()
                 session.saveState(bundle)
                 hibernatedBundles[key] = bundle
                 evicted += session
+            }
+            if (evictThumbnails) {
+                val thumbKeysToClear = thumbnails.keys.filter { it != keepTabId }
+                thumbKeysToClear.forEach { thumbnails.remove(it) }
             }
         }
         evicted.forEach { session ->
@@ -83,6 +89,17 @@ class TabSessionPool(
         snapshot.forEach { it.rebindContext(context) }
     }
 
+    fun unbindHostActivity(activityContext: Context, fallbackApplicationContext: Context) {
+        val snapshot = synchronized(lock) {
+            if (currentHostContext !== activityContext) {
+                return
+            }
+            currentHostContext = fallbackApplicationContext
+            warmSessions.values.toList()
+        }
+        snapshot.forEach { it.rebindContext(fallbackApplicationContext) }
+    }
+
     fun getOrCreate(
         tabId: String,
         isPrivate: Boolean,
@@ -90,20 +107,33 @@ class TabSessionPool(
         context: Context,
         callbacks: SessionHostCallbacks
     ): BrowserSession {
-        var hostCtx: Context = context
-        val existing = synchronized(lock) {
-            hostCtx = currentHostContext ?: context
-            warmSessions[tabId]
-        }
-        if (existing != null) {
-            existing.rebindContext(hostCtx)
-            return existing
-        }
-
         val profileName = when {
             isPrivate -> BrowserSession.PRIVATE_PROFILE_NAME
             !spaceContainerProfile.isNullOrBlank() -> spaceContainerProfile
             else -> BrowserSession.DEFAULT_PROFILE_NAME
+        }
+
+        var hostCtx: Context = context
+        var staleProfileSession: BrowserSession? = null
+        val existing = synchronized(lock) {
+            hostCtx = currentHostContext ?: context
+            val current = warmSessions[tabId]
+            if (current != null && current.profileName != profileName) {
+                warmSessions.remove(tabId)
+                hibernatedBundles.remove(tabId)
+                staleProfileSession = current
+                null
+            } else {
+                current
+            }
+        }
+        staleProfileSession?.let { stale ->
+            (stale.webView.parent as? ViewGroup)?.removeView(stale.webView)
+            stale.destroy()
+        }
+        if (existing != null) {
+            existing.rebindContext(hostCtx)
+            return existing
         }
 
         val created = BrowserSession(
@@ -119,10 +149,14 @@ class TabSessionPool(
         val evicted = mutableListOf<BrowserSession>()
         synchronized(lock) {
             val raceWinner = warmSessions[tabId]
-            if (raceWinner != null) {
+            if (raceWinner != null && raceWinner.profileName == profileName) {
                 duplicateCreated = true
                 winner = raceWinner
             } else {
+                if (raceWinner != null) {
+                    warmSessions.remove(tabId)
+                    evicted += raceWinner
+                }
                 hibernatedBundles.remove(tabId)?.let { saved ->
                     created.restoreState(saved)
                 }
@@ -212,6 +246,7 @@ class TabSessionPool(
     fun clearAllProfilesData(containerProfiles: Collection<String>) {
         val warmSnapshot = synchronized(lock) {
             hibernatedBundles.clear()
+            thumbnails.clear()
             warmSessions.values.toList()
         }
         runCatching {
@@ -242,6 +277,7 @@ class TabSessionPool(
             runCatching {
                 session.webView.clearCache(true)
                 session.webView.clearFormData()
+                session.webView.clearHistory()
             }
         }
     }

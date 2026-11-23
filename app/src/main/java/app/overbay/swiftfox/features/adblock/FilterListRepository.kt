@@ -27,13 +27,15 @@ class FilterListRepository(
     private val client: OkHttpClient = defaultHttpClient()
 ) {
     private val appContext = context.applicationContext ?: context
-    // Only serializes full network sync passes; toggling/deleting lists never waits on slow downloads
+    // Serializes network sync passes and structural add/delete mutations so deleted custom lists
+    // cannot be resurrected by an in-flight download or duplicated by double-taps.
     private val bulkUpdateMutex = Mutex()
 
     suspend fun updateAllEnabled(): Int = bulkUpdateMutex.withLock {
         val enabled = dao.getEnabled()
         var checkedOrUpdated = 0
         var anyContentChanged = false
+        var firstFailure: Throwable? = null
 
         enabled.forEach { entity ->
             val outcome = downloadAndPersistList(entity)
@@ -42,6 +44,8 @@ class FilterListRepository(
                 if (result.contentChanged) {
                     anyContentChanged = true
                 }
+            }.onFailure { err ->
+                if (firstFailure == null) firstFailure = err
             }
         }
 
@@ -51,6 +55,10 @@ class FilterListRepository(
                 enabledLists = allLists.filter { it.enabled },
                 hasAnyConfiguredLists = allLists.isNotEmpty()
             )
+        }
+        val failure = firstFailure
+        if (enabled.isNotEmpty() && checkedOrUpdated == 0 && failure != null) {
+            throw failure
         }
         checkedOrUpdated
     }
@@ -66,8 +74,11 @@ class FilterListRepository(
             return Result.failure(IllegalArgumentException("Filter list URL must use http:// or https://"))
         }
 
-        val duplicate = dao.getAll().any { it.url.trim().equals(cleanUrl, ignoreCase = true) }
-        if (duplicate) {
+        val existingLists = dao.getAll()
+        if (existingLists.count { !it.isBuiltIn } >= MAX_CUSTOM_FILTER_LISTS) {
+            return Result.failure(IllegalArgumentException("Maximum of $MAX_CUSTOM_FILTER_LISTS custom filter lists reached"))
+        }
+        if (existingLists.any { it.url.trim().equals(cleanUrl, ignoreCase = true) }) {
             return Result.failure(IllegalArgumentException("This filter list URL is already added"))
         }
 
@@ -86,25 +97,34 @@ class FilterListRepository(
                 if (content.isNullOrBlank()) {
                     return@fold Result.failure(IllegalStateException("Unexpected empty response for custom list"))
                 }
-                val written = withContext(Dispatchers.IO) {
-                    writeAtomic(listFile(draft.id), content)
+                bulkUpdateMutex.withLock {
+                    val latestAll = dao.getAll()
+                    if (latestAll.any { it.url.trim().equals(cleanUrl, ignoreCase = true) }) {
+                        return@withLock Result.failure(IllegalArgumentException("This filter list URL is already added"))
+                    }
+                    if (latestAll.count { !it.isBuiltIn } >= MAX_CUSTOM_FILTER_LISTS) {
+                        return@withLock Result.failure(IllegalArgumentException("Maximum of $MAX_CUSTOM_FILTER_LISTS custom filter lists reached"))
+                    }
+                    val written = withContext(Dispatchers.IO) {
+                        writeAtomic(listFile(draft.id), content)
+                    }
+                    if (!written) {
+                        return@withLock Result.failure(IllegalStateException("Could not save filter list to storage"))
+                    }
+                    val saved = draft.copy(
+                        ruleCount = AdblockEngine.countFilterRules(content),
+                        lastUpdatedAt = System.currentTimeMillis(),
+                        etag = fetched.etag,
+                        lastError = null
+                    )
+                    dao.upsert(saved)
+                    val allLists = dao.getAll()
+                    engine.rebuildFromLists(
+                        enabledLists = allLists.filter { it.enabled },
+                        hasAnyConfiguredLists = allLists.isNotEmpty()
+                    )
+                    Result.success(saved)
                 }
-                if (!written) {
-                    return@fold Result.failure(IllegalStateException("Could not save filter list to storage"))
-                }
-                val saved = draft.copy(
-                    ruleCount = AdblockEngine.countFilterRules(content),
-                    lastUpdatedAt = System.currentTimeMillis(),
-                    etag = fetched.etag,
-                    lastError = null
-                )
-                dao.upsert(saved)
-                val allLists = dao.getAll()
-                engine.rebuildFromLists(
-                    enabledLists = allLists.filter { it.enabled },
-                    hasAnyConfiguredLists = allLists.isNotEmpty()
-                )
-                Result.success(saved)
             },
             onFailure = { error ->
                 Result.failure(error)
@@ -135,12 +155,11 @@ class FilterListRepository(
         }
     }
 
-    suspend fun deleteCustomList(id: String) {
-        val existing = dao.getById(id) ?: return
-        if (existing.isBuiltIn) return
+    suspend fun deleteCustomList(id: String) = bulkUpdateMutex.withLock {
+        val existing = dao.getById(id) ?: return@withLock
+        if (existing.isBuiltIn) return@withLock
         withContext(Dispatchers.IO) {
             listFile(id).delete()
-            File(listsDir(), "$id.txt.tmp").delete()
         }
         dao.deleteById(id)
         val allLists = dao.getAll()
@@ -158,7 +177,13 @@ class FilterListRepository(
             }
         }
         if (needsInitialSync) {
-            updateAllEnabled()
+            try {
+                updateAllEnabled()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Throwable) {
+                // Starter filters remain active; periodic WorkManager sync will retry.
+            }
         }
     }
 
@@ -332,6 +357,7 @@ class FilterListRepository(
 
     companion object {
         private const val MAX_FILTER_LIST_BYTES = 16 * 1024 * 1024
+        private const val MAX_CUSTOM_FILTER_LISTS = 20
 
         private fun defaultHttpClient(): OkHttpClient =
             OkHttpClient.Builder()

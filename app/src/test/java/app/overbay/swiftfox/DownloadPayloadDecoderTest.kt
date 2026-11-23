@@ -2,7 +2,11 @@ package app.overbay.swiftfox
 
 import app.overbay.swiftfox.features.downloads.DownloadCoordinator
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
+import java.io.IOException
 import java.nio.charset.StandardCharsets
 
 class DownloadPayloadDecoderTest {
@@ -57,5 +61,67 @@ class DownloadPayloadDecoderTest {
         val sanitized = DownloadCoordinator.sanitizeFileName(longName)
         assertEquals(180, sanitized.length)
         assertEquals(true, sanitized.endsWith(".pdf"))
+
+        // Quoted, unquoted, and RFC 5987 non-UTF8 Content-Disposition variants
+        assertEquals(
+            "quarterly \"final\".pdf",
+            DownloadCoordinator.extractContentDispositionFileName(
+                """attachment; filename="quarterly \"final\".pdf""""
+            )
+        )
+        assertEquals(
+            "archive.zip",
+            DownloadCoordinator.extractContentDispositionFileName("attachment; filename=archive.zip; size=42")
+        )
+        assertEquals(
+            "£ rates.pdf",
+            DownloadCoordinator.extractContentDispositionFileName(
+                "attachment; filename*=ISO-8859-1''%A3%20rates.pdf"
+            )
+        )
+    }
+
+    @Test
+    fun decodesPercentEncodedBase64RejectsMalformedAndEnforcesCapsAndSanitizers() {
+        // Percent-encoded base64 ("ab>" -> "YWI+" -> "YWI%2B")
+        val (mime, bytes) = DownloadCoordinator.decodeDataOrBase64Payload(
+            payload = "data:text/plain;base64,YWI%2B",
+            fallbackMime = "application/octet-stream"
+        )
+        assertEquals("text/plain", mime)
+        assertEquals("ab>", String(bytes, StandardCharsets.UTF_8))
+
+        // Missing comma in data: URI must fail explicitly
+        try {
+            DownloadCoordinator.decodeDataOrBase64Payload("data:text/plain;base64", "application/octet-stream")
+            fail("Expected IllegalArgumentException for missing comma")
+        } catch (_: IllegalArgumentException) {
+            // Expected
+        }
+
+        // Oversized payload > 25 MB cap must throw IOException
+        val hugePayload = "data:application/octet-stream;base64," + "A".repeat((DownloadCoordinator.MAX_DATA_DOWNLOAD_BYTES * 4 / 3) + 2048)
+        try {
+            DownloadCoordinator.decodeDataOrBase64Payload(hugePayload, "application/octet-stream")
+            fail("Expected IOException for oversized download payload")
+        } catch (_: IOException) {
+            // Expected
+        }
+
+        // Filename traversal, dotfile, and control-char sanitization
+        val traversal = DownloadCoordinator.sanitizeFileName("../../etc\\passwd\u0000.txt")
+        assertFalse(traversal.contains(".."))
+        assertFalse(traversal.contains("/"))
+        assertFalse(traversal.contains("\\"))
+        assertFalse(traversal.contains("\u0000"))
+
+        val dotOnly = DownloadCoordinator.sanitizeFileName("...")
+        assertTrue(dotOnly.startsWith("swiftfox_download_"))
+
+        // Header sanitization removes CRLF and non-ASCII characters
+        assertEquals(
+            "Swiftfox/1.0 (Android)",
+            DownloadCoordinator.sanitizeHeaderValue("  Swiftfox/1.0\r\n (Android)🦊  ")
+        )
     }
 }

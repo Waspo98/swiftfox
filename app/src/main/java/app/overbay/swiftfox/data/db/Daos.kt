@@ -56,9 +56,6 @@ interface EssentialDao {
 @Dao
 interface TabDao {
     @Query("SELECT * FROM tabs WHERE isPrivate = 0 ORDER BY isPinned DESC, sortOrder ASC, lastAccessedAt DESC")
-    fun observeNormalTabs(): Flow<List<TabEntity>>
-
-    @Query("SELECT * FROM tabs WHERE isPrivate = 0 ORDER BY isPinned DESC, sortOrder ASC, lastAccessedAt DESC")
     suspend fun getNormalTabs(): List<TabEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -157,9 +154,6 @@ interface SiteOverrideDao {
 
     @Query("DELETE FROM site_overrides WHERE host = :host")
     suspend fun deleteByHost(host: String)
-
-    @Query("DELETE FROM site_overrides")
-    suspend fun clearAll()
 }
 
 @Dao
@@ -209,17 +203,11 @@ interface ZappedRuleDao {
     @Query("SELECT * FROM zapped_rules ORDER BY host ASC, createdAt DESC")
     fun observeAll(): Flow<List<ZappedRuleEntity>>
 
-    @Query("SELECT * FROM zapped_rules WHERE host = :host ORDER BY createdAt DESC")
-    fun observeByHost(host: String): Flow<List<ZappedRuleEntity>>
-
     @Query("SELECT * FROM zapped_rules WHERE host = :host ORDER BY createdAt ASC")
     suspend fun getForHost(host: String): List<ZappedRuleEntity>
 
     @Query("SELECT * FROM zapped_rules WHERE host = :host AND enabled = 1 ORDER BY createdAt ASC")
     suspend fun getEnabledForHost(host: String): List<ZappedRuleEntity>
-
-    @Query("SELECT * FROM zapped_rules WHERE enabled = 1 ORDER BY host ASC, createdAt ASC")
-    suspend fun getAllEnabled(): List<ZappedRuleEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(rule: ZappedRuleEntity)

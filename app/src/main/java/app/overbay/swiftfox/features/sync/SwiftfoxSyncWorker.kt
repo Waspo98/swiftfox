@@ -24,7 +24,15 @@ class SwiftfoxSyncWorker(
         val runner = SyncWorkerBridge.onRunSync ?: return Result.success()
         return runner.invoke().fold(
             onSuccess = { Result.success() },
-            onFailure = { if (runAttemptCount < 2) Result.retry() else Result.failure() }
+            onFailure = { err ->
+                if (err is SyncAuthRequiredException) {
+                    Result.success()
+                } else if (runAttemptCount < 2) {
+                    Result.retry()
+                } else {
+                    Result.failure()
+                }
+            }
         )
     }
 

@@ -61,6 +61,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 
 @Composable
 fun OmniboxOverlay(
+    isVisible: Boolean = true,
     query: String,
     searchEngineLabel: String,
     suggestions: List<OmniboxSuggestion>,
@@ -70,9 +71,10 @@ fun OmniboxOverlay(
     onDismiss: () -> Unit
 ) {
     val focusRequester = remember { FocusRequester() }
+    val quickBangs = remember { OmniboxEngine.bangs.take(7) }
 
     // TextFieldState owns the IME buffer synchronously so fast typing bursts never race with
-    // parent recompositions or drop characters; select-all on initial open when prefilled.
+    // parent recompositions or drop characters; select-all on initial open or rapid reopen.
     val textFieldState = rememberTextFieldState(
         initialText = query,
         initialSelection = if (query.isNotEmpty()) TextRange(0, query.length) else TextRange.Zero
@@ -101,8 +103,17 @@ fun OmniboxOverlay(
         }
     }
 
-    LaunchedEffect(Unit) {
-        focusRequester.requestFocus()
+    LaunchedEffect(isVisible) {
+        if (isVisible) {
+            if (query.isNotEmpty()) {
+                textFieldState.edit {
+                    replace(0, length, query)
+                    selection = TextRange(0, query.length)
+                }
+                lastSyncedExternalQuery = query
+            }
+            focusRequester.requestFocus()
+        }
     }
 
     Surface(
@@ -228,7 +239,7 @@ fun OmniboxOverlay(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(
-                    items = OmniboxEngine.bangs.take(7),
+                    items = quickBangs,
                     key = { it.name },
                     contentType = { "bang_shortcut" }
                 ) { bang ->

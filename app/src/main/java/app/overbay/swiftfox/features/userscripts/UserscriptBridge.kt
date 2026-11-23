@@ -39,6 +39,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.ResponseBody
 import java.io.ByteArrayOutputStream
 import java.io.IOException
+import java.io.InterruptedIOException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import java.util.Locale
@@ -77,6 +78,10 @@ class UserscriptBridge internal constructor(
         runCatching {
             ctx.assets.open("js/gm_shim.js").bufferedReader(Charsets.UTF_8).use { it.readText() }
         }.getOrDefault("")
+    }
+
+    fun warmUpAssets() {
+        gmShimJs
     }
 
     fun buildShimInitScript(
@@ -152,9 +157,8 @@ class UserscriptBridge internal constructor(
                 if (urlGuardJs.isNotEmpty()) {
                     append(urlGuardJs)
                 }
-                append("    var __sfRan = window.__swiftfoxRanUserscripts || (window.__swiftfoxRanUserscripts = Object.create(null));\n")
-                append("    if (__sfRan[").append(runKeyLit).append("]) return;\n")
-                append("    __sfRan[").append(runKeyLit).append("] = true;\n")
+                append("    if (typeof __sfRt.claimRun === 'function' && !__sfRt.claimRun(")
+                append(tokenLit).append(", ").append(runKeyLit).append(")) return;\n")
                 append("    var __sfApi = __sfRt.createApi(")
                 append(tokenLit).append(", ")
                 append(scriptIdLit).append(", ")
@@ -583,23 +587,29 @@ class UserscriptBridge internal constructor(
             } catch (e: CancellationException) {
                 currentCall?.cancel()
                 throw e
-            } catch (e: SocketTimeoutException) {
-                if (currentCall?.isCanceled() != true) {
+            } catch (e: InterruptedIOException) {
+                // OkHttp callTimeout cancels the call internally and throws InterruptedIOException("timeout");
+                // only suppress callbacks when explicitly aborted via handleAbortXmlHttpRequest().
+                val wasUserAborted = abortedKeys.remove(callKey)
+                if (!wasUserAborted) {
+                    val isTimeout = e is SocketTimeoutException ||
+                        e.message?.contains("timeout", ignoreCase = true) == true
                     dispatchResolveXhr(
                         bridgeToken = bridgeToken,
                         runtimeKey = runtimeKey,
                         reqId = reqId,
-                        eventName = "ontimeout",
+                        eventName = if (isTimeout) "ontimeout" else "onerror",
                         payload = errorPayload(
-                            statusText = "Request timed out",
+                            statusText = if (isTimeout) "Request timed out" else (e.message ?: "Network error"),
                             finalUrl = currentUrl.toString(),
-                            error = e.message ?: "Timed out"
+                            error = e.message ?: if (isTimeout) "Timed out" else "Network error"
                         ),
                         onJsCallback = onJsCallback
                     )
                 }
             } catch (e: IOException) {
-                if (currentCall?.isCanceled() != true) {
+                val wasUserAborted = abortedKeys.remove(callKey)
+                if (!wasUserAborted) {
                     dispatchResolveXhr(
                         bridgeToken = bridgeToken,
                         runtimeKey = runtimeKey,
@@ -614,7 +624,8 @@ class UserscriptBridge internal constructor(
                     )
                 }
             } catch (e: Throwable) {
-                if (currentCall?.isCanceled() != true) {
+                val wasUserAborted = abortedKeys.remove(callKey)
+                if (!wasUserAborted) {
                     dispatchResolveXhr(
                         bridgeToken = bridgeToken,
                         runtimeKey = runtimeKey,
@@ -811,7 +822,7 @@ class UserscriptBridge internal constructor(
     }
 
     private fun requiresRequestBody(method: String): Boolean = when (method) {
-        "POST", "PUT", "PATCH", "PROPPATCH", "REPORT" -> true
+        "POST", "PUT", "PATCH" -> true
         else -> false
     }
 

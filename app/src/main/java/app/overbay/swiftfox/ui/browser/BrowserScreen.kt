@@ -24,19 +24,24 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.windowInsetsTopHeight
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -88,8 +93,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -140,7 +148,7 @@ import java.util.Locale
 @Composable
 fun BrowserScreen(
     state: BrowserUiState,
-    thumbnails: TabThumbnailsSnapshot,
+    thumbnailsFlow: StateFlow<TabThumbnailsSnapshot>,
     viewModel: BrowserViewModel,
     onShareUrl: (String, Int) -> Unit,
     onCopyText: (String) -> Unit,
@@ -151,15 +159,21 @@ fun BrowserScreen(
 ) {
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
+    val activeTab = state.activeTab
+    val isSiteRulesVisible = state.isSiteRulesOpen &&
+        activeTab != null &&
+        !activeTab.isStartPage &&
+        activeTab.displayHost.isNotBlank()
+    val isModalSheetShowing = state.isQuickControlsOpen || isSiteRulesVisible
 
-    LaunchedEffect(state.snackbarId, state.snackbarMessage) {
+    LaunchedEffect(state.snackbarId, state.snackbarMessage, isModalSheetShowing) {
         val msg = state.snackbarMessage
-        if (msg == null) {
+        if (msg == null || isModalSheetShowing) {
             snackbarHostState.currentSnackbarData?.dismiss()
             return@LaunchedEffect
         }
         snackbarHostState.currentSnackbarData?.dismiss()
-        val canUndo = state.recentlyClosedTab != null || state.snackbarUndoZapper
+        val canUndo = state.recentlyClosedTab != null
         val actionLabel = if (canUndo) "Undo" else null
         val result = snackbarHostState.showSnackbar(
             message = msg,
@@ -167,10 +181,10 @@ fun BrowserScreen(
             duration = SnackbarDuration.Short
         )
         if (result == SnackbarResult.ActionPerformed) {
-            when {
-                state.snackbarUndoZapper -> viewModel.undoZapperTemporaryZap()
-                state.recentlyClosedTab != null -> viewModel.undoCloseTab()
-                else -> viewModel.clearSnackbar()
+            if (state.recentlyClosedTab != null) {
+                viewModel.undoCloseTab()
+            } else {
+                viewModel.clearSnackbar()
             }
         } else {
             viewModel.clearSnackbar()
@@ -192,23 +206,23 @@ fun BrowserScreen(
         (state.activeTab?.canGoBack == true)
 
     BackHandler(enabled = shouldHandleBack) {
+        // Match visual Z-order: top-most visible overlay/sheet closes before hidden Zapper underneath
         when {
             state.isFullscreenVideo -> onExitFullscreenVideo()
             state.fxaAuthUrl != null -> viewModel.cancelFxAAuth()
             state.isQrPairingOpen -> viewModel.closeQrPairing()
-            state.zapper.isActive -> viewModel.stopElementZapper()
+            state.isSiteRulesOpen -> viewModel.toggleSiteRulesSheet(false)
+            state.isQuickControlsOpen -> viewModel.toggleQuickControls(false)
+            state.isOmniboxFocused -> viewModel.dismissOmnibox()
             state.isReaderLoading -> viewModel.cancelReaderLoading()
             state.readerArticle != null -> viewModel.closeReaderMode()
-            state.isSiteRulesOpen -> viewModel.toggleSiteRulesSheet(false)
-            state.isOmniboxFocused -> viewModel.dismissOmnibox()
-            state.isQuickControlsOpen -> viewModel.toggleQuickControls(false)
             state.activeOverlay != BrowserOverlay.NONE -> viewModel.navigateBackFromOverlay()
+            state.zapper.isActive -> viewModel.stopElementZapper()
             state.findInPage.visible -> viewModel.closeFindInPage()
             else -> viewModel.goBack()
         }
     }
 
-    val activeTab = state.activeTab
     val activeSession: BrowserSession? = if (activeTab != null && !activeTab.isStartPage) {
         remember(activeTab.id, activeTab.sessionRevision) { viewModel.ensureSession(activeTab, context) }
     } else {
@@ -370,6 +384,7 @@ fun BrowserScreen(
         ) { overlay ->
             when (overlay) {
             BrowserOverlay.TAB_SWITCHER -> {
+                val thumbnails by thumbnailsFlow.collectAsStateWithLifecycle()
                 SpacesTabSwitcher(
                     state = state,
                     thumbnails = thumbnails,
@@ -562,6 +577,7 @@ fun BrowserScreen(
             exit = if (reduceMotion) ExitTransition.None else fadeOut()
         ) {
             OmniboxOverlay(
+                isVisible = state.isOmniboxFocused,
                 query = state.omniboxQuery,
                 searchEngineLabel = state.settings.searchEngine.label,
                 suggestions = state.omniboxSuggestions,
@@ -613,19 +629,26 @@ fun BrowserScreen(
                 },
                 onCycleToolbarPlacement = { viewModel.cycleCurrentPostureToolbarPlacement() },
                 onOpenOverlay = { viewModel.setOverlay(it) },
-                onSendToZenSpace = { viewModel.sendActiveTabToZenSpace(asEssential = false) }
+                onSendToZenSpace = { viewModel.sendActiveTabToZenSpace() },
+                onClearSnackbar = { viewModel.clearSnackbar() }
             )
         }
 
         // Per-Site Rules & Overrides Sheet
-        if (state.isSiteRulesOpen && activeTab != null && !activeTab.isStartPage && activeTab.displayHost.isNotBlank()) {
-            val host = OmniboxEngine.normalizeHost(activeTab.displayHost)
-            val rulesForHost = if (activeTab.isPrivate) {
-                (state.zappedRules.filter { it.host.equals(host, ignoreCase = true) } +
-                    state.privateZappedRules[host].orEmpty())
+        if (isSiteRulesVisible) {
+            val siteRulesTab = activeTab
+            val host = OmniboxEngine.normalizeHost(siteRulesTab.displayHost)
+            val persistentRulesForHost = state.zappedRules.filter { it.host.equals(host, ignoreCase = true) }
+            val rulesForHost = if (siteRulesTab.isPrivate) {
+                (persistentRulesForHost + state.privateZappedRules[host].orEmpty())
                     .distinctBy { it.id }
             } else {
-                state.zappedRules.filter { it.host.equals(host, ignoreCase = true) }
+                persistentRulesForHost
+            }
+            val persistentRuleIds = if (siteRulesTab.isPrivate) {
+                persistentRulesForHost.mapTo(mutableSetOf()) { it.id }
+            } else {
+                emptySet()
             }
             SiteRulesSheet(
                 host = host,
@@ -646,7 +669,12 @@ fun BrowserScreen(
                     viewModel.toggleSiteRulesSheet(false)
                 },
                 globalAdblockEnabled = state.settings.adblockEnabled,
-                isNativeRust = state.adblockStatus.isNativeRust
+                isNativeRust = state.adblockStatus.isNativeRust,
+                isPrivate = siteRulesTab.isPrivate,
+                persistentRuleIds = persistentRuleIds,
+                snackbarMessage = state.snackbarMessage,
+                snackbarId = state.snackbarId,
+                onClearSnackbar = { viewModel.clearSnackbar() }
             )
         }
 
@@ -717,6 +745,7 @@ fun BrowserScreen(
 
         // Root SnackbarHost rendered above all fullscreen overlays so Sync, Bookmarks, and Settings feedback is always visible
         val snackbarBottomPadding = when {
+            state.activeOverlay == BrowserOverlay.TAB_SWITCHER -> 88.dp
             isAnyFullscreenOverlayOpen -> 16.dp
             state.zapper.isActive && hasBottomToolbar -> 156.dp
             state.zapper.isActive -> 100.dp
@@ -887,8 +916,7 @@ fun BrowserShellLayout(
                             onSelectSpace = onSelectSpace,
                             onSelectTab = onSelectTab,
                             onAddEssential = onAddEssential,
-                            onRemoveEssential = onRemoveEssential,
-                            applyBottomNavPadding = false
+                            onRemoveEssential = onRemoveEssential
                         )
                     } else {
                         webContent()
@@ -969,7 +997,6 @@ fun BrowserShellLayout(
                             onBlockPermanently = onBlockPermanently,
                             onUndoTemporaryZap = onUndoTemporaryZap,
                             onDone = onStopZapper,
-                            applyNavigationBarPadding = false,
                             modifier = Modifier.align(if (dockTop) Alignment.TopCenter else Alignment.BottomCenter)
                         )
                     }
@@ -1056,6 +1083,8 @@ private fun FullOmniboxToolbar(
     val horizontalSwipeThresholdPx = with(density) { 48.dp.toPx() }
     val verticalSwipeThresholdPx = with(density) { 40.dp.toPx() }
     val dragAccum = remember { DragAccum() }
+    val currentOnSwitchAdjacentTab by rememberUpdatedState(onSwitchAdjacentTab)
+    val currentOnOpenTabSwitcher by rememberUpdatedState(onOpenTabSwitcher)
 
     val swipeModifier = if (state.settings.swipeUrlBarSwitchTabs) {
         Modifier.pointerInput(isTop, state.visibleTabs.size, horizontalSwipeThresholdPx, verticalSwipeThresholdPx) {
@@ -1068,11 +1097,11 @@ private fun FullOmniboxToolbar(
                     if (kotlin.math.abs(dragAccum.x) > horizontalSwipeThresholdPx &&
                         kotlin.math.abs(dragAccum.x) > kotlin.math.abs(dragAccum.y)
                     ) {
-                        if (dragAccum.x < 0) onSwitchAdjacentTab(1) else onSwitchAdjacentTab(-1)
+                        if (dragAccum.x < 0) currentOnSwitchAdjacentTab(1) else currentOnSwitchAdjacentTab(-1)
                     } else if ((isTop && dragAccum.y > verticalSwipeThresholdPx) ||
                         (!isTop && dragAccum.y < -verticalSwipeThresholdPx)
                     ) {
-                        onOpenTabSwitcher()
+                        currentOnOpenTabSwitcher()
                     }
                     dragAccum.x = 0f
                     dragAccum.y = 0f
@@ -1095,7 +1124,18 @@ private fun FullOmniboxToolbar(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .then(if (isTop) Modifier.statusBarsPadding() else Modifier.navigationBarsPadding())
+                .windowInsetsPadding(
+                    WindowInsets.displayCutout.only(WindowInsetsSides.Horizontal)
+                )
+                .then(
+                    if (isTop) {
+                        Modifier
+                            .statusBarsPadding()
+                            .windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Horizontal))
+                    } else {
+                        Modifier.navigationBarsPadding()
+                    }
+                )
         ) {
             if (!isTop) {
                 ToolbarProgressSlot(
@@ -1607,8 +1647,10 @@ private fun FindInPageBar(
             }
         }
     }
-    LaunchedEffect(Unit) {
-        focusRequester.requestFocus()
+    LaunchedEffect(state.visible) {
+        if (state.visible) {
+            focusRequester.requestFocus()
+        }
     }
 
     Surface(

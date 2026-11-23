@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -69,6 +70,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -84,6 +86,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -179,8 +182,36 @@ private val LineSpacingOptions = listOf(
 private object ReaderImageCache {
     private const val MAX_IMAGE_BYTES = 8 * 1024 * 1024
     private const val MAX_BITMAP_DIM = 1440
+    private const val MAX_IMAGE_REDIRECTS = 5
 
     private val cache = object : LruCache<String, ImageBitmap>(12) {}
+
+    fun peek(
+        url: String,
+        isPrivate: Boolean,
+        privateCache: LruCache<String, ImageBitmap>? = null
+    ): ImageBitmap? {
+        return if (isPrivate) privateCache?.get(url) else cache.get(url)
+    }
+
+    private fun resolveTargetUrl(
+        rawUrl: String,
+        httpsOnlyMode: Boolean,
+        isHostHttpsBypassed: (String) -> Boolean
+    ): String? {
+        val scheme = runCatching { Uri.parse(rawUrl).scheme?.lowercase(java.util.Locale.ROOT) }.getOrNull()
+        if (scheme != "http" && scheme != "https") return null
+        return if (scheme == "http" && httpsOnlyMode) {
+            val host = OmniboxEngine.extractHost(rawUrl)
+            if (host.isNotBlank() && !OmniboxEngine.isLocalHostOrLan(host) && !isHostHttpsBypassed(host)) {
+                "https://" + rawUrl.substringAfter("://")
+            } else {
+                rawUrl
+            }
+        } else {
+            rawUrl
+        }
+    }
 
     suspend fun load(
         client: OkHttpClient,
@@ -191,45 +222,59 @@ private object ReaderImageCache {
         adblockEnabled: Boolean,
         siteAdblockDisabled: Boolean,
         adblockEngine: AdblockEngine?,
-        isHostHttpsBypassed: (String) -> Boolean
-    ): ImageBitmap? {
-        val initialScheme = runCatching { Uri.parse(url).scheme?.lowercase() }.getOrNull()
-        if (initialScheme != "http" && initialScheme != "https") return null
+        isHostHttpsBypassed: (String) -> Boolean,
+        privateCache: LruCache<String, ImageBitmap>? = null
+    ): ImageBitmap? = withContext(Dispatchers.IO) {
+        val initialTarget = resolveTargetUrl(url, httpsOnlyMode, isHostHttpsBypassed) ?: return@withContext null
+        val pageHost = OmniboxEngine.extractHost(pageUrl)
+        val pageIsLan = pageHost.isNotBlank() && OmniboxEngine.isLocalHostOrLan(pageHost)
 
-        val targetUrl = if (initialScheme == "http" && httpsOnlyMode) {
-            val host = OmniboxEngine.extractHost(url)
-            if (host.isNotBlank() && !OmniboxEngine.isLocalHostOrLan(host) && !isHostHttpsBypassed(host)) {
-                "https://" + url.substringAfter("://")
-            } else {
-                url
-            }
+        if (isPrivate) {
+            privateCache?.get(url)?.let { return@withContext it }
         } else {
-            url
+            cache.get(url)?.let { return@withContext it }
+            cache.get(initialTarget)?.let { return@withContext it }
         }
 
-        if (adblockEngine?.shouldBlock(
-                requestUrl = targetUrl,
-                pageUrl = pageUrl,
-                resourceType = "image",
-                globalEnabled = adblockEnabled,
-                siteDisabled = siteAdblockDisabled
-            ) == true
-        ) {
-            return null
-        }
+        try {
+            val noRedirectClient = client.newBuilder()
+                .followRedirects(false)
+                .followSslRedirects(false)
+                .build()
+            var currentUrl = initialTarget
+            var hops = 0
+            while (hops <= MAX_IMAGE_REDIRECTS) {
+                val hopHost = OmniboxEngine.extractHost(currentUrl)
+                // Prevent public articles from redirecting image fetches onto private LAN hosts
+                if (!pageIsLan && hopHost.isNotBlank() && OmniboxEngine.isLocalHostOrLan(hopHost)) {
+                    return@withContext null
+                }
+                if (adblockEngine?.shouldBlock(
+                        requestUrl = currentUrl,
+                        pageUrl = pageUrl,
+                        resourceType = "image",
+                        globalEnabled = adblockEnabled,
+                        siteDisabled = siteAdblockDisabled
+                    ) == true
+                ) {
+                    return@withContext null
+                }
 
-        if (!isPrivate) {
-            cache.get(targetUrl)?.let { return it }
-        }
-
-        return withContext(Dispatchers.IO) {
-            try {
                 val request = Request.Builder()
-                    .url(targetUrl)
+                    .url(currentUrl)
                     .get()
                     .header("Accept", "image/webp,image/png,image/jpeg,image/*;q=0.8")
                     .build()
-                client.newCall(request).execute().use { response ->
+                noRedirectClient.newCall(request).execute().use { response ->
+                    if (response.isRedirect) {
+                        val location = response.header("Location") ?: return@withContext null
+                        val resolved = response.request.url.resolve(location)?.toString() ?: return@withContext null
+                        val nextUrl = resolveTargetUrl(resolved, httpsOnlyMode, isHostHttpsBypassed)
+                            ?: return@withContext null
+                        currentUrl = nextUrl
+                        hops++
+                        return@use
+                    }
                     if (!response.isSuccessful) return@withContext null
                     val body = response.body
                     if (body.contentLength() > MAX_IMAGE_BYTES) return@withContext null
@@ -263,16 +308,20 @@ private object ReaderImageCache {
                     val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, decodeOpts)
                         ?: return@withContext null
                     val imageBitmap = decoded.asImageBitmap()
-                    if (!isPrivate) {
-                        cache.put(targetUrl, imageBitmap)
+                    if (isPrivate) {
+                        privateCache?.put(url, imageBitmap)
+                    } else {
+                        cache.put(url, imageBitmap)
+                        cache.put(currentUrl, imageBitmap)
                     }
-                    imageBitmap
+                    return@withContext imageBitmap
                 }
-            } catch (ce: CancellationException) {
-                throw ce
-            } catch (_: Throwable) {
-                null
             }
+            null
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (_: Throwable) {
+            null
         }
     }
 }
@@ -351,6 +400,15 @@ fun ReaderModeOverlay(
 
     val fontSizeSp = settings.readerFontSizeSp.coerceIn(14, 28)
     val lineHeightMultiplier = settings.readerLineHeight.coerceIn(1.3f, 2.0f)
+    val currentOnOpenLink by rememberUpdatedState(onOpenLink)
+    val stableOpenLink = remember { { linkUrl: String -> currentOnOpenLink(linkUrl) } }
+    val privateSessionCache = remember(article.url, isPrivate) {
+        if (isPrivate) LruCache<String, ImageBitmap>(12) else null
+    }
+    val listState = rememberLazyListState()
+    LaunchedEffect(article.url) {
+        listState.scrollToItem(0)
+    }
     val sourceLabel = remember(article.siteName, article.url) {
         article.siteName?.trim()?.takeIf { it.isNotEmpty() }
             ?: extractHostLabel(article.url)
@@ -414,15 +472,21 @@ fun ReaderModeOverlay(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(innerPadding),
+                .padding(top = innerPadding.calculateTopPadding()),
             contentAlignment = Alignment.TopCenter
         ) {
             LazyColumn(
+                state = listState,
                 modifier = Modifier
                     .widthIn(max = 720.dp)
                     .fillMaxWidth()
                     .fillMaxHeight(),
-                contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp),
+                contentPadding = PaddingValues(
+                    start = 20.dp,
+                    end = 20.dp,
+                    top = 16.dp,
+                    bottom = 24.dp + innerPadding.calculateBottomPadding()
+                ),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 item(key = "reader_article_header", contentType = "article_header") {
@@ -448,14 +512,15 @@ fun ReaderModeOverlay(
                         fontSizeSp = fontSizeSp,
                         lineHeightMultiplier = lineHeightMultiplier,
                         palette = palette,
-                        onOpenLink = onOpenLink,
+                        onOpenLink = stableOpenLink,
                         pageUrl = pageUrl,
                         isPrivate = isPrivate,
                         httpsOnlyMode = settings.httpsOnlyMode,
                         adblockEnabled = settings.adblockEnabled,
                         siteAdblockDisabled = siteAdblockDisabled,
                         adblockEngine = adblockEngine,
-                        isHostHttpsBypassed = isHostHttpsBypassed
+                        isHostHttpsBypassed = isHostHttpsBypassed,
+                        privateImageCache = privateSessionCache
                     )
                 }
 
@@ -549,7 +614,8 @@ private fun ReaderBlockItem(
     adblockEnabled: Boolean,
     siteAdblockDisabled: Boolean,
     adblockEngine: AdblockEngine?,
-    isHostHttpsBypassed: (String) -> Boolean
+    isHostHttpsBypassed: (String) -> Boolean,
+    privateImageCache: LruCache<String, ImageBitmap>?
 ) {
     val bodyLineHeightSp = (fontSizeSp * lineHeightMultiplier).sp
 
@@ -713,7 +779,8 @@ private fun ReaderBlockItem(
                 adblockEnabled = adblockEnabled,
                 siteAdblockDisabled = siteAdblockDisabled,
                 adblockEngine = adblockEngine,
-                isHostHttpsBypassed = isHostHttpsBypassed
+                isHostHttpsBypassed = isHostHttpsBypassed,
+                privateImageCache = privateImageCache
             )
         }
 
@@ -760,16 +827,27 @@ private fun ReaderImageBlock(
     adblockEnabled: Boolean,
     siteAdblockDisabled: Boolean,
     adblockEngine: AdblockEngine?,
-    isHostHttpsBypassed: (String) -> Boolean
+    isHostHttpsBypassed: (String) -> Boolean,
+    privateImageCache: LruCache<String, ImageBitmap>?
 ) {
     val context = LocalContext.current
+    val density = LocalDensity.current
     val httpClient = remember(context) {
         (context.applicationContext as? SwiftfoxApp)?.httpClient ?: OkHttpClient()
     }
-    var loadedBitmap by remember(block.url) { mutableStateOf<ImageBitmap?>(null) }
-    var loadFinished by remember(block.url) { mutableStateOf(false) }
+    val initialCached = remember(block.url, isPrivate, privateImageCache) {
+        ReaderImageCache.peek(block.url, isPrivate, privateImageCache)
+    }
+    var loadedBitmap by remember(block.url) { mutableStateOf(initialCached) }
+    var loadFinished by remember(block.url) { mutableStateOf(initialCached != null) }
 
     LaunchedEffect(block.url, pageUrl, isPrivate, httpsOnlyMode, adblockEnabled, siteAdblockDisabled) {
+        val cached = ReaderImageCache.peek(block.url, isPrivate, privateImageCache)
+        if (cached != null) {
+            loadedBitmap = cached
+            loadFinished = true
+            return@LaunchedEffect
+        }
         loadFinished = false
         loadedBitmap = ReaderImageCache.load(
             client = httpClient,
@@ -780,7 +858,8 @@ private fun ReaderImageBlock(
             adblockEnabled = adblockEnabled,
             siteAdblockDisabled = siteAdblockDisabled,
             adblockEngine = adblockEngine,
-            isHostHttpsBypassed = isHostHttpsBypassed
+            isHostHttpsBypassed = isHostHttpsBypassed,
+            privateCache = privateImageCache
         )
         loadFinished = true
     }
@@ -818,14 +897,27 @@ private fun ReaderImageBlock(
         ) {
             val bmp = loadedBitmap
             if (bmp != null) {
-                Image(
-                    bitmap = bmp,
-                    contentDescription = block.alt ?: block.caption ?: "Article image",
-                    contentScale = ContentScale.FillWidth,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 460.dp)
-                )
+                val naturalWidthDp = with(density) { bmp.width.toDp() }
+                val isSmallInlineImage = bmp.width < 240 && bmp.height < 240
+                Box(
+                    modifier = Modifier.fillMaxWidth(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Image(
+                        bitmap = bmp,
+                        contentDescription = block.alt ?: block.caption ?: "Article image",
+                        contentScale = ContentScale.Fit,
+                        modifier = if (isSmallInlineImage) {
+                            Modifier
+                                .widthIn(max = naturalWidthDp.coerceAtLeast(48.dp))
+                                .padding(12.dp)
+                        } else {
+                            Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 560.dp)
+                        }
+                    )
+                }
             } else {
                 Box(
                     modifier = Modifier
@@ -921,6 +1013,7 @@ private fun ReaderTableBlock(
                     .fillMaxWidth()
                     .horizontalScroll(rememberScrollState())
             ) {
+            SelectionContainer {
                 Column {
                     if (block.headers.isNotEmpty()) {
                         Row(
@@ -944,23 +1037,21 @@ private fun ReaderTableBlock(
                                         onOpenLink = onOpenLink
                                     )
                                 }
-                                SelectionContainer {
-                                    Box(
-                                        modifier = Modifier
-                                            .width(columnWidths[colIndex])
-                                            .fillMaxHeight()
-                                            .padding(horizontal = 12.dp, vertical = 10.dp),
-                                        contentAlignment = Alignment.CenterStart
-                                    ) {
-                                        Text(
-                                            text = annotated,
-                                            fontFamily = fontFamily,
-                                            fontSize = cellFontSizeSp.sp,
-                                            lineHeight = cellLineHeightSp,
-                                            fontWeight = FontWeight.SemiBold,
-                                            color = palette.onBackground
-                                        )
-                                    }
+                                Box(
+                                    modifier = Modifier
+                                        .width(columnWidths[colIndex])
+                                        .fillMaxHeight()
+                                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                                    contentAlignment = Alignment.CenterStart
+                                ) {
+                                    Text(
+                                        text = annotated,
+                                        fontFamily = fontFamily,
+                                        fontSize = cellFontSizeSp.sp,
+                                        lineHeight = cellLineHeightSp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = palette.onBackground
+                                    )
                                 }
                             }
                         }
@@ -1003,27 +1094,26 @@ private fun ReaderTableBlock(
                                         onOpenLink = onOpenLink
                                     )
                                 }
-                                SelectionContainer {
-                                    Box(
-                                        modifier = Modifier
-                                            .width(columnWidths[colIndex])
-                                            .fillMaxHeight()
-                                            .padding(horizontal = 12.dp, vertical = 10.dp),
-                                        contentAlignment = Alignment.TopStart
-                                    ) {
-                                        Text(
-                                            text = annotated,
-                                            fontFamily = fontFamily,
-                                            fontSize = cellFontSizeSp.sp,
-                                            lineHeight = cellLineHeightSp,
-                                            color = palette.onBackground
-                                        )
-                                    }
+                                Box(
+                                    modifier = Modifier
+                                        .width(columnWidths[colIndex])
+                                        .fillMaxHeight()
+                                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                                    contentAlignment = Alignment.TopStart
+                                ) {
+                                    Text(
+                                        text = annotated,
+                                        fontFamily = fontFamily,
+                                        fontSize = cellFontSizeSp.sp,
+                                        lineHeight = cellLineHeightSp,
+                                        color = palette.onBackground
+                                    )
                                 }
                             }
                         }
                     }
                 }
+            }
             }
         }
     }

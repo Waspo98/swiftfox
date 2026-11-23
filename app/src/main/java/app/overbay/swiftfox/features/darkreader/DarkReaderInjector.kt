@@ -10,8 +10,9 @@ data class DarkReaderStatusEvent(
     val skippedNativeDark: Boolean
 )
 
-class DarkReaderInjector(private val context: Context?) {
+class DarkReaderInjector(context: Context?) {
 
+    private val appContext: Context? = context?.applicationContext ?: context
     private val json = Json { ignoreUnknownKeys = true }
 
     private val darkReaderJs: String by lazy {
@@ -20,6 +21,11 @@ class DarkReaderInjector(private val context: Context?) {
 
     private val bridgeJs: String by lazy {
         readAsset("js/darkreader_bridge.js")
+    }
+
+    fun warmUpAssets() {
+        darkReaderJs
+        bridgeJs
     }
 
     /**
@@ -79,7 +85,7 @@ class DarkReaderInjector(private val context: Context?) {
 
     fun buildDisableScript(runtimeKey: String = DEFAULT_RUNTIME_KEY): String {
         val keyLit = json.encodeToString(runtimeKey)
-        return "(function(){var rt=window[$keyLit];if(rt&&typeof rt.apply==='function'){rt.apply({enabled:false});}else if(typeof DarkReader!=='undefined'){DarkReader.disable();}})();"
+        return "(function(){try{var p=document.getElementById('swiftfox-prepaint-dark');if(p&&p.parentNode){p.parentNode.removeChild(p);}}catch(e){}var rt=window[$keyLit];if(rt&&typeof rt.apply==='function'){rt.apply({enabled:false});}else if(typeof DarkReader!=='undefined'&&typeof DarkReader.disable==='function'){DarkReader.disable();}})();"
     }
 
     fun parseStatusJson(raw: String): DarkReaderStatusEvent? {
@@ -90,7 +96,7 @@ class DarkReaderInjector(private val context: Context?) {
     }
 
     private fun readAsset(assetPath: String): String {
-        val ctx = context ?: return ""
+        val ctx = appContext ?: return ""
         return runCatching {
             ctx.assets.open(assetPath).bufferedReader(Charsets.UTF_8).use { it.readText() }
         }.getOrDefault("")

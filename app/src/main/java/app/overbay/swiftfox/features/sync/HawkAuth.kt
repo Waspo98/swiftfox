@@ -20,9 +20,10 @@ object HawkAuth {
         payloadHash: String? = null,
         resource: String? = null,
         fixedTimestamp: Long? = null,
-        fixedNonce: String? = null
+        fixedNonce: String? = null,
+        clockSkewSeconds: Long = 0L
     ): String {
-        val ts = fixedTimestamp ?: (System.currentTimeMillis() / 1000L)
+        val ts = fixedTimestamp ?: ((System.currentTimeMillis() / 1000L) + clockSkewSeconds)
         val nonce = fixedNonce ?: randomNonce()
         val host = url.host
         val port = if (url.port != -1) url.port else if (url.protocol.equals("https", ignoreCase = true)) 443 else 80

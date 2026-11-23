@@ -3,7 +3,6 @@ package app.overbay.swiftfox.ui.settings
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,6 +11,9 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.calculateEndPadding
+import androidx.compose.foundation.layout.calculateStartPadding
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -20,6 +22,9 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -51,6 +56,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -58,6 +64,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -81,6 +88,8 @@ import app.overbay.swiftfox.ui.theme.BetaChannelPill
 import app.overbay.swiftfox.ui.theme.SwiftfoxAppIcon
 import app.overbay.swiftfox.ui.theme.SwiftfoxBrand
 import app.overbay.swiftfox.ui.theme.SwiftfoxWordmark
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import java.text.NumberFormat
 import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
@@ -105,6 +114,9 @@ fun SettingsScreen(
         }
     }
 
+    val layoutDirection = LocalLayoutDirection.current
+    val remoteTabGroups = remember(state.syncedRemoteTabs) { state.remoteTabGroups }
+
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
@@ -124,9 +136,15 @@ fun SettingsScreen(
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(innerPadding)
+                .padding(top = innerPadding.calculateTopPadding())
+                .consumeWindowInsets(innerPadding)
                 .imePadding(),
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 24.dp),
+            contentPadding = PaddingValues(
+                start = innerPadding.calculateStartPadding(layoutDirection) + 16.dp,
+                end = innerPadding.calculateEndPadding(layoutDirection) + 16.dp,
+                top = 8.dp,
+                bottom = innerPadding.calculateBottomPadding() + 24.dp
+            ),
             verticalArrangement = Arrangement.spacedBy(20.dp)
         ) {
             // Account, Sync & Interop
@@ -150,7 +168,7 @@ fun SettingsScreen(
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
                 SettingsNavigationRow(
                     title = "Synced Open Tabs",
-                    subtitle = "${state.remoteTabGroups.size} devices · ${state.syncedRemoteTabs.size} open tabs",
+                    subtitle = "${remoteTabGroups.size} devices · ${state.syncedRemoteTabs.size} open tabs",
                     onClick = { viewModel.setOverlay(BrowserOverlay.SYNCED_TABS) }
                 )
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
@@ -326,9 +344,12 @@ fun SettingsScreen(
             item(key = "adblock_zapper", contentType = "settings_section") {
             SettingsSection(title = "Ad Blocking & Element Zapper") {
                 val engineLabel = if (state.adblockStatus.isNativeRust) "adblock-rust JNI" else "Kotlin matcher"
+                val formattedRules = remember(state.adblockStatus.totalRules) {
+                    NumberFormat.getIntegerInstance().format(state.adblockStatus.totalRules)
+                }
                 SettingsSwitchRow(
                     title = "Native ad & tracker blocking",
-                    subtitle = "$engineLabel · ${state.adblockStatus.totalRules} active rules",
+                    subtitle = "$engineLabel · $formattedRules active rules",
                     checked = settings.adblockEnabled,
                     onCheckedChange = { viewModel.setAdblockEnabled(it) }
                 )
@@ -477,9 +498,11 @@ fun SettingsScreen(
 
                 if (settings.searchEngine == SearchEngineId.CUSTOM) {
                     val trimmedDraft = customTemplateDraft.trim()
+                    val hasHttpScheme = trimmedDraft.startsWith("https://", ignoreCase = true) ||
+                        trimmedDraft.startsWith("http://", ignoreCase = true)
                     val isValidTemplate = trimmedDraft.contains("%s") &&
-                        (trimmedDraft.startsWith("https://", ignoreCase = true) ||
-                            trimmedDraft.startsWith("http://", ignoreCase = true))
+                        hasHttpScheme &&
+                        trimmedDraft.replace("%s", "test").toHttpUrlOrNull() != null
                     val hasUnsavedChanges = trimmedDraft != settings.customSearchUrlTemplate
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedTextField(
@@ -494,8 +517,10 @@ fun SettingsScreen(
                                             "Example: https://kagi.com/search?q=%s"
                                         !trimmedDraft.contains("%s") ->
                                             "Must include %s where the search query goes"
-                                        else ->
+                                        !hasHttpScheme ->
                                             "URL must start with https:// or http://"
+                                        else ->
+                                            "Enter a valid http:// or https:// search URL"
                                     }
                                 )
                             },
@@ -564,14 +589,18 @@ fun SettingsScreen(
 
                 // Flattened radio rows (no nested cards inside SettingsSection)
                 SettingGroup(label = "External app links") {
-                    Column {
+                    Column(modifier = Modifier.selectableGroup()) {
                         ExternalAppLinkPolicy.entries.forEachIndexed { idx, policy ->
                             val selected = settings.externalAppLinkPolicy == policy
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(12.dp))
-                                    .clickable { viewModel.setExternalAppLinkPolicy(policy) }
+                                    .selectable(
+                                        selected = selected,
+                                        role = Role.RadioButton,
+                                        onClick = { viewModel.setExternalAppLinkPolicy(policy) }
+                                    )
                                     .heightIn(min = 56.dp)
                                     .padding(vertical = 8.dp, horizontal = 4.dp),
                                 verticalAlignment = Alignment.CenterVertically,
@@ -602,7 +631,9 @@ fun SettingsScreen(
                 if (state.siteOverrides.isNotEmpty()) {
                     SettingGroup(label = "Saved site overrides (${state.siteOverrides.size})") {
                         Column {
-                            val allEntries = state.siteOverrides.values.sortedBy { it.host }
+                            val allEntries = remember(state.siteOverrides) {
+                                state.siteOverrides.values.sortedBy { it.host }
+                            }
                             val entries = if (showAllSiteOverrides) allEntries else allEntries.take(6)
                             entries.forEachIndexed { idx, entry ->
                                 val summary = buildList {
@@ -925,10 +956,9 @@ private fun SettingsSliderRow(
     label: String,
     value: Float,
     valueRange: ClosedFloatingPointRange<Float>,
-    onValueChange: (Float) -> Unit,
-    formatValue: (Float) -> String = { "${it.roundToInt()}%" }
+    onValueChange: (Float) -> Unit
 ) {
-    var draftValue by remember(value) { mutableStateOf(value) }
+    var draftValue by remember(value) { mutableFloatStateOf(value) }
 
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Row(
@@ -938,7 +968,7 @@ private fun SettingsSliderRow(
         ) {
             Text(label, style = MaterialTheme.typography.titleSmall)
             Text(
-                text = formatValue(draftValue),
+                text = "${draftValue.roundToInt()}%",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.primary
             )

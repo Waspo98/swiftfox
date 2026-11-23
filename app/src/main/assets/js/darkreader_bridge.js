@@ -74,39 +74,50 @@
   }
 
   function detectNativeDarkRaw() {
-    var root = document.documentElement;
-    var metaScheme = getMetaColorSchemeContent();
-    if (hasExplicitDarkColorScheme(metaScheme)) {
-      return true;
+    var prepaintEl = document.getElementById(PREPAINT_STYLE_ID);
+    var prevPrepaintDisabled = prepaintEl ? !!prepaintEl.disabled : false;
+    if (prepaintEl) {
+      prepaintEl.disabled = true;
     }
+    try {
+      var root = document.documentElement;
+      var metaScheme = getMetaColorSchemeContent();
+      if (hasExplicitDarkColorScheme(metaScheme)) {
+        return true;
+      }
 
-    var computedScheme = '';
-    if (root && typeof window.getComputedStyle === 'function') {
-      try {
-        computedScheme = window.getComputedStyle(root).colorScheme || '';
-      } catch (e) {}
-    }
-    if (hasExplicitDarkColorScheme(computedScheme)) {
-      return true;
-    }
+      var computedScheme = '';
+      if (root && typeof window.getComputedStyle === 'function') {
+        try {
+          computedScheme = window.getComputedStyle(root).colorScheme || '';
+        } catch (e) {}
+      }
+      if (hasExplicitDarkColorScheme(computedScheme)) {
+        return true;
+      }
 
-    var bodyBgDark = checkElementDarkBg(document.body);
-    if (bodyBgDark !== null) {
-      return bodyBgDark;
-    }
+      var bodyBgDark = checkElementDarkBg(document.body);
+      if (bodyBgDark !== null) {
+        return bodyBgDark;
+      }
 
-    var rootBgDark = checkElementDarkBg(root);
-    if (rootBgDark !== null) {
-      return rootBgDark;
-    }
+      var rootBgDark = checkElementDarkBg(root);
+      if (rootBgDark !== null) {
+        return rootBgDark;
+      }
 
-    if ((supportsBothColorSchemes(metaScheme) || supportsBothColorSchemes(computedScheme)) &&
-        typeof window.matchMedia === 'function' &&
-        window.matchMedia('(prefers-color-scheme: dark)').matches) {
-      return true;
-    }
+      if ((supportsBothColorSchemes(metaScheme) || supportsBothColorSchemes(computedScheme)) &&
+          typeof window.matchMedia === 'function' &&
+          window.matchMedia('(prefers-color-scheme: dark)').matches) {
+        return true;
+      }
 
-    return false;
+      return false;
+    } finally {
+      if (prepaintEl) {
+        prepaintEl.disabled = prevPrepaintDisabled;
+      }
+    }
   }
 
   function currentOriginKey() {
@@ -195,7 +206,7 @@
       DarkReader.isEnabled();
   }
 
-  function evaluateNativeDark(restoreIfDisabled) {
+  function evaluateNativeDark() {
     if (!isDarkReaderActive()) {
       var raw = detectNativeDarkRaw();
       saveCache(raw);
@@ -209,10 +220,6 @@
     DarkReader.disable();
     var detected = detectNativeDarkRaw();
     saveCache(detected);
-    if (restoreIfDisabled && !detected && lastConfig && lastConfig.enabled) {
-      enableDarkReader(lastConfig);
-      appliedSignature = buildConfigSignature(lastConfig);
-    }
     return detected;
   }
 
@@ -272,7 +279,7 @@
         if (!isDomSettled()) {
           scheduleDomReadyRecheck();
         }
-        if (evaluateNativeDark(false)) {
+        if (evaluateNativeDark()) {
           appliedSignature = null;
           DarkReader.disable();
           clearPrepaintStyle();

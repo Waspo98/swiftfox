@@ -65,6 +65,14 @@ class AdblockEngineTest {
             "other",
             engine.inferResourceType("https://example.com", emptyMap())
         )
+        // HTML Accept header containing image/webp must classify as subdocument, not image
+        assertEquals(
+            "subdocument",
+            engine.inferResourceType(
+                "https://example.com/embed",
+                mapOf("Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
+            )
+        )
     }
 
     @Test
@@ -352,5 +360,39 @@ class AdblockEngineTest {
         val css = matcher.cosmeticResources("https://example.com/").css
         assertTrue(css.contains(".good-hide{display:none!important}"))
         assertFalse(css.contains("/*comment*/"))
+    }
+
+    @Test
+    fun fallbackMatcherPreservesImportantPrecedenceLenientUrlsAndBareHostPath() {
+        val rules = """
+            ||order.test/ad.js
+            @@||order.test/ad.js^
+            ||order.test/ad.js${'$'}script,important
+            ||lenient.test/pixel^
+            ||barehost.test/^
+        """.trimIndent()
+
+        val matcher = FallbackKotlinAdblockMatcher(rules)
+
+        // Later $important rule must still override the exception rule even when an earlier non-important rule matched first
+        assertTrue(matcher.checkNetworkRequest("https://order.test/ad.js", "https://example.com/", "script"))
+
+        // Unencoded query characters (|, {, }) must still be parsed leniently and blocked
+        assertTrue(
+            matcher.checkNetworkRequest(
+                url = "https://lenient.test/pixel?a=1|2&b={foo}",
+                sourceUrl = "https://example.com/article?x={1}",
+                requestType = "image"
+            )
+        )
+
+        // Bare host URL normalizes rawPath to "/" so ||barehost.test/^ matches
+        assertTrue(
+            matcher.checkNetworkRequest(
+                url = "https://barehost.test",
+                sourceUrl = "https://example.com/",
+                requestType = "script"
+            )
+        )
     }
 }

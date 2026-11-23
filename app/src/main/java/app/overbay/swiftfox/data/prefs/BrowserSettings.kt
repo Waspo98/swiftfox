@@ -162,10 +162,14 @@ data class BrowserSettings(
         DevicePosture.UNFOLDED -> unfoldedProfile
     }
 
-    fun resolvedSearchTemplate(): String =
-        if (searchEngine == SearchEngineId.CUSTOM && customSearchUrlTemplate.contains("%s")) {
-            customSearchUrlTemplate
+    fun resolvedSearchTemplate(): String {
+        val candidate = customSearchUrlTemplate.trim()
+        val isHttpOrHttps = candidate.startsWith("https://", ignoreCase = true) ||
+            candidate.startsWith("http://", ignoreCase = true)
+        return if (searchEngine == SearchEngineId.CUSTOM && isHttpOrHttps && candidate.contains("%s")) {
+            candidate
         } else {
             searchEngine.searchUrlTemplate
         }
+    }
 }

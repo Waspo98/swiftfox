@@ -10,6 +10,7 @@ import android.content.IntentFilter
 import android.net.Uri
 import android.os.Environment
 import android.provider.MediaStore
+import android.util.Log
 import android.webkit.CookieManager
 import android.webkit.URLUtil
 import androidx.core.content.ContextCompat
@@ -22,15 +23,19 @@ import app.overbay.swiftfox.engine.BrowserSession
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.coroutineContext
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.IOException
+import java.nio.charset.Charset
 import java.nio.charset.StandardCharsets
 import java.util.Base64
 import java.util.Locale
@@ -46,7 +51,6 @@ class DownloadCoordinator(
 
     fun registerCompletionReceiver(scope: CoroutineScope) {
         if (completionReceiverRegistered) return
-        completionReceiverRegistered = true
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(ctx: Context?, intent: Intent?) {
                 if (intent?.action != DownloadManager.ACTION_DOWNLOAD_COMPLETE) return
@@ -57,14 +61,18 @@ class DownloadCoordinator(
                 }
             }
         }
-        runCatching {
+        val registered = runCatching {
             ContextCompat.registerReceiver(
                 context,
                 receiver,
                 IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE),
                 ContextCompat.RECEIVER_EXPORTED
             )
-        }
+            true
+        }.onFailure { err ->
+            Log.w("DownloadCoordinator", "Failed to register download receiver: ${err.message}")
+        }.getOrDefault(false)
+        completionReceiverRegistered = registered
     }
 
     private fun cookiesForProfile(
@@ -149,16 +157,25 @@ class DownloadCoordinator(
                 }
                 val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
                 val downloadId = dm.enqueue(request)
+                val immediateStatus = queryDownloadManagerStatus(dm, downloadId) ?: "Downloading"
                 val entity = DownloadRecordEntity(
                     id = UUID.randomUUID().toString(),
                     fileName = fileName,
                     url = url,
                     mimeType = safeMime,
                     systemDownloadId = downloadId,
-                    status = "Downloading"
+                    status = immediateStatus
                 )
                 downloadRecordDao.upsert(entity)
-                entity
+                // Re-check once after upsert in case ACTION_DOWNLOAD_COMPLETE fired before upsert committed
+                val postUpsertStatus = queryDownloadManagerStatus(dm, downloadId)
+                if (postUpsertStatus != null && postUpsertStatus != entity.status) {
+                    val updated = entity.copy(status = postUpsertStatus)
+                    downloadRecordDao.upsert(updated)
+                    updated
+                } else {
+                    entity
+                }
             }
             Result.success(record)
         } catch (e: CancellationException) {
@@ -197,82 +214,99 @@ class DownloadCoordinator(
                 .url(currentUrl)
                 .get()
             if (userAgent.isNotBlank()) {
-                reqBuilder.header("User-Agent", userAgent)
+                val safeUa = sanitizeHeaderValue(userAgent)
+                if (safeUa.isNotEmpty()) {
+                    reqBuilder.header("User-Agent", safeUa)
+                }
             }
             if (!cookies.isNullOrBlank() && isSameOrigin) {
                 reqBuilder.header("Cookie", cookies)
             }
-            noRedirectClient.newCall(reqBuilder.build()).execute().use { response ->
-                if (response.isRedirect) {
-                    val location = response.header("Location")
-                        ?: throw IOException("Redirect without Location header")
-                    val nextUrl = currentUrl.resolve(location)
-                        ?: throw IOException("Invalid redirect target")
-                    if (nextUrl.scheme != "http" && nextUrl.scheme != "https") {
-                        throw IOException("Unsupported redirect scheme")
-                    }
-                    currentUrl = nextUrl
-                    hops++
-                    return@use
-                }
-                if (!response.isSuccessful) {
-                    throw IOException("Download failed (HTTP ${response.code})")
-                }
-                val resolvedMime = response.header("Content-Type")
-                    ?.substringBefore(';')
-                    ?.trim()
-                    ?.takeIf { it.isNotBlank() }
-                    ?: fallbackMime
-                val responseDisposition = response.header("Content-Disposition") ?: contentDisposition
-                val resolvedName = extractContentDispositionFileName(responseDisposition)
-                    ?.let(::sanitizeFileName)
-                    ?: initialFileName
-                val body = response.body
-                val values = ContentValues().apply {
-                    put(MediaStore.Downloads.DISPLAY_NAME, resolvedName)
-                    put(MediaStore.Downloads.MIME_TYPE, resolvedMime)
-                    put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
-                    put(MediaStore.Downloads.IS_PENDING, 1)
-                }
-                val resolver = context.contentResolver
-                val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-                    ?: throw IOException("Could not create MediaStore Downloads entry")
-                try {
-                    resolver.openOutputStream(uri)?.use { out ->
-                        body.byteStream().use { input ->
-                            val buffer = ByteArray(8192)
-                            while (true) {
-                                val read = input.read(buffer)
-                                if (read == -1) break
-                                out.write(buffer, 0, read)
-                            }
+            val call = noRedirectClient.newCall(reqBuilder.build())
+            val cancelHandle = coroutineContext[Job]?.invokeOnCompletion {
+                call.cancel()
+            }
+            try {
+                call.execute().use { response ->
+                    coroutineContext.ensureActive()
+                    if (response.isRedirect) {
+                        val location = response.header("Location")
+                            ?: throw IOException("Redirect without Location header")
+                        val nextUrl = currentUrl.resolve(location)
+                            ?: throw IOException("Invalid redirect target")
+                        if (nextUrl.scheme != "http" && nextUrl.scheme != "https") {
+                            throw IOException("Unsupported redirect scheme")
                         }
-                    } ?: throw IOException("Could not open Downloads output stream")
+                        currentUrl = nextUrl
+                        hops++
+                        return@use
+                    }
+                    if (!response.isSuccessful) {
+                        throw IOException("Download failed (HTTP ${response.code})")
+                    }
+                    val resolvedMime = response.header("Content-Type")
+                        ?.substringBefore(';')
+                        ?.trim()
+                        ?.takeIf { it.isNotBlank() }
+                        ?: fallbackMime
+                    val responseDisposition = response.header("Content-Disposition") ?: contentDisposition
+                    val guessedFromFinal = runCatching {
+                        URLUtil.guessFileName(currentUrl.toString(), responseDisposition, resolvedMime)
+                    }.getOrNull()
+                    val resolvedName = extractContentDispositionFileName(responseDisposition)
+                        ?.let(::sanitizeFileName)
+                        ?: guessedFromFinal?.takeIf { it.isNotBlank() }?.let(::sanitizeFileName)
+                        ?: initialFileName
+                    val body = response.body
+                    val values = ContentValues().apply {
+                        put(MediaStore.Downloads.DISPLAY_NAME, resolvedName)
+                        put(MediaStore.Downloads.MIME_TYPE, resolvedMime)
+                        put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                        put(MediaStore.Downloads.IS_PENDING, 1)
+                    }
+                    val resolver = context.contentResolver
+                    val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                        ?: throw IOException("Could not create MediaStore Downloads entry")
+                    try {
+                        resolver.openOutputStream(uri)?.use { out ->
+                            body.byteStream().use { input ->
+                                val buffer = ByteArray(8192)
+                                while (true) {
+                                    coroutineContext.ensureActive()
+                                    val read = input.read(buffer)
+                                    if (read == -1) break
+                                    out.write(buffer, 0, read)
+                                }
+                            }
+                        } ?: throw IOException("Could not open Downloads output stream")
 
-                    values.clear()
-                    values.put(MediaStore.Downloads.IS_PENDING, 0)
-                    resolver.update(uri, values, null, null)
-                } catch (e: CancellationException) {
-                    runCatching { resolver.delete(uri, null, null) }
-                    throw e
-                } catch (t: Throwable) {
-                    runCatching { resolver.delete(uri, null, null) }
-                    throw t
-                }
+                        values.clear()
+                        values.put(MediaStore.Downloads.IS_PENDING, 0)
+                        resolver.update(uri, values, null, null)
+                    } catch (e: CancellationException) {
+                        runCatching { resolver.delete(uri, null, null) }
+                        throw e
+                    } catch (t: Throwable) {
+                        runCatching { resolver.delete(uri, null, null) }
+                        throw t
+                    }
 
-                val actualDisplayName = queryInsertedDisplayName(uri, resolvedName)
-                val entity = DownloadRecordEntity(
-                    id = UUID.randomUUID().toString(),
-                    fileName = actualDisplayName,
-                    url = if (isPrivate) "" else currentUrl.toString().take(512),
-                    mimeType = resolvedMime,
-                    systemDownloadId = -1L,
-                    status = "Saved to Downloads"
-                )
-                if (!isPrivate) {
-                    downloadRecordDao.upsert(entity)
+                    val actualDisplayName = queryInsertedDisplayName(uri, resolvedName)
+                    val entity = DownloadRecordEntity(
+                        id = UUID.randomUUID().toString(),
+                        fileName = actualDisplayName,
+                        url = if (isPrivate) "" else currentUrl.toString().take(512),
+                        mimeType = resolvedMime,
+                        systemDownloadId = -1L,
+                        status = "Saved to Downloads"
+                    )
+                    if (!isPrivate) {
+                        downloadRecordDao.upsert(entity)
+                    }
+                    return entity
                 }
-                return entity
+            } finally {
+                cancelHandle?.dispose()
             }
         }
         throw IOException("Too many redirects while downloading file")
@@ -350,7 +384,8 @@ class DownloadCoordinator(
             }
         } catch (e: CancellationException) {
             throw e
-        } catch (_: Throwable) {
+        } catch (t: Throwable) {
+            Log.w("DownloadCoordinator", "Failed refreshing download statuses: ${t.message}")
         }
     }
 
@@ -365,7 +400,8 @@ class DownloadCoordinator(
             }
         } catch (e: CancellationException) {
             throw e
-        } catch (_: Throwable) {
+        } catch (t: Throwable) {
+            Log.w("DownloadCoordinator", "Failed refreshing download $systemId: ${t.message}")
         }
     }
 
@@ -452,10 +488,22 @@ class DownloadCoordinator(
     }
 
     companion object {
+        internal const val MAX_DATA_DOWNLOAD_BYTES = 25 * 1024 * 1024
         private val RFC5987_FILENAME_STAR_REGEX = Regex(
             """(?:^|;)\s*filename\*\s*=\s*([^;]+)""",
             RegexOption.IGNORE_CASE
         )
+        private val QUOTED_FILENAME_REGEX = Regex(
+            """(?:^|;)\s*filename\s*=\s*"((?:\\.|[^"\\])*)"(?:\s*;|\s*$)""",
+            RegexOption.IGNORE_CASE
+        )
+        private val UNQUOTED_FILENAME_REGEX = Regex(
+            """(?:^|;)\s*filename\s*=\s*([^;\s"]+)""",
+            RegexOption.IGNORE_CASE
+        )
+
+        internal fun sanitizeHeaderValue(raw: String): String =
+            raw.trim().filter { ch -> ch == '\t' || ch in '\u0020'..'\u007E' }
 
         internal fun extractContentDispositionFileName(contentDisposition: String?): String? {
             if (contentDisposition.isNullOrBlank()) return null
@@ -464,9 +512,25 @@ class DownloadCoordinator(
                 val rawValue = starMatch.groupValues[1].trim().trim('"')
                 val firstQuote = rawValue.indexOf('\'')
                 val secondQuote = if (firstQuote >= 0) rawValue.indexOf('\'', firstQuote + 1) else -1
+                val charsetName = if (firstQuote > 0) rawValue.substring(0, firstQuote).trim() else ""
+                val charset = runCatching {
+                    if (charsetName.isNotBlank()) Charset.forName(charsetName) else StandardCharsets.UTF_8
+                }.getOrDefault(StandardCharsets.UTF_8)
                 val encodedPart = if (secondQuote >= 0) rawValue.substring(secondQuote + 1) else rawValue
-                val decoded = percentDecodeToBytes(encodedPart).toString(StandardCharsets.UTF_8).trim()
+                val decoded = String(percentDecodeToBytes(encodedPart), charset).trim()
                 if (decoded.isNotBlank()) return decoded
+            }
+            val quotedMatch = QUOTED_FILENAME_REGEX.find(contentDisposition)
+            if (quotedMatch != null) {
+                val unescaped = quotedMatch.groupValues[1]
+                    .replace(Regex("""\\(.)"""), "$1")
+                    .trim()
+                if (unescaped.isNotBlank()) return unescaped
+            }
+            val unquotedMatch = UNQUOTED_FILENAME_REGEX.find(contentDisposition)
+            if (unquotedMatch != null) {
+                val value = unquotedMatch.groupValues[1].trim()
+                if (value.isNotBlank()) return value
             }
             return null
         }
@@ -479,7 +543,8 @@ class DownloadCoordinator(
                 .replace(Regex("""[\u0000-\u001F\u007F:*?"<>|]"""), "_")
                 .trim()
                 .trim('.')
-                .ifBlank { "swiftfox_download_${System.currentTimeMillis()}" }
+                .takeIf { candidate -> candidate.isNotBlank() && candidate.any { it != '_' && it != '.' } }
+                ?: "swiftfox_download_${System.currentTimeMillis()}"
             if (cleaned.length <= 180) return cleaned
             val dotIdx = cleaned.lastIndexOf('.')
             if (dotIdx in 1 until cleaned.length - 1) {
@@ -518,20 +583,32 @@ class DownloadCoordinator(
 
         fun decodeDataOrBase64Payload(payload: String, fallbackMime: String): Pair<String, ByteArray> {
             val trimmed = payload.trim()
+            if (trimmed.length > (MAX_DATA_DOWNLOAD_BYTES * 4L / 3L) + 1024L) {
+                throw IOException("Download exceeds maximum supported size")
+            }
             if (trimmed.startsWith("data:", ignoreCase = true)) {
                 val commaIdx = trimmed.indexOf(',')
-                if (commaIdx > 4) {
-                    val meta = trimmed.substring(5, commaIdx)
-                    val dataPart = trimmed.substring(commaIdx + 1)
-                    val isBase64 = meta.split(';').any { it.trim().equals("base64", ignoreCase = true) }
-                    val mime = meta.substringBefore(';').trim().ifBlank { fallbackMime }
-                    val bytes = if (isBase64) {
-                        Base64.getMimeDecoder().decode(dataPart)
-                    } else {
-                        percentDecodeToBytes(dataPart)
-                    }
-                    return mime to bytes
+                if (commaIdx <= 4) {
+                    throw IllegalArgumentException("Malformed data URI payload")
                 }
+                val meta = trimmed.substring(5, commaIdx)
+                val dataPart = trimmed.substring(commaIdx + 1)
+                val isBase64 = meta.split(';').any { it.trim().equals("base64", ignoreCase = true) }
+                val mime = meta.substringBefore(';').trim().ifBlank { fallbackMime }
+                val bytes = if (isBase64) {
+                    val decodedInput = if (dataPart.contains('%')) {
+                        String(percentDecodeToBytes(dataPart), StandardCharsets.US_ASCII)
+                    } else {
+                        dataPart
+                    }
+                    Base64.getMimeDecoder().decode(decodedInput)
+                } else {
+                    percentDecodeToBytes(dataPart)
+                }
+                if (bytes.size > MAX_DATA_DOWNLOAD_BYTES) {
+                    throw IOException("Download exceeds maximum supported size")
+                }
+                return mime to bytes
             }
             val base64Idx = trimmed.indexOf(";base64,", ignoreCase = true)
             val cleanBase64 = if (base64Idx >= 0) {
@@ -539,7 +616,11 @@ class DownloadCoordinator(
             } else {
                 trimmed.substringAfter("base64,", trimmed)
             }
-            return fallbackMime to Base64.getMimeDecoder().decode(cleanBase64)
+            val bytes = Base64.getMimeDecoder().decode(cleanBase64)
+            if (bytes.size > MAX_DATA_DOWNLOAD_BYTES) {
+                throw IOException("Download exceeds maximum supported size")
+            }
+            return fallbackMime to bytes
         }
     }
 }

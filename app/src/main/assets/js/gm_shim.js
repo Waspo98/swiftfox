@@ -5,26 +5,56 @@
   }
 
   const pendingXhr = Object.create(null);
+  const ranScripts = Object.create(null);
   let xhrSeq = 0;
 
+  // Capture built-ins & native channel references at init so page JS cannot monkey-patch them
+  const nativeHasOwn = Object.prototype.hasOwnProperty;
+  const nativeObjectAssign = Object.assign;
+  const nativeObjectKeys = Object.keys;
+  const nativeObjectFreeze = Object.freeze;
+  const nativeJsonStringify = JSON.stringify;
+  const nativeJsonParse = JSON.parse;
+  const initialChannel = window.SwiftfoxNativeChannel;
+  const boundPostMessage =
+    initialChannel && typeof initialChannel.postMessage === 'function'
+      ? initialChannel.postMessage.bind(initialChannel)
+      : null;
+
   function postGm(action, fields) {
+    const payload = nativeObjectAssign({ channel: 'gm', token: bridgeToken, action: action }, fields);
+    if (boundPostMessage) {
+      boundPostMessage(nativeJsonStringify(payload));
+      return true;
+    }
     const ch = window.SwiftfoxNativeChannel;
     if (!ch || typeof ch.postMessage !== 'function') {
       return false;
     }
-    const payload = Object.assign({ channel: 'gm', token: bridgeToken, action: action }, fields);
-    ch.postMessage(JSON.stringify(payload));
+    ch.postMessage(nativeJsonStringify(payload));
     return true;
   }
 
   function hasOwn(obj, key) {
-    return Object.prototype.hasOwnProperty.call(obj, key);
+    return nativeHasOwn.call(obj, key);
+  }
+
+  function claimRun(token, runKey) {
+    if (!bridgeToken || token !== bridgeToken) {
+      return false;
+    }
+    const k = String(runKey || '');
+    if (!k || k === '__proto__' || ranScripts[k]) {
+      return false;
+    }
+    ranScripts[k] = true;
+    return true;
   }
 
   function cloneStorage(initialStorage) {
     const storage = Object.create(null);
     if (initialStorage && typeof initialStorage === 'object') {
-      const keys = Object.keys(initialStorage);
+      const keys = nativeObjectKeys(initialStorage);
       for (let i = 0; i < keys.length; i++) {
         const k = keys[i];
         if (k !== '__proto__') {
@@ -183,16 +213,17 @@
       if (k === '__proto__') {
         return;
       }
+      const normalizedVal = value === undefined ? null : value;
       let serialized;
       try {
-        serialized = JSON.stringify(value === undefined ? null : value);
+        serialized = nativeJsonStringify(normalizedVal);
       } catch (_e) {
         return;
       }
       if (typeof serialized !== 'string') {
         return;
       }
-      storage[k] = value;
+      storage[k] = normalizedVal;
       postGm('setValue', {
         scriptId: id,
         key: k,
@@ -388,10 +419,11 @@
     };
   }
 
-  const runtimeApi = {
+  const runtimeApi = nativeObjectFreeze({
+    claimRun: claimRun,
     createApi: createApi,
     resolveXhr: resolveXhr
-  };
+  });
   try {
     Object.defineProperty(window, runtimeKey, {
       value: runtimeApi,

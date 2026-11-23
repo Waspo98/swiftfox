@@ -45,7 +45,15 @@ class BackgroundMediaService : Service() {
         mediaSession = MediaSession(this, "SwiftfoxMediaSession").apply {
             setCallback(object : MediaSession.Callback() {
                 override fun onPlay() {
-                    activeController?.onMediaCommand(MediaCommand.PLAY)
+                    val controller = activeController
+                    if (controller == null) {
+                        stopForegroundAndSelf()
+                        return
+                    }
+                    if (!isForeground) {
+                        promoteToForegroundSafe(buildNotification(playingOverride = true))
+                    }
+                    controller.onMediaCommand(MediaCommand.PLAY)
                 }
 
                 override fun onPause() {
@@ -62,35 +70,71 @@ class BackgroundMediaService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val startedViaForegroundIntent =
+            intent?.getBooleanExtra(EXTRA_EXPECT_FOREGROUND, false) == true
         when (intent?.action) {
             ACTION_UPDATE -> {
                 val nextTitle = intent.getStringExtra(EXTRA_TITLE).orEmpty()
                 val nextHost = intent.getStringExtra(EXTRA_HOST).orEmpty()
                 val nextPlaying = intent.getBooleanExtra(EXTRA_IS_PLAYING, true)
                 val nextPrivate = intent.getBooleanExtra(EXTRA_IS_PRIVATE, false)
-                applyStateUpdate(nextTitle, nextHost, nextPlaying, nextPrivate, allowStartForeground = true)
+                applyStateUpdate(
+                    rawTitle = nextTitle,
+                    rawHost = nextHost,
+                    playing = nextPlaying,
+                    privateTab = nextPrivate,
+                    allowStartForeground = nextPlaying || startedViaForegroundIntent
+                )
             }
             ACTION_TOGGLE_PLAY_PAUSE -> {
-                val targetPlaying = !isPlaying
-                if (targetPlaying && !isForeground) {
-                    // PendingIntent.getForegroundService requires startForeground before returning
-                    startForeground(
-                        NOTIFICATION_ID,
-                        buildNotification(playingOverride = true),
-                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
-                    )
-                    isForeground = true
+                val controller = activeController
+                if (controller == null) {
+                    // Satisfy startForeground contract if launched via PendingIntent.getForegroundService
+                    // before immediately cleaning up the orphaned notification.
+                    if (startedViaForegroundIntent && !isForeground) {
+                        promoteToForegroundSafe(buildNotification(playingOverride = false))
+                    }
+                    stopForegroundAndSelf()
+                    return START_NOT_STICKY
                 }
-                activeController?.onMediaCommand(
+                val targetPlaying = !isPlaying
+                if ((targetPlaying || startedViaForegroundIntent) && !isForeground) {
+                    promoteToForegroundSafe(buildNotification(playingOverride = targetPlaying))
+                }
+                controller.onMediaCommand(
                     if (isPlaying) MediaCommand.PAUSE else MediaCommand.PLAY
                 )
             }
             ACTION_STOP -> {
+                if (startedViaForegroundIntent && !isForeground) {
+                    promoteToForegroundSafe(buildNotification(playingOverride = false))
+                }
                 activeController?.onMediaCommand(MediaCommand.STOP)
                 stopForegroundAndSelf()
             }
+            else -> {
+                if (startedViaForegroundIntent && !isForeground) {
+                    promoteToForegroundSafe(buildNotification(playingOverride = false))
+                    stopForegroundAndSelf()
+                }
+            }
         }
         return START_NOT_STICKY
+    }
+
+    private fun promoteToForegroundSafe(notification: Notification): Boolean {
+        return runCatching {
+            startForeground(
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+            )
+            isForeground = true
+            true
+        }.getOrElse {
+            isForeground = false
+            false
+        }
     }
 
     private fun applyStateUpdate(
@@ -119,19 +163,18 @@ class BackgroundMediaService : Service() {
         }
         updateMediaSession()
         val notification = buildNotification()
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (isPlaying && allowStartForeground) {
-            startForeground(
-                NOTIFICATION_ID,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
-            )
-            isForeground = true
+            if (isForeground) {
+                nm.notify(NOTIFICATION_ID, notification)
+            } else if (!promoteToForegroundSafe(notification)) {
+                nm.notify(NOTIFICATION_ID, notification)
+            }
         } else {
             if (!isPlaying && isForeground) {
                 stopForeground(STOP_FOREGROUND_DETACH)
                 isForeground = false
             }
-            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             nm.notify(NOTIFICATION_ID, notification)
         }
     }
@@ -165,8 +208,8 @@ class BackgroundMediaService : Service() {
 
     private fun requestAudioFocus() {
         val am = audioManager ?: return
-        // Abandon any prior AudioFocusRequest before creating a new one to prevent leaks
-        abandonAudioFocus()
+        // Avoid abandoning and re-requesting focus when already held (e.g. metadata updates)
+        if (focusRequest != null) return
         val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
             .setAudioAttributes(
                 AudioAttributes.Builder()
@@ -226,12 +269,13 @@ class BackgroundMediaService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val toggleRawIntent = Intent(this, BackgroundMediaService::class.java).setAction(ACTION_TOGGLE_PLAY_PAUSE)
         val toggleIntent = if (effectivePlaying) {
             PendingIntent.getService(
                 this,
                 1,
-                toggleRawIntent,
+                Intent(this, BackgroundMediaService::class.java)
+                    .setAction(ACTION_TOGGLE_PLAY_PAUSE)
+                    .putExtra(EXTRA_EXPECT_FOREGROUND, false),
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
         } else {
@@ -239,17 +283,32 @@ class BackgroundMediaService : Service() {
             PendingIntent.getForegroundService(
                 this,
                 1,
-                toggleRawIntent,
+                Intent(this, BackgroundMediaService::class.java)
+                    .setAction(ACTION_TOGGLE_PLAY_PAUSE)
+                    .putExtra(EXTRA_EXPECT_FOREGROUND, true),
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
         }
 
-        val stopIntent = PendingIntent.getService(
-            this,
-            2,
-            Intent(this, BackgroundMediaService::class.java).setAction(ACTION_STOP),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
+        val stopIntent = if (effectivePlaying) {
+            PendingIntent.getService(
+                this,
+                2,
+                Intent(this, BackgroundMediaService::class.java)
+                    .setAction(ACTION_STOP)
+                    .putExtra(EXTRA_EXPECT_FOREGROUND, false),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+        } else {
+            PendingIntent.getForegroundService(
+                this,
+                2,
+                Intent(this, BackgroundMediaService::class.java)
+                    .setAction(ACTION_STOP)
+                    .putExtra(EXTRA_EXPECT_FOREGROUND, true),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+        }
 
         val playPauseRes = if (effectivePlaying) {
             android.R.drawable.ic_media_pause
@@ -323,6 +382,7 @@ class BackgroundMediaService : Service() {
         private const val EXTRA_HOST = "extra_host"
         private const val EXTRA_IS_PLAYING = "extra_is_playing"
         private const val EXTRA_IS_PRIVATE = "extra_is_private"
+        private const val EXTRA_EXPECT_FOREGROUND = "extra_expect_foreground"
 
         @Volatile
         var activeController: MediaCommandController? = null
@@ -344,15 +404,30 @@ class BackgroundMediaService : Service() {
         ) {
             if (!isPlaying && !isServiceRunning) return
             val existing = runningInstance?.get()
-            if (!isPlaying && existing != null) {
-                // Avoid background startService() restriction on Android 12-15 when pausing/ending
+            if (existing != null && (!isPlaying || existing.isForeground)) {
+                // Update active service directly on Main thread so background track transitions
+                // and pauses avoid Android 12-15 background startForegroundService restrictions.
                 mainHandler.post {
                     runningInstance?.get()?.applyStateUpdate(
                         rawTitle = title,
                         rawHost = host,
-                        playing = false,
+                        playing = isPlaying,
                         privateTab = isPrivate,
-                        allowStartForeground = false
+                        allowStartForeground = isPlaying
+                    )
+                }
+                return
+            }
+            if (existing != null && isPlaying) {
+                // Service is still alive (detached after pause); try promoting directly on Main
+                // and fall back cleanly to posting updated notification if FGS start is restricted.
+                mainHandler.post {
+                    runningInstance?.get()?.applyStateUpdate(
+                        rawTitle = title,
+                        rawHost = host,
+                        playing = true,
+                        privateTab = isPrivate,
+                        allowStartForeground = true
                     )
                 }
                 return
@@ -363,6 +438,7 @@ class BackgroundMediaService : Service() {
                 putExtra(EXTRA_HOST, host)
                 putExtra(EXTRA_IS_PLAYING, isPlaying)
                 putExtra(EXTRA_IS_PRIVATE, isPrivate)
+                putExtra(EXTRA_EXPECT_FOREGROUND, isPlaying)
             }
             runCatching {
                 if (isPlaying) {

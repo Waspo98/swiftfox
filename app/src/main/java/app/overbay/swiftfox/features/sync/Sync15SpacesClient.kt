@@ -11,7 +11,7 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -42,7 +42,8 @@ class Sync15SpacesClient(
     private class TokenServerSession(
         val apiEndpoint: String,
         val hawkId: String,
-        val hawkKey: ByteArray
+        val hawkKey: ByteArray,
+        @Volatile var clockSkewSeconds: Long = 0L
     )
 
     private class CollectionKeyRing(
@@ -92,10 +93,13 @@ class Sync15SpacesClient(
             val sortedPrefs = prefsRecords.sortedBy {
                 (it["modified"] as? JsonPrimitive)?.content?.toDoubleOrNull() ?: 0.0
             }
-            val cleartextPrefs = decryptBsoList(sortedPrefs, keyRing.keysFor(ZenSpacesCodec.PREFS_COLLECTION))
-                .records
-                .map { it.second }
-            ZenSpacesCodec.decodePrefs(cleartextPrefs)
+            val prefsDecrypt = decryptBsoList(sortedPrefs, keyRing.keysFor(ZenSpacesCodec.PREFS_COLLECTION))
+            if (prefsDecrypt.failedCount > 0) {
+                throw SyncCryptoException(
+                    "Could not decrypt ${prefsDecrypt.failedCount} Zen prefs records (possible Sync key mismatch)"
+                )
+            }
+            ZenSpacesCodec.decodePrefs(prefsDecrypt.records.map { it.second })
         } else {
             ZenSpacesCodec.ZenPrefsState()
         }
@@ -125,10 +129,9 @@ class Sync15SpacesClient(
         tokenServerUrl: String,
         workspaceUuid: String,
         url: String,
-        title: String,
-        asEssential: Boolean = false
+        title: String
     ): Result<Unit> = withContext(Dispatchers.IO) {
-        runCatching {
+        try {
             val cleanUrl = url.trim()
             require(
                 cleanUrl.startsWith("http://", ignoreCase = true) ||
@@ -143,28 +146,6 @@ class Sync15SpacesClient(
             val metaPayload = fetchMetaGlobalPayload(session)
             check(ZenSpacesCodec.metaGlobalAllowsSpacesWrite(metaPayload, json)) {
                 "Zen Spaces write blocked by incompatible or missing meta/global record"
-            }
-
-            val separateEssentials = if (asEssential) {
-                val collections = fetchInfoCollections(session)
-                if (collections.containsKey(ZenSpacesCodec.PREFS_COLLECTION)) {
-                    val (prefsRecords, _) = fetchCollectionWithLastModified(
-                        session = session,
-                        collection = ZenSpacesCodec.PREFS_COLLECTION,
-                        limit = 100
-                    )
-                    val sortedPrefs = prefsRecords.sortedBy {
-                        (it["modified"] as? JsonPrimitive)?.content?.toDoubleOrNull() ?: 0.0
-                    }
-                    val cleartextPrefs = decryptBsoList(sortedPrefs, keyRing.keysFor(ZenSpacesCodec.PREFS_COLLECTION))
-                        .records
-                        .map { it.second }
-                    ZenSpacesCodec.decodePrefs(cleartextPrefs).separateEssentials == true
-                } else {
-                    false
-                }
-            } else {
-                false
             }
 
             var attempts = 0
@@ -189,22 +170,13 @@ class Sync15SpacesClient(
 
                 val spaceData = spaceCleartext.second["data"] as? JsonObject ?: JsonObject(emptyMap())
                 val containerGuid = (spaceData["containerGuid"] as? JsonPrimitive)?.takeIf { it.isString }?.content
-                val effectiveEssentialBucket = if (separateEssentials) {
-                    containerGuid?.takeIf { it.isNotBlank() } ?: "default"
-                } else {
-                    "default"
-                }
                 val newTabCleartext = ZenSpacesCodec.encodeNewTabRecord(
                     tabId = newTabId,
-                    workspaceUuid = if (asEssential) null else workspaceUuid,
+                    workspaceUuid = workspaceUuid,
                     url = cleanUrl,
                     title = title,
-                    essential = asEssential,
-                    containerGuid = if (asEssential) {
-                        effectiveEssentialBucket.takeIf { it != "default" }
-                    } else {
-                        containerGuid
-                    }
+                    essential = false,
+                    containerGuid = containerGuid
                 )
 
                 val outgoingRecords = mutableListOf<JsonObject>()
@@ -216,38 +188,13 @@ class Sync15SpacesClient(
                     )
                 }
 
-                if (asEssential) {
-                    val layoutEntry = decrypted.firstOrNull { (_, obj) ->
-                        !ZenSpacesCodec.isDeletedTombstone(obj) &&
-                            (obj["kind"] as? JsonPrimitive)?.content == "layout"
-                    }
-                    if (layoutEntry == null && ("layout" in decryptResult.failedIds || decryptResult.failedCount > 0)) {
-                        throw IOException(
-                            "Refusing to overwrite Zen layout because existing layout record could not be decrypted"
-                        )
-                    }
-                    val layoutId = layoutEntry?.first ?: "layout"
-                    val updatedLayout = rewriteLayoutWithEssential(
-                        existing = layoutEntry?.second,
-                        bucket = effectiveEssentialBucket,
-                        tabId = newTabId
+                val updatedSpace = rewriteSpaceWithChild(spaceCleartext.second, newTabId)
+                outgoingRecords += buildJsonObject {
+                    put("id", JsonPrimitive(spaceCleartext.first))
+                    put(
+                        "payload",
+                        JsonPrimitive(SyncCrypto.encryptBSO(updatedSpace.toString().toByteArray(Charsets.UTF_8), keys))
                     )
-                    outgoingRecords += buildJsonObject {
-                        put("id", JsonPrimitive(layoutId))
-                        put(
-                            "payload",
-                            JsonPrimitive(SyncCrypto.encryptBSO(updatedLayout.toString().toByteArray(Charsets.UTF_8), keys))
-                        )
-                    }
-                } else {
-                    val updatedSpace = rewriteSpaceWithChild(spaceCleartext.second, newTabId)
-                    outgoingRecords += buildJsonObject {
-                        put("id", JsonPrimitive(spaceCleartext.first))
-                        put(
-                            "payload",
-                            JsonPrimitive(SyncCrypto.encryptBSO(updatedSpace.toString().toByteArray(Charsets.UTF_8), keys))
-                        )
-                    }
                 }
 
                 val postBody = JsonArray(outgoingRecords).toString().toByteArray(Charsets.UTF_8)
@@ -278,6 +225,11 @@ class Sync15SpacesClient(
                 }
                 break
             }
+            Result.success(Unit)
+        } catch (ce: kotlinx.coroutines.CancellationException) {
+            throw ce
+        } catch (t: Throwable) {
+            Result.failure(t)
         }
     }
 
@@ -296,43 +248,6 @@ class Sync15SpacesClient(
         }
         return buildJsonObject {
             for ((k, v) in existing) {
-                if (k != "data") put(k, v)
-            }
-            put("data", newData)
-        }
-    }
-
-    private fun rewriteLayoutWithEssential(
-        existing: JsonObject?,
-        bucket: String,
-        tabId: String
-    ): JsonObject {
-        val root = existing ?: buildJsonObject {
-            put("id", JsonPrimitive("layout"))
-            put("kind", JsonPrimitive("layout"))
-            put("data", JsonObject(emptyMap()))
-        }
-        val dataObj = root["data"] as? JsonObject ?: JsonObject(emptyMap())
-        val essentialsObj = dataObj["essentials"] as? JsonObject ?: JsonObject(emptyMap())
-        val currentBucket = (essentialsObj[bucket] as? JsonArray)
-            ?.mapNotNull { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content }
-            .orEmpty()
-        val updatedBucket = (currentBucket + tabId).distinct()
-
-        val newEssentials = buildJsonObject {
-            for ((k, v) in essentialsObj) {
-                if (k != bucket) put(k, v)
-            }
-            put(bucket, buildJsonArray { updatedBucket.forEach { add(JsonPrimitive(it)) } })
-        }
-        val newData = buildJsonObject {
-            for ((k, v) in dataObj) {
-                if (k != "essentials") put(k, v)
-            }
-            put("essentials", newEssentials)
-        }
-        return buildJsonObject {
-            for ((k, v) in root) {
                 if (k != "data") put(k, v)
             }
             put("data", newData)
@@ -361,14 +276,24 @@ class Sync15SpacesClient(
             .getOrElse { throw IOException("Token server returned invalid JSON") }
         val endpoint = (obj["api_endpoint"] as? JsonPrimitive)?.content?.trimEnd('/')
             ?: throw IOException("Token server missing api_endpoint")
+        if (!endpoint.startsWith("https://", ignoreCase = true)) {
+            throw IOException("Sync storage endpoint must use HTTPS")
+        }
         val id = (obj["id"] as? JsonPrimitive)?.content
             ?: throw IOException("Token server missing hawk id")
         val key = (obj["key"] as? JsonPrimitive)?.content
             ?: throw IOException("Token server missing hawk key")
+        val serverTs = (obj["timestamp"] as? JsonPrimitive)?.content?.toDoubleOrNull()?.toLong()
+        val skew = if (serverTs != null && serverTs > 0L) {
+            serverTs - (System.currentTimeMillis() / 1000L)
+        } else {
+            0L
+        }
         return TokenServerSession(
             apiEndpoint = endpoint,
             hawkId = id,
-            hawkKey = key.toByteArray(Charsets.UTF_8)
+            hawkKey = key.toByteArray(Charsets.UTF_8),
+            clockSkewSeconds = skew
         )
     }
 
@@ -476,10 +401,18 @@ class Sync15SpacesClient(
                 arr.forEach { el -> (el as? JsonObject)?.let { out += it } }
                 pages++
                 val nextOffset = resp.header("X-Weave-Next-Offset")
-                if (nextOffset.isNullOrBlank() || nextOffset == offset) break
+                if (nextOffset.isNullOrBlank() || nextOffset == offset) {
+                    offset = null
+                    break
+                }
                 offset = nextOffset
             }
-            if (!conflicted) return out to lastModified
+            if (!conflicted) {
+                if (!offset.isNullOrBlank()) {
+                    throw IOException("Sync collection '$collection' exceeded maximum pagination limit")
+                }
+                return out to lastModified
+            }
             if (restarts >= 1) throw IOException("Collection '$collection' changed while reading")
             restarts++
         }
@@ -513,7 +446,8 @@ class Sync15SpacesClient(
         path: String,
         bodyBytes: ByteArray? = null,
         extraHeaders: Map<String, String> = emptyMap(),
-        allowCodes: Set<Int> = emptySet()
+        allowCodes: Set<Int> = emptySet(),
+        allowClockRetry: Boolean = true
     ): HttpResult {
         val fullUrlString = session.apiEndpoint + path
         val url = URL(fullUrlString)
@@ -525,7 +459,8 @@ class Sync15SpacesClient(
             id = session.hawkId,
             key = session.hawkKey,
             payloadHash = payloadHash,
-            resource = resource
+            resource = resource,
+            clockSkewSeconds = session.clockSkewSeconds
         )
         val builder = Request.Builder()
             .url(fullUrlString)
@@ -542,10 +477,32 @@ class Sync15SpacesClient(
             builder.method(method, (bodyBytes ?: ByteArray(0)).toRequestBody(jsonMediaType))
         }
         val resp = executeRaw(builder.build())
+        if (resp.code == 401 && allowClockRetry) {
+            val serverTs = parseHawkServerTimestamp(resp.header("WWW-Authenticate"))
+                ?: resp.header("X-Weave-Timestamp")?.toDoubleOrNull()?.toLong()
+            if (serverTs != null && serverTs > 0L) {
+                session.clockSkewSeconds = serverTs - (System.currentTimeMillis() / 1000L)
+                return requestHawk(
+                    session = session,
+                    method = method,
+                    path = path,
+                    bodyBytes = bodyBytes,
+                    extraHeaders = extraHeaders,
+                    allowCodes = allowCodes,
+                    allowClockRetry = false
+                )
+            }
+        }
         if (resp.code !in 200..299 && resp.code !in allowCodes) {
             throw IOException("Sync storage HTTP ${resp.code} on $path")
         }
         return resp
+    }
+
+    private fun parseHawkServerTimestamp(wwwAuth: String?): Long? {
+        if (wwwAuth.isNullOrBlank()) return null
+        val match = HAWK_TS_REGEX.find(wwwAuth) ?: return null
+        return match.groupValues[1].toLongOrNull()
     }
 
     private fun executeRaw(request: Request): HttpResult {
@@ -561,16 +518,26 @@ class Sync15SpacesClient(
 
     companion object {
         private const val SYNC_15_TOKEN_SUFFIX = "/1.0/sync/1.5"
+        private val HAWK_TS_REGEX = Regex("""\bts\s*=\s*"?(\d+)"?""", RegexOption.IGNORE_CASE)
 
         /**
          * Matches Mozilla `sync15/src/client/token.rs::fixup_server_url`:
          * `FirefoxAccount.getTokenServerEndpointURL()` returns the bare base URL
          * (e.g. `https://token.services.mozilla.com/`), so append `/1.0/sync/1.5`
-         * unless already present.
+         * unless already present. Enforces HTTPS so Sync tokens never travel in cleartext.
          */
         fun resolveTokenServerUrl(rawUrl: String): String {
             val trimmed = rawUrl.trim().trimEnd('/')
             if (trimmed.isEmpty()) throw IOException("Empty token server URL")
+            if (!trimmed.startsWith("https://", ignoreCase = true) ||
+                trimmed.startsWith("https:///", ignoreCase = true)
+            ) {
+                throw IOException("Token server URL must be a valid HTTPS URL")
+            }
+            val parsed = trimmed.toHttpUrlOrNull()
+            if (parsed == null || !parsed.isHttps || parsed.host.isBlank()) {
+                throw IOException("Token server URL must be a valid HTTPS URL")
+            }
             return if (trimmed.endsWith(SYNC_15_TOKEN_SUFFIX, ignoreCase = true)) {
                 trimmed
             } else {

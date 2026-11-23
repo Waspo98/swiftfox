@@ -70,8 +70,7 @@ fun StartPageContent(
     onSelectTab: (String) -> Unit,
     onAddEssential: (String, String) -> Unit,
     onRemoveEssential: (String) -> Unit,
-    modifier: Modifier = Modifier,
-    applyBottomNavPadding: Boolean = true
+    modifier: Modifier = Modifier
 ) {
     var showAddEssentialDialog by remember { mutableStateOf(false) }
     var essentialToRemove by remember { mutableStateOf<EssentialEntity?>(null) }
@@ -89,7 +88,6 @@ fun StartPageContent(
                 .widthIn(max = if (isUnfolded) 720.dp else 540.dp)
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
-                .then(if (applyBottomNavPadding) Modifier.navigationBarsPadding() else Modifier)
                 .padding(horizontal = 20.dp, vertical = 22.dp),
             verticalArrangement = Arrangement.spacedBy(20.dp)
         ) {

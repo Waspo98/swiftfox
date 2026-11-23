@@ -7,9 +7,13 @@ import app.overbay.swiftfox.features.sync.SyncCryptoException
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
 import java.net.URL
+import java.security.MessageDigest
 import java.util.Base64
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
 
 class SyncCryptoAndHawkTest {
 
@@ -78,11 +82,66 @@ class SyncCryptoAndHawkTest {
         val keys = SyncCrypto.SyncKeyBundle(ByteArray(32), ByteArray(32))
         try {
             SyncCrypto.decryptBSO("{not-json", keys)
+            fail("Expected SyncCryptoException for malformed JSON")
         } catch (_: SyncCryptoException) {
             // Expected; now test non-hex hmac
         }
         val b64 = Base64.getEncoder().encodeToString(ByteArray(16))
         SyncCrypto.decryptBSO("""{"ciphertext":"$b64","IV":"$b64","hmac":"zzzz"}""", keys)
+    }
+
+    @Test
+    fun hawkAuthorizationMatchesIndependentSpecVectorAndAppliesClockSkew() {
+        val body = """{"hello":"world"}""".toByteArray(Charsets.UTF_8)
+        val contentType = "application/json; charset=utf-8"
+        val hash = HawkAuth.payloadHash(body, contentType)
+
+        // Independent Hawk 1.0 payload hash check
+        val expectedPayloadInput = ("hawk.1.payload\napplication/json\n").toByteArray(Charsets.UTF_8) +
+            body + byteArrayOf(0x0A)
+        val expectedHash = Base64.getEncoder().encodeToString(
+            MessageDigest.getInstance("SHA-256").digest(expectedPayloadInput)
+        )
+        assertEquals(expectedHash, hash)
+
+        val key = "werxhqb98rpaxn39848xrunpaw3489ruxnpa98w4rxn".toByteArray(Charsets.UTF_8)
+        val url = URL("https://sync.services.mozilla.com/1.5/42/storage/spaces?full=1")
+        val resource = "/1.5/42/storage/spaces?full=1"
+        val header = HawkAuth.authorization(
+            method = "POST",
+            url = url,
+            id = "id-42",
+            key = key,
+            payloadHash = hash,
+            resource = resource,
+            fixedTimestamp = 1700000123L,
+            fixedNonce = "abc999"
+        )
+
+        // Independent Hawk 1.0 header MAC check
+        val normalized = "hawk.1.header\n1700000123\nabc999\nPOST\n$resource\nsync.services.mozilla.com\n443\n$expectedHash\n\n"
+        val mac = Mac.getInstance("HmacSHA256").apply {
+            init(SecretKeySpec(key, "HmacSHA256"))
+        }.doFinal(normalized.toByteArray(Charsets.UTF_8))
+        val expectedMac = Base64.getEncoder().encodeToString(mac)
+        assertEquals(
+            """Hawk id="id-42", ts="1700000123", nonce="abc999", mac="$expectedMac", hash="$expectedHash"""",
+            header
+        )
+
+        // Clock skew shifts emitted timestamp when fixedTimestamp is omitted
+        val nowSec = System.currentTimeMillis() / 1000L
+        val skewedHeader = HawkAuth.authorization(
+            method = "GET",
+            url = url,
+            id = "id-42",
+            key = key,
+            clockSkewSeconds = 180L
+        )
+        val tsMatch = Regex("""ts="(\d+)"""").find(skewedHeader)
+        assertTrue(tsMatch != null)
+        val emittedTs = tsMatch!!.groupValues[1].toLong()
+        assertTrue(emittedTs in (nowSec + 175L)..(nowSec + 185L))
     }
 
     @Test
@@ -156,5 +215,20 @@ class SyncCryptoAndHawkTest {
             "https://sync.example.com/token/1.0/sync/1.5",
             Sync15SpacesClient.resolveTokenServerUrl("https://sync.example.com/token/")
         )
+
+        for (invalid in listOf(
+            "http://token.services.mozilla.com",
+            "http://token.services.mozilla.com/1.0/sync/1.5",
+            "javascript:alert(1)",
+            "   ",
+            "https:///1.0/sync/1.5"
+        )) {
+            try {
+                Sync15SpacesClient.resolveTokenServerUrl(invalid)
+                fail("Expected IOException for $invalid")
+            } catch (_: java.io.IOException) {
+                // Expected HTTPS-only enforcement
+            }
+        }
     }
 }

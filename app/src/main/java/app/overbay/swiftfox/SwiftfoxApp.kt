@@ -116,7 +116,7 @@ class SwiftfoxApp : Application() {
             httpClient = httpClient
         )
         SyncWorkerBridge.onRunSync = {
-            mozillaSyncCoordinator.syncNow(SyncReason.User)
+            mozillaSyncCoordinator.syncNow(SyncReason.Startup)
         }
 
         FilterListWorkerBridge.onRunUpdate = {
@@ -139,8 +139,12 @@ class SwiftfoxApp : Application() {
             false
         }
 
-        // Run Mozilla Sync/JNA init and WorkManager scheduling off the main thread.
+        // Run Mozilla Sync/JNA init, JS asset warmup, and WorkManager scheduling off the main thread.
         appScope.launch {
+            darkReaderInjector.warmUpAssets()
+            zapperController.warmUpAssets()
+            userscriptBridge.warmUpAssets()
+            readerExtractor.warmUpAssets()
             FilterListUpdateWorker.schedulePeriodic(this@SwiftfoxApp)
             mozillaSyncCoordinator.initialize()
         }
@@ -161,8 +165,14 @@ class SwiftfoxApp : Application() {
     @Suppress("DEPRECATION")
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
-        if (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) {
-            tabSessionPool.hibernateBackgroundSessions()
+        // TRIM_MEMORY_UI_HIDDEN (20) fires on every normal app switch — only hibernate warm
+        // background tabs under genuine system memory pressure.
+        val isGenuineMemoryPressure =
+            level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW ||
+                level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL ||
+                level >= ComponentCallbacks2.TRIM_MEMORY_BACKGROUND
+        if (isGenuineMemoryPressure) {
+            tabSessionPool.hibernateBackgroundSessions(evictThumbnails = true)
         }
     }
 }

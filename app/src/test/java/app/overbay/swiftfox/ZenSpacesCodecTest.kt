@@ -286,4 +286,56 @@ class ZenSpacesCodecTest {
         assertFalse(ZenSpacesCodec.isDeletedTombstone(obj("""{"deleted":"true"}""")))
         assertFalse(ZenSpacesCodec.isDeletedTombstone(obj("""{"deleted":false}""")))
     }
+
+    @Test
+    fun encodeNewTabRecordRoundTripsThroughAssembleSnapshot() {
+        val spaceRec = "sp-1" to obj(
+            """{"id":"sp-1","kind":"space","data":{"uuid":"sp-1","name":"Work","containerGuid":"container-work","children":["tab-new"]}}"""
+        )
+        val newTabObj = ZenSpacesCodec.encodeNewTabRecord(
+            tabId = "tab-new",
+            workspaceUuid = "sp-1",
+            url = "https://kotlinlang.org/docs/",
+            title = "Kotlin Docs",
+            essential = false,
+            containerGuid = "container-work"
+        )
+        val newEssentialObj = ZenSpacesCodec.encodeNewTabRecord(
+            tabId = "ess-new",
+            workspaceUuid = null,
+            url = "https://overbay.app/",
+            title = "Overbay",
+            essential = true,
+            containerGuid = null
+        )
+
+        val snapshot = ZenSpacesCodec.assembleSnapshot(
+            listOf(
+                spaceRec,
+                "tab-new" to newTabObj,
+                "ess-new" to newEssentialObj
+            )
+        )
+
+        val decodedTab = (ZenSpacesCodec.decodeRecord(newTabObj) as ZenSpacesCodec.DecodedZenRecord.Tab).record
+        assertEquals("container-work", decodedTab.containerGuid)
+        assertFalse(decodedTab.essential)
+        assertEquals(false, decodedTab.defaultContainer)
+
+        val decodedEss = (ZenSpacesCodec.decodeRecord(newEssentialObj) as ZenSpacesCodec.DecodedZenRecord.Tab).record
+        assertTrue(decodedEss.essential)
+        assertEquals(true, decodedEss.defaultContainer)
+
+        val pinned = snapshot.pinnedBySpace["sp-1"].orEmpty().single()
+        assertEquals("tab-new", pinned.tabId)
+        assertEquals("https://kotlinlang.org/docs/", pinned.url)
+        assertEquals("Kotlin Docs", pinned.title)
+        assertTrue(pinned.isPinned)
+
+        val essential = snapshot.essentialsByContainer["default"].orEmpty().single()
+        assertEquals("ess-new", essential.tabId)
+        assertEquals("https://overbay.app/", essential.url)
+        assertEquals("Overbay", essential.title)
+        assertEquals("default", essential.containerGuid)
+    }
 }

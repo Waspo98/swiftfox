@@ -12,7 +12,6 @@ import app.overbay.swiftfox.features.userscripts.UserscriptUrlMatcher
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
@@ -124,10 +123,56 @@ class UserscriptEngineTest {
         assertFalse(UserscriptUrlMatcher.matches("file:///sdcard/test.html", listOf("<all_urls>"), emptyList()))
         assertFalse(UserscriptUrlMatcher.matches("javascript:alert(1)", listOf("<all_urls>"), emptyList()))
 
-        // Nested quantifiers & oversized user regex patterns must fail closed (ReDoS protection)
+        // Nested quantifiers, overlapping alternation & oversized user regex patterns must fail closed (ReDoS protection)
         assertFalse(UserscriptUrlMatcher.matches("https://aaaaaaaaaaaaaa.example.com/", listOf("/(a+)+$/"), emptyList()))
+        assertFalse(UserscriptUrlMatcher.matches("https://aaaaaaaaaaaaaa.example.com/", listOf("/(a|aa)+$/"), emptyList()))
+        assertFalse(UserscriptUrlMatcher.matches("https://foobarfoobar.example.com/", listOf("/(foo|foobar)+/"), emptyList()))
         val overSizedRegex = "/" + "a".repeat(260) + "/"
         assertFalse(UserscriptUrlMatcher.matches("https://example.com/" + "a".repeat(260), listOf(overSizedRegex), emptyList()))
+
+        // Case-insensitive @include scheme/host matching
+        assertTrue(
+            UserscriptUrlMatcher.matches(
+                url = "https://example.com/path/article",
+                matches = listOf("HTTPS://EXAMPLE.COM/path*"),
+                excludes = emptyList()
+            )
+        )
+        assertTrue(
+            UserscriptUrlMatcher.matches(
+                url = "https://example.com/watch",
+                matches = listOf("*://example.com:443/watch*"),
+                excludes = emptyList()
+            )
+        )
+    }
+
+    @Test
+    fun compileJsCheckEmitsValidEcmaRegexWithoutJvmQuoting() {
+        val patterns = listOf(
+            "https://*.example.com/articles/*",
+            "*://example.com:443/watch*",
+            "http*://*.google.*/*",
+            "/^https:\\/\\/docs\\.example\\.org\\/v\\d+\\//i"
+        )
+        patterns.forEach { pat ->
+            val check = UserscriptUrlMatcher.compileJsCheck(pat)
+            assertNotNull("Expected compiled check for $pat", check)
+            assertFalse("Must not contain JVM \\Q quoting: ${check!!.regexBody}", check.regexBody.contains("\\Q"))
+            assertFalse("Must not contain JVM \\E quoting: ${check.regexBody}", check.regexBody.contains("\\E"))
+        }
+
+        val strictCheck = UserscriptUrlMatcher.compileJsCheck("https://*.example.com/articles/*")!!
+        val strictRegex = Regex(strictCheck.regexBody, RegexOption.IGNORE_CASE)
+        assertTrue(strictRegex.containsMatchIn("https://example.com/articles/123"))
+        assertTrue(strictRegex.containsMatchIn("https://sub.example.com/articles/123"))
+        assertFalse(strictRegex.containsMatchIn("https://notexample.com/articles/123"))
+        assertFalse(strictRegex.containsMatchIn("http://example.com/articles/123"))
+
+        val portCheck = UserscriptUrlMatcher.compileJsCheck("*://example.com:443/watch*")!!
+        val portRegex = Regex(portCheck.regexBody, RegexOption.IGNORE_CASE)
+        assertTrue(portRegex.containsMatchIn("https://example.com/watch?v=1"))
+        assertTrue(portRegex.containsMatchIn("https://example.com:443/watch?v=1"))
     }
 
     @Test
@@ -177,7 +222,8 @@ class UserscriptEngineTest {
         assertTrue(endJs.contains("(function(GM_info, GM_addStyle, GM_getValue, GM_setValue, GM_deleteValue, GM_listValues, GM_xmlhttpRequest, GM, unsafeWindow) {"))
         assertTrue(endJs.contains("}).call(window, __sfApi.GM_info"))
         assertTrue(endJs.contains("__sfHref"))
-        assertTrue(endJs.contains("__swiftfoxRanUserscripts"))
+        assertTrue(endJs.contains("__sfRt.claimRun("))
+        assertFalse(endJs.contains("__swiftfoxRanUserscripts"))
         assertTrue(endJs.contains("// trailing comment without newline\n    }).call(window"))
         assertFalse(endJs.contains("setTimeout(function()"))
 
@@ -576,6 +622,122 @@ class UserscriptEngineTest {
         bridge.handleSetValue("s-sec", "k0", oversized, pageUrl = "https://example.com/")
         advanceUntilIdle()
         assertEquals("0", storageDao.getValue("s-sec", "k0")?.valueJson)
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun bridgeEnforcesConnectDirectivesAndDistinguishesTimeoutFromAbort() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val scriptDao = FakeUserscriptDao()
+        val storageDao = FakeUserscriptStorageDao()
+
+        val mockClient = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val req = chain.request()
+                if (req.url.encodedPath == "/slow") {
+                    throw java.io.InterruptedIOException("timeout")
+                }
+                Response.Builder()
+                    .request(req)
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body("ok".toResponseBody("text/plain".toMediaType()))
+                    .build()
+            }
+            .build()
+
+        val bridge = UserscriptBridge(
+            context = null,
+            scope = this,
+            scriptDao = scriptDao,
+            storageDao = storageDao,
+            client = mockClient,
+            ioDispatcher = dispatcher,
+            mainDispatcher = dispatcher
+        )
+
+        scriptDao.upsert(
+            UserscriptEntity(
+                id = "s-connect",
+                name = "Connect Scoped",
+                code = """
+                    // ==UserScript==
+                    // @name Connect Scoped
+                    // @match https://app.example.com/*
+                    // @grant GM_xmlhttpRequest
+                    // @connect api.allowed.org
+                    // @connect self
+                    // ==/UserScript==
+                    console.log('ok');
+                """.trimIndent(),
+                matchesJson = UserscriptParser.encodeStringList(listOf("https://app.example.com/*")),
+                grantsJson = UserscriptParser.encodeStringList(listOf("GM_xmlhttpRequest")),
+                enabled = true
+            )
+        )
+
+        var allowedJs: String? = null
+        bridge.handleXmlHttpRequest(
+            scriptId = "s-connect",
+            reqId = "req-allow",
+            requestJson = """{"method":"GET","url":"https://sub.api.allowed.org/v1"}""",
+            pageUrl = "https://app.example.com/home",
+            bridgeToken = "tok"
+        ) { allowedJs = it }
+        advanceUntilIdle()
+        assertTrue(allowedJs!!.contains("\"onload\""))
+
+        var selfJs: String? = null
+        bridge.handleXmlHttpRequest(
+            scriptId = "s-connect",
+            reqId = "req-self",
+            requestJson = """{"method":"GET","url":"https://app.example.com/data"}""",
+            pageUrl = "https://app.example.com/home",
+            bridgeToken = "tok"
+        ) { selfJs = it }
+        advanceUntilIdle()
+        assertTrue(selfJs!!.contains("\"onload\""))
+
+        var deniedJs: String? = null
+        bridge.handleXmlHttpRequest(
+            scriptId = "s-connect",
+            reqId = "req-deny",
+            requestJson = """{"method":"GET","url":"https://other.unlisted.net/leak"}""",
+            pageUrl = "https://app.example.com/home",
+            bridgeToken = "tok"
+        ) { deniedJs = it }
+        advanceUntilIdle()
+        assertTrue(deniedJs!!.contains("\"onerror\""))
+
+        // OkHttp callTimeout InterruptedIOException must fire ontimeout (not silently hang)
+        var timeoutJs: String? = null
+        bridge.handleXmlHttpRequest(
+            scriptId = "s-connect",
+            reqId = "req-timeout",
+            requestJson = """{"method":"GET","url":"https://api.allowed.org/slow","timeout":100}""",
+            pageUrl = "https://app.example.com/home",
+            bridgeToken = "tok",
+            tabId = "tab-1"
+        ) { timeoutJs = it }
+        advanceUntilIdle()
+        assertNotNull(timeoutJs)
+        assertTrue(timeoutJs!!.contains("\"ontimeout\""))
+
+        // Explicit user abort must fire onabort
+        var abortJs: String? = null
+        bridge.handleAbortXmlHttpRequest(reqId = "req-abort", tabId = "tab-1")
+        bridge.handleXmlHttpRequest(
+            scriptId = "s-connect",
+            reqId = "req-abort",
+            requestJson = """{"method":"GET","url":"https://api.allowed.org/v1"}""",
+            pageUrl = "https://app.example.com/home",
+            bridgeToken = "tok",
+            tabId = "tab-1"
+        ) { abortJs = it }
+        advanceUntilIdle()
+        assertNotNull(abortJs)
+        assertTrue(abortJs!!.contains("\"onabort\""))
     }
 
     private class FakeUserscriptDao : UserscriptDao {

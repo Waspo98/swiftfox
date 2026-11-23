@@ -78,27 +78,28 @@ object UserscriptUrlMatcher {
         if (strict != null) {
             val schemeExpr = when (strict.scheme) {
                 "*" -> "https?"
-                else -> Regex.escape(strict.scheme)
+                else -> escapeJsRegexLiteral(strict.scheme)
             }
             val hostExpr = when {
                 strict.host == "*" -> """[^/?#]+"""
                 strict.host.startsWith("*.") -> {
-                    val base = Regex.escape(strict.host.removePrefix("*."))
+                    val base = escapeJsRegexLiteral(strict.host.removePrefix("*."))
                     """(?:[^/?#]+\.)?$base"""
                 }
-                else -> Regex.escape(strict.host)
+                else -> escapeJsRegexLiteral(strict.host)
             }
             val portExpr = when {
                 strict.port == null -> """(?::\d+)?"""
                 strict.port == "*" -> """(?::\d+)?"""
                 else -> {
-                    val escapedPort = Regex.escape(strict.port)
+                    val escapedPort = escapeJsRegexLiteral(strict.port)
                     val isDefaultPort = (strict.scheme == "http" && strict.port == "80") ||
-                        (strict.scheme == "https" && strict.port == "443")
+                        (strict.scheme == "https" && strict.port == "443") ||
+                        (strict.scheme == "*" && (strict.port == "80" || strict.port == "443"))
                     if (isDefaultPort) """(?::$escapedPort)?""" else ":$escapedPort"
                 }
             }
-            val pathExpr = globToRegexBody(collapseRepeatedStars(strict.pathPattern), starReplacement = ".*")
+            val pathExpr = globToJsRegexBody(collapseRepeatedStars(strict.pathPattern), starReplacement = ".*")
             return JsUrlCheck(
                 regexBody = "^$schemeExpr://$hostExpr$portExpr$pathExpr$",
                 flags = "i"
@@ -110,28 +111,28 @@ object UserscriptUrlMatcher {
             val patScheme = trimmed.substring(0, schemeSep)
             val patRest = trimmed.substring(schemeSep + 3)
             val slashIdx = patRest.indexOf('/')
-            val schemeRegex = globToRegexBody(collapseRepeatedStars(patScheme), starReplacement = "[^:/]*")
+            val schemeRegex = globToJsRegexBody(collapseRepeatedStars(patScheme), starReplacement = "[^:/]*")
             return if (slashIdx >= 0) {
                 val patAuthority = patRest.substring(0, slashIdx)
                 val patPath = patRest.substring(slashIdx)
-                val authRegex = globToRegexBody(collapseRepeatedStars(patAuthority), starReplacement = "[^/]*")
-                val pathRegex = globToRegexBody(collapseRepeatedStars(patPath), starReplacement = ".*")
+                val authRegex = globToJsRegexBody(collapseRepeatedStars(patAuthority), starReplacement = "[^/]*")
+                val pathRegex = globToJsRegexBody(collapseRepeatedStars(patPath), starReplacement = ".*")
                 JsUrlCheck(regexBody = "^$schemeRegex://$authRegex$pathRegex$", flags = "i")
             } else if (patRest == "*") {
                 JsUrlCheck(regexBody = "^$schemeRegex://.*$", flags = "i")
             } else if (patRest.endsWith("*")) {
                 val prefix = patRest.removeSuffix("*")
-                val prefixRegex = globToRegexBody(collapseRepeatedStars(prefix), starReplacement = "[^/]*")
+                val prefixRegex = globToJsRegexBody(collapseRepeatedStars(prefix), starReplacement = "[^/]*")
                 JsUrlCheck(regexBody = "^$schemeRegex://$prefixRegex.*$", flags = "i")
             } else {
-                val body = globToRegexBody(collapseRepeatedStars(patRest), starReplacement = "[^/]*")
+                val body = globToJsRegexBody(collapseRepeatedStars(patRest), starReplacement = "[^/]*")
                 JsUrlCheck(regexBody = "^$schemeRegex://$body/?$", flags = "i")
             }
         }
 
         val collapsed = collapseRepeatedStars(trimmed)
         return JsUrlCheck(
-            regexBody = "^${globToRegexBody(collapsed, starReplacement = ".*")}$",
+            regexBody = "^${globToJsRegexBody(collapsed, starReplacement = ".*")}$",
             flags = "i"
         )
     }
@@ -262,6 +263,7 @@ object UserscriptUrlMatcher {
     private fun hasUnsafeNestedQuantifiers(patternBody: String): Boolean {
         if (patternBody.isEmpty()) return false
         val groupHasQuantifier = ArrayDeque<Boolean>()
+        val groupHasAlternation = ArrayDeque<Boolean>()
         var i = 0
         while (i < patternBody.length) {
             val c = patternBody[i]
@@ -284,12 +286,22 @@ object UserscriptUrlMatcher {
                 continue
             }
             when (c) {
-                '(' -> groupHasQuantifier.addLast(false)
+                '(' -> {
+                    groupHasQuantifier.addLast(false)
+                    groupHasAlternation.addLast(false)
+                }
+                '|' -> {
+                    if (groupHasAlternation.isNotEmpty()) {
+                        groupHasAlternation.removeLast()
+                        groupHasAlternation.addLast(true)
+                    }
+                }
                 ')' -> {
                     val innerQuantified = if (groupHasQuantifier.isEmpty()) false else groupHasQuantifier.removeLast()
+                    val innerAlternation = if (groupHasAlternation.isEmpty()) false else groupHasAlternation.removeLast()
                     val next = patternBody.getOrNull(i + 1)
                     val outerQuantified = next == '*' || next == '+' || next == '{'
-                    if (innerQuantified && outerQuantified) return true
+                    if ((innerQuantified || innerAlternation) && outerQuantified) return true
                     if (innerQuantified || outerQuantified) {
                         if (groupHasQuantifier.isNotEmpty()) {
                             groupHasQuantifier.removeLast()
@@ -390,7 +402,7 @@ object UserscriptUrlMatcher {
         schemeEnd: Int,
         url: UrlParts
     ): Boolean {
-        val patScheme = pattern.substring(0, schemeEnd)
+        val patScheme = pattern.substring(0, schemeEnd).lowercase(java.util.Locale.ROOT)
         val patRest = pattern.substring(schemeEnd + 3)
         if (!wildcardSegmentMatches(patScheme, url.scheme, starReplacement = "[^:/]*")) {
             return false
@@ -398,7 +410,7 @@ object UserscriptUrlMatcher {
         val urlAuthority = if (url.port != null) "${url.host}:${url.port}" else url.host
         val slashIdx = patRest.indexOf('/')
         if (slashIdx >= 0) {
-            val patAuthority = patRest.substring(0, slashIdx)
+            val patAuthority = patRest.substring(0, slashIdx).lowercase(java.util.Locale.ROOT)
             val patPath = patRest.substring(slashIdx)
             if (!wildcardSegmentMatches(patAuthority, urlAuthority, starReplacement = "[^/]*")) {
                 return false
@@ -409,20 +421,20 @@ object UserscriptUrlMatcher {
             return true
         }
         if (patRest.endsWith("*")) {
-            val prefix = patRest.removeSuffix("*")
+            val prefix = patRest.removeSuffix("*").lowercase(java.util.Locale.ROOT)
             val authorityAndPath = "$urlAuthority${url.pathAndQuery}"
             val collapsedPrefix = collapseRepeatedStars(prefix)
             val cacheKey = "prefix:$collapsedPrefix"
             val regex = synchronized(globRegexCache) {
                 globRegexCache.getOrPut(cacheKey) {
                     val prefixBody = globToRegexBody(collapsedPrefix, "[^/]*")
-                    Regex("^$prefixBody.*$", RegexOption.DOT_MATCHES_ALL)
+                    Regex("^$prefixBody.*$", setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE))
                 }
             }
             return regex.matches(authorityAndPath)
         }
         return url.pathAndQuery == "/" &&
-            wildcardSegmentMatches(patRest, urlAuthority, starReplacement = "[^/]*")
+            wildcardSegmentMatches(patRest.lowercase(java.util.Locale.ROOT), urlAuthority, starReplacement = "[^/]*")
     }
 
     private fun collapseRepeatedStars(glob: String): String {
@@ -438,6 +450,29 @@ object UserscriptUrlMatcher {
             }
         }
         return out.toString()
+    }
+
+    private fun escapeJsRegexLiteral(literal: String): String = buildString(literal.length + 8) {
+        for (ch in literal) {
+            when (ch) {
+                '.', '*', '+', '?', '^', '$', '{', '}', '(', ')', '|', '[', ']', '\\', '/' -> {
+                    append('\\').append(ch)
+                }
+                else -> append(ch)
+            }
+        }
+    }
+
+    private fun globToJsRegexBody(collapsedGlob: String, starReplacement: String): String = buildString {
+        val parts = collapsedGlob.split('*')
+        parts.forEachIndexed { index, literal ->
+            if (literal.isNotEmpty()) {
+                append(escapeJsRegexLiteral(literal))
+            }
+            if (index < parts.lastIndex) {
+                append(starReplacement)
+            }
+        }
     }
 
     private fun globToRegexBody(collapsedGlob: String, starReplacement: String): String = buildString {

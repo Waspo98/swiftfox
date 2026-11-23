@@ -213,6 +213,9 @@ class AdblockEngine private constructor(
         val accept = headerIgnoreCase(headers, "Accept")?.lowercase(Locale.ROOT).orEmpty()
         if (accept.isNotBlank() && accept != "*/*") {
             when {
+                // Check HTML before image/ because Chromium's document/iframe Accept header
+                // lists text/html alongside image/avif,image/webp on plain http:// origins.
+                accept.contains("text/html") || accept.contains("application/xhtml+xml") -> return "subdocument"
                 accept.contains("text/css") -> return "stylesheet"
                 accept.contains("image/") -> return "image"
                 accept.contains("font/") || accept.contains("application/font") -> return "font"
@@ -359,7 +362,8 @@ class AdblockEngine private constructor(
         val listsDir = File(adblockDir(ctx), LISTS_SUBDIR)
         activeLists.forEach { entity ->
             val f = File(listsDir, "${entity.id}.txt")
-            val sig = "${entity.id}:${entity.lastUpdatedAt}:${if (f.isFile) f.length() else -1L}:${f.lastModified()};"
+            // Omit entity.lastUpdatedAt so HTTP 304 checks don't invalidate engine.dat cache
+            val sig = "${entity.id}:${if (f.isFile) f.length() else -1L}:${f.lastModified()};"
             digest.update(sig.toByteArray(Charsets.UTF_8))
         }
         return digest.digest().joinToString("") { "%02x".format(Locale.ROOT, it) }.take(24)

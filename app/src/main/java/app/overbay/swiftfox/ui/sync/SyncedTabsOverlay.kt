@@ -12,7 +12,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
@@ -34,17 +34,32 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import app.overbay.swiftfox.data.db.SyncedRemoteTabEntity
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
 import app.overbay.swiftfox.features.sync.RemoteDeviceTabsGroup
 import app.overbay.swiftfox.features.sync.SyncAccountState
 import app.overbay.swiftfox.ui.browser.BrowserUiState
 import java.util.Locale
+
+private data class SyncedTabRowItem(
+    val tab: SyncedRemoteTabEntity,
+    val displayHost: String
+)
+
+private data class SyncedDeviceDisplayGroup(
+    val group: RemoteDeviceTabsGroup,
+    val rows: List<SyncedTabRowItem>
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -56,7 +71,19 @@ fun SyncedTabsOverlay(
     onOpenSyncSettings: () -> Unit
 ) {
     val isConnected = state.syncStatus.accountState is SyncAccountState.Connected
-    val groups = state.remoteTabGroups
+    val displayGroups = remember(state.syncedRemoteTabs) {
+        state.remoteTabGroups.map { group ->
+            SyncedDeviceDisplayGroup(
+                group = group,
+                rows = group.tabs.map { tab ->
+                    SyncedTabRowItem(
+                        tab = tab,
+                        displayHost = OmniboxEngine.extractHost(tab.url).ifBlank { tab.url }
+                    )
+                }
+            )
+        }
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -83,7 +110,9 @@ fun SyncedTabsOverlay(
                         ) {
                             if (state.syncStatus.isSyncing) {
                                 CircularProgressIndicator(
-                                    modifier = Modifier.size(20.dp),
+                                    modifier = Modifier
+                                        .size(20.dp)
+                                        .semantics { contentDescription = "Syncing" },
                                     strokeWidth = 2.5.dp
                                 )
                             } else {
@@ -136,7 +165,7 @@ fun SyncedTabsOverlay(
                     }
                 }
             }
-        } else if (groups.isEmpty()) {
+        } else if (displayGroups.isEmpty()) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -175,18 +204,32 @@ fun SyncedTabsOverlay(
                     end = 16.dp,
                     top = innerPadding.calculateTopPadding() + 8.dp,
                     bottom = innerPadding.calculateBottomPadding() + 24.dp
-                ),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+                )
             ) {
-                items(
-                    items = groups,
-                    key = { it.deviceId },
-                    contentType = { "remote_device_group" }
-                ) { group ->
-                    RemoteDeviceCard(
-                        group = group,
-                        onOpenUrl = onOpenUrl
-                    )
+                displayGroups.forEachIndexed { groupIdx, displayGroup ->
+                    val group = displayGroup.group
+                    val rows = displayGroup.rows
+                    item(
+                        key = "device_header_${group.deviceId}",
+                        contentType = "remote_device_header"
+                    ) {
+                        RemoteDeviceHeaderRow(
+                            group = group,
+                            hasTabs = rows.isNotEmpty(),
+                            modifier = Modifier.padding(top = if (groupIdx == 0) 0.dp else 16.dp)
+                        )
+                    }
+                    itemsIndexed(
+                        items = rows,
+                        key = { idx, item -> "remote_tab_${group.deviceId}_${item.tab.id}_$idx" },
+                        contentType = { _, _ -> "remote_tab_row" }
+                    ) { idx, item ->
+                        RemoteTabItemRow(
+                            item = item,
+                            isLast = idx == rows.lastIndex,
+                            onOpenUrl = onOpenUrl
+                        )
+                    }
                 }
             }
         }
@@ -194,9 +237,10 @@ fun SyncedTabsOverlay(
 }
 
 @Composable
-private fun RemoteDeviceCard(
+private fun RemoteDeviceHeaderRow(
     group: RemoteDeviceTabsGroup,
-    onOpenUrl: (String) -> Unit
+    hasTabs: Boolean,
+    modifier: Modifier = Modifier
 ) {
     val deviceIcon = when (group.deviceType.uppercase(Locale.ROOT)) {
         "MOBILE" -> Icons.Rounded.PhoneAndroid
@@ -204,78 +248,109 @@ private fun RemoteDeviceCard(
         "DESKTOP" -> Icons.Rounded.Computer
         else -> Icons.Rounded.Devices
     }
+    val shape = if (hasTabs) {
+        RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp)
+    } else {
+        RoundedCornerShape(22.dp)
+    }
 
     Surface(
-        shape = RoundedCornerShape(22.dp),
+        shape = shape,
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        modifier = modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(
+                start = 18.dp,
+                end = 18.dp,
+                top = 18.dp,
+                bottom = if (hasTabs) 10.dp else 18.dp
+            ),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Icon(
+                imageVector = deviceIcon,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(20.dp)
+            )
+            Text(
+                text = group.deviceName,
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.primary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = MaterialTheme.colorScheme.primaryContainer
+            ) {
+                Text(
+                    text = "${group.tabs.size}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun RemoteTabItemRow(
+    item: SyncedTabRowItem,
+    isLast: Boolean,
+    onOpenUrl: (String) -> Unit
+) {
+    val shape = if (isLast) {
+        RoundedCornerShape(bottomStart = 22.dp, bottomEnd = 22.dp)
+    } else {
+        RectangleShape
+    }
+
+    Surface(
+        shape = shape,
         color = MaterialTheme.colorScheme.surfaceContainer,
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(
-            modifier = Modifier.padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            modifier = Modifier.padding(
+                start = 18.dp,
+                end = 18.dp,
+                bottom = if (isLast) 12.dp else 0.dp
+            )
         ) {
             Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .clickable { onOpenUrl(item.tab.url) }
+                    .heightIn(min = 56.dp)
+                    .padding(horizontal = 6.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(
-                    imageVector = deviceIcon,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(20.dp)
-                )
-                Text(
-                    text = group.deviceName,
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
-                )
-                Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = MaterialTheme.colorScheme.primaryContainer
-                ) {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "${group.tabs.size}",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                        text = item.tab.title,
+                        style = MaterialTheme.typography.titleSmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = item.displayHost,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }
-
-            group.tabs.forEachIndexed { idx, tab ->
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
-                        .clickable { onOpenUrl(tab.url) }
-                        .heightIn(min = 56.dp)
-                        .padding(horizontal = 6.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = tab.title,
-                            style = MaterialTheme.typography.titleSmall,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = OmniboxEngine.extractHost(tab.url).ifBlank { tab.url },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                }
-                if (idx < group.tabs.lastIndex) {
-                    HorizontalDivider(
-                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
-                    )
-                }
+            if (!isLast) {
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
+                )
             }
         }
     }

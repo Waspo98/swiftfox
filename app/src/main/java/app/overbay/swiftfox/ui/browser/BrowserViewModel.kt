@@ -4,10 +4,10 @@ import android.Manifest
 import android.app.Application
 import android.content.Context
 import android.content.Intent
-import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
 import android.os.Message
+import android.util.Log
 import android.view.View
 import android.webkit.MimeTypeMap
 import android.webkit.PermissionRequest
@@ -61,6 +61,7 @@ import app.overbay.swiftfox.features.userscripts.UserscriptRunAt
 import app.overbay.swiftfox.features.userscripts.UserscriptUrlMatcher
 import app.overbay.swiftfox.features.zapper.ZapperUiState
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -71,6 +72,8 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -108,6 +111,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     private var suggestionJob: Job? = null
     private var readerExtractJob: Job? = null
+    private val readerRequestCounter = AtomicLong(0L)
     private var initialTabsLoaded = false
     private var hasReceivedInitialPosture = false
     private var hasAskedNotificationPermission = false
@@ -122,8 +126,19 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private val filterUpdateInFlight = AtomicInteger(0)
     private val cosmeticExceptionsByTab = ConcurrentHashMap<String, List<String>>()
     private val spaCheckJobByTab = mutableMapOf<String, Job>()
+    private val pageStartedInjectJobByTab = ConcurrentHashMap<String, Job>()
+    private val pageFinishedInjectJobByTab = ConcurrentHashMap<String, Job>()
+    private val privateSessionGeneration = AtomicLong(0L)
     private val privateUserscriptStorage = ConcurrentHashMap<String, ConcurrentHashMap<String, String>>()
+    private val privateDeletedUserscriptKeys = ConcurrentHashMap<String, MutableSet<String>>()
+    private val tabDbMutex = Mutex()
+    private val siteOverrideMutex = Mutex()
+    private val syncPrefsMutex = Mutex()
+    private val pendingCreatedSpaces = ConcurrentHashMap<String, SpaceEntity>()
     private val viewModelJson = Json { ignoreUnknownKeys = true }
+    private val ioExceptionHandler = CoroutineExceptionHandler { _, err ->
+        Log.w("BrowserViewModel", "Unhandled background coroutine error: ${err.message}")
+    }
 
     private fun effectiveSiteOverride(host: String, isPrivate: Boolean): SiteOverrideEntity? {
         val state = _uiState.value
@@ -139,29 +154,40 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private fun mergePrivateUserscriptStorage(
         scriptsWithStorage: List<Pair<UserscriptEntity, Map<String, String>>>
     ): List<Pair<UserscriptEntity, Map<String, String>>> {
-        if (privateUserscriptStorage.isEmpty() || scriptsWithStorage.isEmpty()) return scriptsWithStorage
+        if (privateUserscriptStorage.isEmpty() && privateDeletedUserscriptKeys.isEmpty()) {
+            return scriptsWithStorage
+        }
+        if (scriptsWithStorage.isEmpty()) return scriptsWithStorage
         return scriptsWithStorage.map { (script, persisted) ->
             val ephemeral = privateUserscriptStorage[script.id]
-            if (ephemeral.isNullOrEmpty()) {
+            val deleted = privateDeletedUserscriptKeys[script.id]
+            if (ephemeral.isNullOrEmpty() && deleted.isNullOrEmpty()) {
                 script to persisted
             } else {
-                script to (persisted + ephemeral)
+                val merged = LinkedHashMap<String, String>(persisted)
+                deleted?.forEach { merged.remove(it) }
+                ephemeral?.forEach { (k, v) -> merged[k] = v }
+                script to merged
             }
         }
     }
 
-    val sessionCallbacks: SessionHostCallbacks = object : SessionHostCallbacks {
+    private val sessionCallbacks: SessionHostCallbacks = object : SessionHostCallbacks {
         override fun getHttpsOnlyEnabled(): Boolean = _uiState.value.settings.httpsOnlyMode
 
-        override fun isHttpsBypassedForHost(host: String): Boolean {
+        override fun isHttpsBypassedForHost(tabId: String, host: String): Boolean {
             val state = _uiState.value
-            val isPrivate = state.activeTab?.isPrivate ?: state.isPrivateView
+            val isPrivate = state.tabs.firstOrNull { it.id == tabId }?.isPrivate
+                ?: state.activeTab?.isPrivate
+                ?: state.isPrivateView
             return effectiveSiteOverride(host, isPrivate)?.httpsOnlyBypass == true
         }
 
-        override fun getExternalAppPolicy(host: String): ExternalAppLinkPolicy {
+        override fun getExternalAppPolicy(tabId: String, host: String): ExternalAppLinkPolicy {
             val state = _uiState.value
-            val isPrivate = state.activeTab?.isPrivate ?: state.isPrivateView
+            val isPrivate = state.tabs.firstOrNull { it.id == tabId }?.isPrivate
+                ?: state.activeTab?.isPrivate
+                ?: state.isPrivateView
             val raw = effectiveSiteOverride(host, isPrivate)?.externalAppPolicyOverride
             return raw?.let { runCatching { ExternalAppLinkPolicy.valueOf(it) }.getOrNull() }
                 ?: state.settings.externalAppLinkPolicy
@@ -209,9 +235,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             pendingBlockedDeltaByTab.remove(tabId)
             cosmeticExceptionsByTab.remove(tabId)
             spaCheckJobByTab.remove(tabId)?.cancel()
+            pageStartedInjectJobByTab.remove(tabId)?.cancel()
+            pageFinishedInjectJobByTab.remove(tabId)?.cancel()
             if (!isSameUrl && activeMediaTabId == tabId) {
-                activeMediaTabId = null
-                BackgroundMediaService.stop(app)
+                handoffOrStopMediaService(tabId)
             }
             updateTab(tabId) { tab ->
                 tab.copy(
@@ -270,7 +297,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             } else {
                 ""
             }
-            viewModelScope.launch(Dispatchers.IO) {
+            pageStartedInjectJobByTab.remove(tabId)?.cancel()
+            pageStartedInjectJobByTab[tabId] = viewModelScope.launch(Dispatchers.IO + ioExceptionHandler) {
                 val cosmetic = app.adblockEngine.cosmeticForUrl(
                     url = url,
                     globalEnabled = state.settings.adblockEnabled,
@@ -309,8 +337,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 val zappedCss = app.zapperController.buildCssForRules(zappedRules)
                 withContext(Dispatchers.Main) {
                     if (session.isDestroyed) return@withContext
+                    // Do not run stale page-started injection after page-finished has already committed
                     val liveUrl = session.webView.url.orEmpty()
-                    if (liveUrl.isNotBlank() && ScriptInjector.extractOrigin(liveUrl) != expectedOrigin) {
+                    if (liveUrl.isNotBlank() && liveUrl != url) {
                         return@withContext
                     }
                     session.updateDocumentStartScripts(
@@ -330,7 +359,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                         darkState = darkState,
                         darkReaderInjector = app.darkReaderInjector,
                         docStartUserscripts = docStartUserscripts,
-                        userscriptBridge = app.userscriptBridge
+                        userscriptBridge = app.userscriptBridge,
+                        isDestroyed = { session.isDestroyed }
                     )
                 }
             }
@@ -386,7 +416,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 isChromeDark = isChromeDark()
             )
             val tokens = session.rotateTokensForOrigin(expectedOrigin)
-            viewModelScope.launch(Dispatchers.IO) {
+            // Cancel any still-pending page-started injection so it cannot wipe generic cosmetic CSS after page-finished
+            pageStartedInjectJobByTab.remove(tabId)?.cancel()
+            pageFinishedInjectJobByTab.remove(tabId)?.cancel()
+            pageFinishedInjectJobByTab[tabId] = viewModelScope.launch(Dispatchers.IO + ioExceptionHandler) {
                 val cosmetic = app.adblockEngine.cosmeticForUrl(
                     url = url,
                     globalEnabled = state.settings.adblockEnabled,
@@ -415,7 +448,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 withContext(Dispatchers.Main) {
                     if (session.isDestroyed) return@withContext
                     val liveUrl = session.webView.url.orEmpty()
-                    if (liveUrl.isNotBlank() && ScriptInjector.extractOrigin(liveUrl) != expectedOrigin) {
+                    if (liveUrl.isNotBlank() && liveUrl != url) {
                         return@withContext
                     }
                     ScriptInjector.injectOnPageFinished(
@@ -429,12 +462,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                         darkReaderInjector = app.darkReaderInjector,
                         docEndUserscripts = docEndUserscripts,
                         docIdleUserscripts = docIdleUserscripts,
-                        userscriptBridge = app.userscriptBridge
+                        userscriptBridge = app.userscriptBridge,
+                        isDestroyed = { session.isDestroyed }
                     )
                     session.evaluateJavascript(app.readerExtractor.buildCheckReadableScript()) { raw ->
                         if (session.isDestroyed) return@evaluateJavascript
                         val nowUrl = session.webView.url.orEmpty()
-                        if (nowUrl.isNotBlank() && ScriptInjector.extractOrigin(nowUrl) != expectedOrigin) {
+                        if (nowUrl.isNotBlank() && nowUrl != url) {
                             return@evaluateJavascript
                         }
                         val readable = raw?.trim().equals("true", ignoreCase = true)
@@ -625,7 +659,19 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         override fun onRenderProcessGone(tabId: String, didCrash: Boolean) {
             viewModelScope.launch(Dispatchers.Main) {
                 pool.evictCrashedSession(tabId)
+                pageStartedInjectJobByTab.remove(tabId)?.cancel()
+                pageFinishedInjectJobByTab.remove(tabId)?.cancel()
+                spaCheckJobByTab.remove(tabId)?.cancel()
                 val wasActive = _uiState.value.activeTabId == tabId
+                if (wasActive) {
+                    readerExtractJob?.cancel()
+                    readerExtractJob = null
+                    readerRequestCounter.incrementAndGet()
+                    if (_uiState.value.isFullscreenVideo) {
+                        onHideFullscreenViewBridge?.invoke()
+                    }
+                }
+                _uiState.value.permissionPrompt?.takeIf { it.tabId == tabId || wasActive }?.let(::denyPromptSilently)
                 _uiState.update { state ->
                     state.copy(
                         tabs = state.tabs.map { tab ->
@@ -642,12 +688,17 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                             }
                         },
                         zapper = if (wasActive) ZapperUiState() else state.zapper,
-                        findInPage = if (wasActive) FindInPageState() else state.findInPage
+                        findInPage = if (wasActive) FindInPageState() else state.findInPage,
+                        readerArticle = if (wasActive) null else state.readerArticle,
+                        isReaderLoading = if (wasActive) false else state.isReaderLoading,
+                        isFullscreenVideo = if (wasActive) false else state.isFullscreenVideo,
+                        permissionPrompt = if (state.permissionPrompt?.tabId == tabId || wasActive) null else state.permissionPrompt,
+                        externalAppPrompt = if (state.externalAppPrompt?.tabId == tabId || wasActive) null else state.externalAppPrompt,
+                        httpsErrorPrompt = if (state.httpsErrorPrompt?.tabId == tabId || wasActive) null else state.httpsErrorPrompt
                     )
                 }
                 if (activeMediaTabId == tabId) {
-                    activeMediaTabId = null
-                    BackgroundMediaService.stop(app)
+                    handoffOrStopMediaService(tabId)
                 }
                 if (wasActive) {
                     showSnackbar(
@@ -874,8 +925,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                                 matchCount = 0,
                                 lastStatusMessage = "Blocked $blockedLabel (Private)"
                             ),
-                            snackbarMessage = null,
-                            snackbarUndoZapper = false
+                            snackbarMessage = null
                         )
                     }
                     pool.clearAllDocumentStartScripts()
@@ -911,8 +961,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                             matchCount = 0,
                             lastStatusMessage = "Blocked $blockedLabel"
                         ),
-                        snackbarMessage = null,
-                        snackbarUndoZapper = false
+                        snackbarMessage = null
                     )
                 }
             }
@@ -941,7 +990,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             if (effectiveSiteOverride(host, tabIsPrivate)?.adblockDisabled == true) return
             val expectedOrigin = ScriptInjector.extractOrigin(pageUrl) ?: return
 
-            viewModelScope.launch(Dispatchers.IO) {
+            viewModelScope.launch(Dispatchers.IO + ioExceptionHandler) {
                 val classes = runCatching { viewModelJson.decodeFromString<List<String>>(classesJson) }
                     .getOrDefault(emptyList())
                 val ids = runCatching { viewModelJson.decodeFromString<List<String>>(idsJson) }
@@ -958,7 +1007,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     siteDisabled = false
                 )
                 if (genericCss.isBlank()) return@launch
-                val appendJs = buildAppendGenericCosmeticCssScript(genericCss)
+                val appendJs = ScriptInjector.buildAppendGenericCosmeticCssScript(genericCss)
                 withContext(Dispatchers.Main) {
                     val session = pool.getExisting(tabId) ?: return@withContext
                     if (session.isDestroyed) return@withContext
@@ -985,7 +1034,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 ) {
                     return
                 }
-                viewModelScope.launch(Dispatchers.IO) {
+                val sessionGen = privateSessionGeneration.get()
+                viewModelScope.launch(Dispatchers.IO + ioExceptionHandler) {
                     val script = db.userscriptDao().getById(scriptId) ?: return@launch
                     if (!script.enabled) return@launch
                     val grants = UserscriptParser.decodeStringList(script.grantsJson)
@@ -995,9 +1045,16 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     val matches = UserscriptParser.decodeStringList(script.matchesJson)
                     val excludes = UserscriptParser.decodeStringList(script.excludesJson)
                     if (pageUrl.isBlank() || !UserscriptUrlMatcher.matches(pageUrl, matches, excludes)) return@launch
+                    // Verify private session is still open & same generation before writing
+                    if (privateSessionGeneration.get() != sessionGen ||
+                        _uiState.value.tabs.none { it.isPrivate }
+                    ) {
+                        return@launch
+                    }
 
                     val map = privateUserscriptStorage.computeIfAbsent(scriptId) { ConcurrentHashMap() }
                     synchronized(map) {
+                        if (privateSessionGeneration.get() != sessionGen) return@synchronized
                         if (!map.containsKey(key) && map.size >= 100) return@synchronized
                         val totalOther = map.entries
                             .filter { it.key != key }
@@ -1005,6 +1062,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                         val delta = key.toByteArray(Charsets.UTF_8).size + valueJson.toByteArray(Charsets.UTF_8).size
                         if (totalOther + delta <= 1024 * 1024) {
                             map[key] = valueJson
+                            privateDeletedUserscriptKeys[scriptId]?.remove(key)
                         }
                     }
                 }
@@ -1027,7 +1085,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             val isPrivate = _uiState.value.tabs.firstOrNull { it.id == tabId }?.isPrivate == true
             if (isPrivate) {
                 if (scriptId.isBlank() || key.isEmpty() || key.length > 256) return
-                viewModelScope.launch(Dispatchers.IO) {
+                val sessionGen = privateSessionGeneration.get()
+                viewModelScope.launch(Dispatchers.IO + ioExceptionHandler) {
                     val script = db.userscriptDao().getById(scriptId) ?: return@launch
                     if (!script.enabled) return@launch
                     val grants = UserscriptParser.decodeStringList(script.grantsJson)
@@ -1037,7 +1096,14 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     val matches = UserscriptParser.decodeStringList(script.matchesJson)
                     val excludes = UserscriptParser.decodeStringList(script.excludesJson)
                     if (pageUrl.isBlank() || !UserscriptUrlMatcher.matches(pageUrl, matches, excludes)) return@launch
+                    if (privateSessionGeneration.get() != sessionGen ||
+                        _uiState.value.tabs.none { it.isPrivate }
+                    ) {
+                        return@launch
+                    }
                     privateUserscriptStorage[scriptId]?.remove(key)
+                    // Tombstone so keys inherited from normal storage don't resurrect on reload
+                    privateDeletedUserscriptKeys.computeIfAbsent(scriptId) { ConcurrentHashMap.newKeySet() }.add(key)
                 }
                 return
             }
@@ -1149,20 +1215,29 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
 
         viewModelScope.launch {
-            db.spaceDao().observeAll().collectLatest { spaces ->
-                if (spaces.isNotEmpty()) {
+            db.spaceDao().observeAll().collectLatest { dbSpaces ->
+                if (dbSpaces.isNotEmpty()) {
+                    val dbIds = dbSpaces.mapTo(mutableSetOf()) { it.id }
+                    // Clear any optimistic newly created space once Room emits it
+                    dbIds.forEach { pendingCreatedSpaces.remove(it) }
+                    val mergedSpaces = if (pendingCreatedSpaces.isEmpty()) {
+                        dbSpaces
+                    } else {
+                        dbSpaces + pendingCreatedSpaces.values.filter { it.id !in dbIds }
+                    }
+                    val migratedToPersist = mutableListOf<BrowserTabUi>()
                     _uiState.update { state ->
-                        val validSpaceIds = spaces.mapTo(mutableSetOf()) { it.id }
+                        val validSpaceIds = mergedSpaces.mapTo(mutableSetOf()) { it.id }
                         val resolvedSpaceId = if (state.activeSpaceId in validSpaceIds) {
                             state.activeSpaceId
                         } else {
-                            spaces.first().id
+                            mergedSpaces.first().id
                         }
                         val hasOrphanedTab = state.tabs.any { !it.isPrivate && it.spaceId !in validSpaceIds }
                         val migratedTabs = if (hasOrphanedTab) {
                             state.tabs.map { tab ->
                                 if (!tab.isPrivate && tab.spaceId !in validSpaceIds) {
-                                    tab.copy(spaceId = resolvedSpaceId)
+                                    tab.copy(spaceId = resolvedSpaceId).also { migratedToPersist += it }
                                 } else {
                                     tab
                                 }
@@ -1171,11 +1246,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                             state.tabs
                         }
                         state.copy(
-                            spaces = spaces,
+                            spaces = mergedSpaces,
                             activeSpaceId = resolvedSpaceId,
                             tabs = migratedTabs
                         )
                     }
+                    migratedToPersist.forEach { persistTab(it) }
                 }
             }
         }
@@ -1329,20 +1405,21 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         if (postureChanged) {
             val activeTab = _uiState.value.activeTab ?: return
             val newProfile = _uiState.value.settings.profileFor(newState.posture)
-            val siteOverride = SiteModeResolver.parseOrNull(
-                effectiveSiteOverride(activeTab.displayHost, activeTab.isPrivate)?.siteModeOverride
-            )
+            val activeSiteOverrideEntity = effectiveSiteOverride(activeTab.displayHost, activeTab.isPrivate)
+            val siteOverride = SiteModeResolver.parseOrNull(activeSiteOverrideEntity?.siteModeOverride)
             val resolved = SiteModeResolver.resolve(
                 tabOverride = activeTab.siteModeOverride,
                 siteOverride = siteOverride,
                 postureProfile = newProfile
             )
-            val shouldReload = SiteModeResolver.shouldReloadOnTransition(
+            val hasCustomUa = !activeSiteOverrideEntity?.customUserAgent.isNullOrBlank()
+            val shouldReload = !hasCustomUa && SiteModeResolver.shouldReloadOnTransition(
                 previousMode = activeTab.resolvedSiteMode,
                 newMode = resolved,
                 currentUrl = activeTab.url
             )
-            updateTab(activeTab.id) { it.copy(resolvedSiteMode = resolved) }
+            // Keep resolvedSiteMode accurate across all tabs (including hibernated ones)
+            refreshResolvedSiteModesForAllTabs(newProfile)
             pool.getExisting(activeTab.id)?.let { session ->
                 val updated = _uiState.value.tabs.firstOrNull { it.id == activeTab.id } ?: activeTab
                 applySettingsToSession(updated, session, reloadIfModeChanged = shouldReload)
@@ -1393,8 +1470,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     ): BrowserTabUi {
         if (selectImmediately) {
             stopActiveZapperIfRunning()
+            suggestionJob?.cancel()
             readerExtractJob?.cancel()
             readerExtractJob = null
+            readerRequestCounter.incrementAndGet()
+            _uiState.value.permissionPrompt?.let(::denyPromptSilently)
             _uiState.value.activeTabId?.let { prevId ->
                 captureThumbnailFor(prevId)
                 pool.getExisting(prevId)?.clearFindMatches()
@@ -1430,10 +1510,14 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     state.activeOverlay
                 },
                 isOmniboxFocused = false,
+                omniboxSuggestions = if (selectImmediately) emptyList() else state.omniboxSuggestions,
                 findInPage = if (selectImmediately) FindInPageState() else state.findInPage,
                 readerArticle = if (selectImmediately) null else state.readerArticle,
                 isReaderLoading = if (selectImmediately) false else state.isReaderLoading,
-                zapper = if (selectImmediately) ZapperUiState() else state.zapper
+                zapper = if (selectImmediately) ZapperUiState() else state.zapper,
+                externalAppPrompt = if (selectImmediately) null else state.externalAppPrompt,
+                httpsErrorPrompt = if (selectImmediately) null else state.httpsErrorPrompt,
+                permissionPrompt = if (selectImmediately) null else state.permissionPrompt
             )
         }
 
@@ -1447,6 +1531,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun selectTab(tabId: String) {
+        suggestionJob?.cancel()
         val previousActive = _uiState.value.activeTabId
         if (previousActive != null && previousActive != tabId) {
             captureThumbnailFor(previousActive)
@@ -1460,6 +1545,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         val accessedAt = System.currentTimeMillis()
         readerExtractJob?.cancel()
         readerExtractJob = null
+        readerRequestCounter.incrementAndGet()
         if (previousActive != null && previousActive != tabId) {
             _uiState.value.permissionPrompt?.takeIf { it.tabId == previousActive }?.let { denyPromptSilently(it) }
         }
@@ -1472,6 +1558,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 activeOverlay = BrowserOverlay.NONE,
                 overlayBackStack = emptyList(),
                 isOmniboxFocused = false,
+                omniboxSuggestions = emptyList(),
                 findInPage = FindInPageState(),
                 zapper = ZapperUiState(),
                 readerArticle = null,
@@ -1517,34 +1604,28 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         pendingBlockedDeltaByTab.remove(tabId)
         cosmeticExceptionsByTab.remove(tabId)
         spaCheckJobByTab.remove(tabId)?.cancel()
+        pageStartedInjectJobByTab.remove(tabId)?.cancel()
+        pageFinishedInjectJobByTab.remove(tabId)?.cancel()
         _thumbnails.update { current ->
             if (tabId in current.bitmaps) current.copy(bitmaps = current.bitmaps - tabId) else current
         }
 
         if (activeMediaTabId == tabId || closing.isPlayingMedia) {
-            val otherPlaying = remaining.firstOrNull { it.isPlayingMedia }
-            if (otherPlaying != null && state.settings.backgroundMediaEnabled) {
-                activeMediaTabId = otherPlaying.id
-                attachMediaController(otherPlaying.id)
-                BackgroundMediaService.updateState(
-                    context = app,
-                    title = otherPlaying.title.ifBlank { "Media playback" },
-                    host = otherPlaying.displayHost.ifBlank { "Swiftfox" },
-                    isPlaying = true,
-                    isPrivate = otherPlaying.isPrivate
-                )
-            } else if (activeMediaTabId == tabId || remaining.none { it.isPlayingMedia }) {
-                activeMediaTabId = null
-                BackgroundMediaService.stop(app)
-            }
+            handoffOrStopMediaService(tabId, candidateTabs = remaining)
         }
 
         val clearAllPrivateState = closing.isPrivate && remaining.none { it.isPrivate }
         if (!closing.isPrivate) {
-            viewModelScope.launch { db.tabDao().deleteById(tabId) }
+            viewModelScope.launch {
+                tabDbMutex.withLock {
+                    db.tabDao().deleteById(tabId)
+                }
+            }
         } else if (clearAllPrivateState) {
+            privateSessionGeneration.incrementAndGet()
             pool.clearPrivateProfileData()
             privateUserscriptStorage.clear()
+            privateDeletedUserscriptKeys.clear()
         }
 
         val visibleRemaining = if (closing.isPrivate) {
@@ -1559,8 +1640,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             else -> null
         }
 
-        if (state.permissionPrompt?.tabId == tabId) {
-            state.permissionPrompt.let(::denyPromptSilently)
+        if (state.permissionPrompt?.tabId == tabId || state.activeTabId == tabId) {
+            state.permissionPrompt?.let(::denyPromptSilently)
         }
 
         val showClosedSnackbar = !closing.isPrivate && !closing.isStartPage
@@ -1572,7 +1653,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 privateSiteOverrides = if (clearAllPrivateState) emptyMap() else current.privateSiteOverrides,
                 privateZappedRules = if (clearAllPrivateState) emptyMap() else current.privateZappedRules,
                 recentlyClosedTab = if (showClosedSnackbar) closing else null,
-                snackbarUndoZapper = false,
                 snackbarMessage = if (showClosedSnackbar) "Closed ${closing.title}" else null,
                 snackbarId = if (showClosedSnackbar) snackbarCounter.incrementAndGet() else current.snackbarId,
                 zapper = if (wasActive) ZapperUiState() else current.zapper,
@@ -1586,11 +1666,16 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
 
         if (nextActiveId != null && nextActiveId != state.activeTabId) {
-            applyResolvedSettingsToTab(nextActiveId, reloadIfModeChanged = false)
+            pool.setActiveTab(nextActiveId)
+            applyResolvedSettingsToTab(nextActiveId, reloadIfModeChanged = true)
         } else if (nextActiveId == null) {
             if (closing.isPrivate) {
+                val validSpaceId = _uiState.value.spaces
+                    .firstOrNull { it.id == _uiState.value.activeSpaceId }?.id
+                    ?: _uiState.value.spaces.firstOrNull()?.id
+                    ?: SwiftfoxDatabase.DEFAULT_SPACE_ID
                 // Exit Private view cleanly back to the active normal Space so activeTab is never null
-                selectSpace(state.activeSpaceId)
+                selectSpace(validSpaceId)
             } else {
                 createTab(spaceId = closing.spaceId, isPrivate = false, selectImmediately = true)
             }
@@ -1599,19 +1684,25 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun undoCloseTab() {
         val closed = _uiState.value.recentlyClosedTab ?: return
+        val validSpaceId = _uiState.value.spaces
+            .firstOrNull { it.id == closed.spaceId }?.id
+            ?: _uiState.value.activeSpaceId
         _uiState.update { it.copy(recentlyClosedTab = null, snackbarMessage = null) }
         createTab(
             url = closed.url,
             isPrivate = false,
-            spaceId = closed.spaceId,
+            spaceId = validSpaceId,
             selectImmediately = true
         )
     }
 
     fun selectSpace(spaceId: String) {
         stopActiveZapperIfRunning()
+        suggestionJob?.cancel()
         readerExtractJob?.cancel()
         readerExtractJob = null
+        readerRequestCounter.incrementAndGet()
+        _uiState.value.permissionPrompt?.let(::denyPromptSilently)
         val prevTabId = _uiState.value.activeTabId
         if (prevTabId != null) {
             captureThumbnailFor(prevTabId)
@@ -1628,9 +1719,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     findInPage = FindInPageState(),
                     zapper = ZapperUiState(),
                     readerArticle = null,
-                    isReaderLoading = false
+                    isReaderLoading = false,
+                    externalAppPrompt = null,
+                    httpsErrorPrompt = null,
+                    permissionPrompt = null
                 )
             }
+            pool.setActiveTab(nextTabId)
             applyResolvedSettingsToTab(nextTabId, reloadIfModeChanged = true)
         } else {
             _uiState.update {
@@ -1640,7 +1735,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     findInPage = FindInPageState(),
                     zapper = ZapperUiState(),
                     readerArticle = null,
-                    isReaderLoading = false
+                    isReaderLoading = false,
+                    externalAppPrompt = null,
+                    httpsErrorPrompt = null,
+                    permissionPrompt = null
                 )
             }
             createTab(spaceId = spaceId, isPrivate = false, selectImmediately = true)
@@ -1649,8 +1747,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun togglePrivateView(enabled: Boolean) {
         stopActiveZapperIfRunning()
+        suggestionJob?.cancel()
         readerExtractJob?.cancel()
         readerExtractJob = null
+        readerRequestCounter.incrementAndGet()
+        _uiState.value.permissionPrompt?.let(::denyPromptSilently)
         val prevTabId = _uiState.value.activeTabId
         if (prevTabId != null) {
             captureThumbnailFor(prevTabId)
@@ -1667,15 +1768,23 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                         findInPage = FindInPageState(),
                         zapper = ZapperUiState(),
                         readerArticle = null,
-                        isReaderLoading = false
+                        isReaderLoading = false,
+                        externalAppPrompt = null,
+                        httpsErrorPrompt = null,
+                        permissionPrompt = null
                     )
                 }
+                pool.setActiveTab(nextTabId)
                 applyResolvedSettingsToTab(nextTabId, reloadIfModeChanged = true)
             } else {
                 createTab(isPrivate = true, selectImmediately = true)
             }
         } else {
-            selectSpace(_uiState.value.activeSpaceId)
+            val validSpaceId = _uiState.value.spaces
+                .firstOrNull { it.id == _uiState.value.activeSpaceId }?.id
+                ?: _uiState.value.spaces.firstOrNull()?.id
+                ?: SwiftfoxDatabase.DEFAULT_SPACE_ID
+            selectSpace(validSpaceId)
         }
     }
 
@@ -1690,6 +1799,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             containerProfileName = if (isolatedContainer) id else null,
             sortOrder = _uiState.value.spaces.size
         )
+        pendingCreatedSpaces[id] = space
         _uiState.update { current ->
             if (current.spaces.any { it.id == id }) current
             else current.copy(spaces = current.spaces + space)
@@ -1705,6 +1815,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         val spaceToDelete = _uiState.value.spaces.firstOrNull { it.id == spaceId } ?: return
         val fallback = _uiState.value.spaces.first { it.id != spaceId }
         val wasViewingDeletedSpace = !_uiState.value.isPrivateView && _uiState.value.activeSpaceId == spaceId
+        val wasActiveSpacePointer = _uiState.value.activeSpaceId == spaceId
         val affectedTabs = _uiState.value.tabs.filter { !it.isPrivate && it.spaceId == spaceId }
         val affectedIds = affectedTabs.mapTo(mutableSetOf()) { it.id }
         affectedTabs.forEach { tab ->
@@ -1715,41 +1826,39 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             pendingBlockedDeltaByTab.remove(tab.id)
             cosmeticExceptionsByTab.remove(tab.id)
             spaCheckJobByTab.remove(tab.id)?.cancel()
+            pageStartedInjectJobByTab.remove(tab.id)?.cancel()
+            pageFinishedInjectJobByTab.remove(tab.id)?.cancel()
         }
         val remainingAfter = _uiState.value.tabs.filterNot { !it.isPrivate && it.spaceId == spaceId }
         if (activeMediaTabId in affectedIds) {
-            val otherPlaying = remainingAfter.firstOrNull { it.isPlayingMedia }
-            if (otherPlaying != null && _uiState.value.settings.backgroundMediaEnabled) {
-                activeMediaTabId = otherPlaying.id
-                attachMediaController(otherPlaying.id)
-                BackgroundMediaService.updateState(
-                    context = app,
-                    title = otherPlaying.title.ifBlank { "Media playback" },
-                    host = otherPlaying.displayHost.ifBlank { "Swiftfox" },
-                    isPlaying = true,
-                    isPrivate = otherPlaying.isPrivate
-                )
-            } else {
-                activeMediaTabId = null
-                BackgroundMediaService.stop(app)
-            }
+            handoffOrStopMediaService(activeMediaTabId ?: "", candidateTabs = remainingAfter)
+        }
+        if (wasViewingDeletedSpace || _uiState.value.permissionPrompt?.tabId in affectedIds) {
+            _uiState.value.permissionPrompt?.let(::denyPromptSilently)
         }
         _thumbnails.update { current ->
             current.copy(bitmaps = current.bitmaps - affectedIds)
         }
+        pendingCreatedSpaces.remove(spaceId)
         spaceToDelete.containerProfileName?.let { profileName ->
             pool.deleteContainerProfile(profileName)
         }
         _uiState.update { state ->
             state.copy(
                 spaces = state.spaces.filterNot { it.id == spaceId },
-                tabs = remainingAfter
+                activeSpaceId = if (wasActiveSpacePointer) fallback.id else state.activeSpaceId,
+                tabs = remainingAfter,
+                externalAppPrompt = if (wasViewingDeletedSpace || state.externalAppPrompt?.tabId in affectedIds) null else state.externalAppPrompt,
+                httpsErrorPrompt = if (wasViewingDeletedSpace || state.httpsErrorPrompt?.tabId in affectedIds) null else state.httpsErrorPrompt,
+                permissionPrompt = if (wasViewingDeletedSpace || state.permissionPrompt?.tabId in affectedIds) null else state.permissionPrompt
             )
         }
         viewModelScope.launch {
-            db.tabDao().deleteBySpace(spaceId)
-            db.zenPinnedItemDao().deleteBySpace(spaceId)
-            db.spaceDao().deleteById(spaceId)
+            tabDbMutex.withLock {
+                db.tabDao().deleteBySpace(spaceId)
+                db.zenPinnedItemDao().deleteBySpace(spaceId)
+                db.spaceDao().deleteById(spaceId)
+            }
         }
         if (wasViewingDeletedSpace) {
             selectSpace(fallback.id)
@@ -1793,6 +1902,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         suggestionJob?.cancel()
         readerExtractJob?.cancel()
         readerExtractJob = null
+        readerRequestCounter.incrementAndGet()
+        _uiState.value.permissionPrompt?.let(::denyPromptSilently)
         val active = _uiState.value.activeTab ?: createTab(url = url, selectImmediately = true)
         // Discard any hibernated WebView bundle so re-creating the session loads the new URL
         pool.discardHibernatedState(active.id)
@@ -1802,8 +1913,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         val effectiveUrl = resolveHttpsOnlyForProgrammaticLoad(active.id, url, existingSession)
 
         if (activeMediaTabId == active.id) {
-            activeMediaTabId = null
-            BackgroundMediaService.stop(app)
+            handoffOrStopMediaService(active.id)
         }
 
         _uiState.update {
@@ -1816,7 +1926,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 findInPage = FindInPageState(),
                 readerArticle = null,
                 isReaderLoading = false,
-                zapper = ZapperUiState()
+                zapper = ZapperUiState(),
+                externalAppPrompt = null,
+                httpsErrorPrompt = null,
+                permissionPrompt = null
             )
         }
         updateTab(active.id) {
@@ -1836,8 +1949,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             _uiState.value.tabs.firstOrNull { it.id == active.id }?.let { persistTab(it) }
         }
         existingSession?.let { session ->
+            val currentTab = _uiState.value.tabs.firstOrNull { it.id == active.id } ?: active
             applySettingsToSession(
-                _uiState.value.tabs.first { it.id == active.id },
+                currentTab,
                 session,
                 reloadIfModeChanged = false
             )
@@ -1853,11 +1967,14 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         if (!rawUrl.startsWith("http://", ignoreCase = true)) return rawUrl
         if (!_uiState.value.settings.httpsOnlyMode) return rawUrl
         val uri = runCatching { Uri.parse(rawUrl) }.getOrNull() ?: return rawUrl
-        val rawHost = uri.host?.lowercase().orEmpty()
+        val rawHost = uri.host?.lowercase(Locale.ROOT).orEmpty()
         val canonicalHost = OmniboxEngine.normalizeHost(rawHost)
+        val tabIsPrivate = _uiState.value.tabs.firstOrNull { it.id == tabId }?.isPrivate
+            ?: session?.isPrivate
+            ?: _uiState.value.isPrivateView
         if (rawHost.isBlank() ||
             OmniboxEngine.isLocalHostOrLan(rawHost) ||
-            _uiState.value.siteOverrides[canonicalHost]?.httpsOnlyBypass == true
+            effectiveSiteOverride(canonicalHost, tabIsPrivate)?.httpsOnlyBypass == true
         ) {
             return rawUrl
         }
@@ -1902,6 +2019,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun focusOmnibox(prefillCurrentUrl: Boolean = true) {
+        stopActiveZapperIfRunning()
         val current = _uiState.value.activeTab
         val initialText = if (prefillCurrentUrl && current != null && !current.isStartPage) {
             current.url
@@ -2164,6 +2282,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun setOverlay(overlay: BrowserOverlay) {
+        suggestionJob?.cancel()
+        if (overlay != BrowserOverlay.NONE) {
+            stopActiveZapperIfRunning()
+        }
         if (overlay == BrowserOverlay.TAB_SWITCHER) {
             _uiState.value.activeTabId?.let { captureThumbnailFor(it) }
         }
@@ -2196,7 +2318,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 overlayBackStack = nextStack,
                 isQuickControlsOpen = false,
                 isSiteRulesOpen = false,
-                isOmniboxFocused = false
+                isOmniboxFocused = false,
+                omniboxSuggestions = emptyList()
             )
         }
     }
@@ -2301,9 +2424,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         _uiState.update { it.copy(siteOverrides = it.siteOverrides + (normalizedHost to optimistic)) }
         onUpdated(optimistic)
         viewModelScope.launch {
-            val existingDb = db.siteOverrideDao().getByHost(normalizedHost) ?: SiteOverrideEntity(host = normalizedHost)
-            val saved = transform(existingDb)
-            db.siteOverrideDao().upsert(saved)
+            siteOverrideMutex.withLock {
+                val existingDb = db.siteOverrideDao().getByHost(normalizedHost) ?: SiteOverrideEntity(host = normalizedHost)
+                val saved = transform(existingDb)
+                db.siteOverrideDao().upsert(saved)
+            }
         }
     }
 
@@ -2341,6 +2466,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             val next = !_uiState.value.settings.adblockEnabled
             setAdblockEnabled(next)
             showSnackbar(if (next) "Ad blocking enabled" else "Ad blocking paused")
+            return
+        }
+        if (!_uiState.value.settings.adblockEnabled) {
+            showSnackbar("Enable global Ad Blocking in Settings first")
             return
         }
         val currentlyDisabled = effectiveSiteOverride(host, active.isPrivate)?.adblockDisabled == true
@@ -2416,7 +2545,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun setSiteCustomUserAgent(host: String, userAgent: String?) {
         val normalizedHost = OmniboxEngine.normalizeHost(host)
         if (normalizedHost.isBlank()) return
-        val normalizedUa = userAgent?.trim()?.takeIf { it.isNotEmpty() }
+        val trimmed = userAgent?.trim()
+        if (!trimmed.isNullOrEmpty() && trimmed.any { it !in '\u0020'..'\u007E' }) {
+            showSnackbar("User-Agent must use standard printable ASCII characters")
+            return
+        }
+        val normalizedUa = trimmed?.takeIf { it.isNotEmpty() }
         mutateSiteOverride(normalizedHost, onUpdated = {
             val active = _uiState.value.activeTab
             if (active != null && OmniboxEngine.normalizeHost(active.displayHost) == normalizedHost) {
@@ -2503,6 +2637,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         val active = _uiState.value.activeTab ?: return
         if (active.isStartPage) {
             showSnackbar("Open a webpage to use Element Zapper")
+            return
+        }
+        val siteOverride = effectiveSiteOverride(active.displayHost, active.isPrivate)
+        if (siteOverride?.javascriptEnabled == false) {
+            showSnackbar("Enable JavaScript for this site to use Element Zapper")
             return
         }
         val session = pool.getExisting(active.id) ?: return
@@ -2594,6 +2733,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             }
             pool.clearAllDocumentStartScripts()
             viewModelScope.launch { refreshZappedCssForHost(host, isPrivateOnly = true) }
+            return
+        }
+        // Prevent Private Mode Site Rules sheet from silently deleting persistent normal-mode Room rules
+        if (_uiState.value.activeOverlay == BrowserOverlay.NONE &&
+            (_uiState.value.activeTab?.isPrivate ?: _uiState.value.isPrivateView)
+        ) {
+            showSnackbar("Manage saved normal-mode zaps from Settings or a normal tab")
             return
         }
         viewModelScope.launch {
@@ -2718,6 +2864,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     // Reader Mode actions
     fun openReaderMode() {
+        stopActiveZapperIfRunning()
         val active = _uiState.value.activeTab ?: return
         if (active.isStartPage) {
             showSnackbar("Open an article to enter Reader Mode")
@@ -2729,15 +2876,20 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         val expectedOrigin = ScriptInjector.extractOrigin(expectedUrl)
         val readerKey = session.tokens.readerKey
         val readerKeyLit = viewModelJson.encodeToString(readerKey)
+        val requestId = readerRequestCounter.incrementAndGet()
         readerExtractJob?.cancel()
         readerExtractJob = null
         _uiState.update { it.copy(isQuickControlsOpen = false, isReaderLoading = true) }
 
         fun handleExtracted(rawResult: String?) {
+            if (readerRequestCounter.get() != requestId || !_uiState.value.isReaderLoading) {
+                return
+            }
             readerExtractJob?.cancel()
             readerExtractJob = viewModelScope.launch(Dispatchers.Default) {
                 val article = app.readerExtractor.parseExtractionResult(rawResult)
                 withContext(Dispatchers.Main) {
+                    if (readerRequestCounter.get() != requestId) return@withContext
                     val liveActive = _uiState.value.activeTab
                     if (liveActive == null || liveActive.id != expectedTabId || liveActive.url != expectedUrl) {
                         _uiState.update { it.copy(isReaderLoading = false) }
@@ -2751,7 +2903,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                                 isReaderLoading = false,
                                 snackbarMessage = "Reader view unavailable for this page",
                                 snackbarId = snackbarCounter.incrementAndGet(),
-                                snackbarUndoZapper = false,
                                 recentlyClosedTab = null
                             )
                         }
@@ -2764,6 +2915,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         session.evaluateJavascript(
             "Object.prototype.hasOwnProperty.call(window, $readerKeyLit)"
         ) { loaded ->
+            if (readerRequestCounter.get() != requestId) return@evaluateJavascript
             val nowOrigin = ScriptInjector.extractOrigin(session.webView.url.orEmpty())
             if (session.isDestroyed || (expectedOrigin != null && nowOrigin != null && nowOrigin != expectedOrigin)) {
                 _uiState.update { it.copy(isReaderLoading = false) }
@@ -2774,19 +2926,26 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             } else {
                 app.readerExtractor.buildExtractScript(readerKey)
             }
+            if (session.isDestroyed) {
+                _uiState.update { it.copy(isReaderLoading = false) }
+                return@evaluateJavascript
+            }
             session.evaluateJavascript(script) { rawResult ->
+                if (readerRequestCounter.get() != requestId) return@evaluateJavascript
                 handleExtracted(rawResult)
             }
         }
     }
 
     fun cancelReaderLoading() {
+        readerRequestCounter.incrementAndGet()
         readerExtractJob?.cancel()
         readerExtractJob = null
         _uiState.update { it.copy(isReaderLoading = false) }
     }
 
     fun closeReaderMode() {
+        readerRequestCounter.incrementAndGet()
         readerExtractJob?.cancel()
         readerExtractJob = null
         _uiState.update { it.copy(readerArticle = null, isReaderLoading = false) }
@@ -2828,6 +2987,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun clearHistory() {
+        lastRecordedHistoryUrlByTab.clear()
+        lastRecordedHistoryTitleByTab.clear()
         viewModelScope.launch {
             db.historyDao().clearAll()
             app.mozillaSyncCoordinator.mirrorHistoryCleared()
@@ -2836,6 +2997,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun deleteHistoryEntry(url: String) {
+        lastRecordedHistoryUrlByTab.entries.removeIf { it.value == url }
         viewModelScope.launch {
             db.historyDao().deleteByUrl(url)
             app.mozillaSyncCoordinator.mirrorHistoryDeleted(url)
@@ -2843,6 +3005,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun clearAllBrowsingData() {
+        lastRecordedHistoryUrlByTab.clear()
+        lastRecordedHistoryTitleByTab.clear()
+        _thumbnails.update { TabThumbnailsSnapshot() }
         viewModelScope.launch {
             db.historyDao().clearAll()
             app.mozillaSyncCoordinator.mirrorHistoryCleared()
@@ -2915,6 +3080,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         if (allowHttpForSite) {
             mutateSiteOverride(prompt.host) { it.copy(httpsOnlyBypass = true) }
             navigateActiveTab(prompt.originalHttpUrl)
+        } else {
+            val active = _uiState.value.activeTab
+            if (active != null && active.canGoBack) {
+                goBack()
+            } else if (active != null) {
+                navigateActiveTab(OmniboxEngine.NEW_TAB_URL)
+            }
         }
     }
 
@@ -3025,7 +3197,16 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         val normalizedHost = OmniboxEngine.normalizeHost(host)
         val isPrivate = !forcePersistent && (_uiState.value.activeTab?.isPrivate ?: _uiState.value.isPrivateView)
         if (isPrivate) {
-            _uiState.update { it.copy(privateSiteOverrides = it.privateSiteOverrides - normalizedHost) }
+            // If persistent Room overrides exist for this host, store a clean default entry in
+            // privateSiteOverrides to shadow them for this private session instead of falling back.
+            _uiState.update { state ->
+                val nextPrivate = if (normalizedHost in state.siteOverrides) {
+                    state.privateSiteOverrides + (normalizedHost to SiteOverrideEntity(host = normalizedHost))
+                } else {
+                    state.privateSiteOverrides - normalizedHost
+                }
+                state.copy(privateSiteOverrides = nextPrivate)
+            }
             _uiState.value.tabs
                 .filter { it.isPrivate && OmniboxEngine.normalizeHost(it.displayHost) == normalizedHost }
                 .forEach { matching ->
@@ -3040,9 +3221,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
         _uiState.update { it.copy(siteOverrides = it.siteOverrides - normalizedHost) }
         viewModelScope.launch {
-            db.siteOverrideDao().deleteByHost(host)
-            if (normalizedHost != host) {
-                db.siteOverrideDao().deleteByHost(normalizedHost)
+            siteOverrideMutex.withLock {
+                db.siteOverrideDao().deleteByHost(host)
+                if (normalizedHost != host) {
+                    db.siteOverrideDao().deleteByHost(normalizedHost)
+                }
             }
             withContext(Dispatchers.Main) {
                 // Also clear any tab-level siteModeOverride on matching tabs so posture defaults resume
@@ -3204,7 +3387,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun sendActiveTabToZenSpace(asEssential: Boolean = false) {
+    fun sendActiveTabToZenSpace() {
         val activeTab = _uiState.value.activeTab ?: return
         if (activeTab.isPrivate || activeTab.isStartPage) return
         val space = _uiState.value.activeSpace
@@ -3218,15 +3401,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             app.mozillaSyncCoordinator.sendTabToZenSpace(
                 spaceSyncGuid = spaceGuid,
                 url = activeTab.url,
-                title = activeTab.title.ifBlank { activeTab.displayHost },
-                asEssential = asEssential
+                title = activeTab.title.ifBlank { activeTab.displayHost }
             ).onSuccess {
-                val message = if (asEssential) {
-                    "Sent to Zen Essentials"
-                } else {
-                    "Sent to Zen Space \"${space.name}\""
-                }
-                showSnackbar(message)
+                showSnackbar("Sent to Zen Space \"${space.name}\"")
                 app.mozillaSyncCoordinator.syncNow(SyncReason.User)
             }.onFailure { err ->
                 showSnackbar("Could not send to Zen: ${err.message ?: "error"}")
@@ -3235,33 +3412,39 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun setSyncBookmarksEnabled(enabled: Boolean) = viewModelScope.launch {
-        prefs.setSyncBookmarksEnabled(enabled)
-        val s = _uiState.value.settings
-        app.mozillaSyncCoordinator.updateEnginePreferences(
-            bookmarks = enabled,
-            history = s.syncHistoryEnabled,
-            tabs = s.syncTabsEnabled
-        )
+        syncPrefsMutex.withLock {
+            prefs.setSyncBookmarksEnabled(enabled)
+            val s = prefs.settingsFlow.first()
+            app.mozillaSyncCoordinator.updateEnginePreferences(
+                bookmarks = s.syncBookmarksEnabled,
+                history = s.syncHistoryEnabled,
+                tabs = s.syncTabsEnabled
+            )
+        }
     }
 
     fun setSyncHistoryEnabled(enabled: Boolean) = viewModelScope.launch {
-        prefs.setSyncHistoryEnabled(enabled)
-        val s = _uiState.value.settings
-        app.mozillaSyncCoordinator.updateEnginePreferences(
-            bookmarks = s.syncBookmarksEnabled,
-            history = enabled,
-            tabs = s.syncTabsEnabled
-        )
+        syncPrefsMutex.withLock {
+            prefs.setSyncHistoryEnabled(enabled)
+            val s = prefs.settingsFlow.first()
+            app.mozillaSyncCoordinator.updateEnginePreferences(
+                bookmarks = s.syncBookmarksEnabled,
+                history = s.syncHistoryEnabled,
+                tabs = s.syncTabsEnabled
+            )
+        }
     }
 
     fun setSyncTabsEnabled(enabled: Boolean) = viewModelScope.launch {
-        prefs.setSyncTabsEnabled(enabled)
-        val s = _uiState.value.settings
-        app.mozillaSyncCoordinator.updateEnginePreferences(
-            bookmarks = s.syncBookmarksEnabled,
-            history = s.syncHistoryEnabled,
-            tabs = enabled
-        )
+        syncPrefsMutex.withLock {
+            prefs.setSyncTabsEnabled(enabled)
+            val s = prefs.settingsFlow.first()
+            app.mozillaSyncCoordinator.updateEnginePreferences(
+                bookmarks = s.syncBookmarksEnabled,
+                history = s.syncHistoryEnabled,
+                tabs = s.syncTabsEnabled
+            )
+        }
     }
 
     fun setSyncZenSpacesEnabled(enabled: Boolean) = viewModelScope.launch { prefs.setSyncZenSpacesEnabled(enabled) }
@@ -3327,7 +3510,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             it.copy(
                 snackbarMessage = message,
                 snackbarId = snackbarCounter.incrementAndGet(),
-                snackbarUndoZapper = false,
                 recentlyClosedTab = null
             )
         }
@@ -3337,7 +3519,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         _uiState.update {
             it.copy(
                 snackbarMessage = null,
-                snackbarUndoZapper = false,
                 recentlyClosedTab = null
             )
         }
@@ -3374,19 +3555,44 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             .indexOfFirst { it.id == tab.id }
             .coerceAtLeast(0)
         viewModelScope.launch {
-            db.tabDao().upsert(
-                TabEntity(
-                    id = tab.id,
-                    spaceId = tab.spaceId,
-                    title = tab.title,
-                    url = tab.url,
-                    isPrivate = false,
-                    isPinned = false,
-                    siteModeOverride = tab.siteModeOverride?.name,
-                    lastAccessedAt = tab.lastAccessedAt,
-                    sortOrder = orderIdx
+            tabDbMutex.withLock {
+                // Skip upserting if the tab was already closed before this coroutine acquired the lock
+                if (_uiState.value.tabs.none { it.id == tab.id }) return@withLock
+                db.tabDao().upsert(
+                    TabEntity(
+                        id = tab.id,
+                        spaceId = tab.spaceId,
+                        title = tab.title,
+                        url = tab.url,
+                        isPrivate = false,
+                        isPinned = false,
+                        siteModeOverride = tab.siteModeOverride?.name,
+                        lastAccessedAt = tab.lastAccessedAt,
+                        sortOrder = orderIdx
+                    )
                 )
+            }
+        }
+    }
+
+    private fun handoffOrStopMediaService(
+        stoppingTabId: String,
+        candidateTabs: List<BrowserTabUi> = _uiState.value.tabs
+    ) {
+        val otherPlaying = candidateTabs.firstOrNull { it.id != stoppingTabId && it.isPlayingMedia }
+        if (otherPlaying != null && _uiState.value.settings.backgroundMediaEnabled) {
+            activeMediaTabId = otherPlaying.id
+            attachMediaController(otherPlaying.id)
+            BackgroundMediaService.updateState(
+                context = app,
+                title = otherPlaying.title.ifBlank { "Media playback" },
+                host = otherPlaying.displayHost.ifBlank { "Swiftfox" },
+                isPlaying = true,
+                isPrivate = otherPlaying.isPrivate
             )
+        } else if (activeMediaTabId == stoppingTabId || candidateTabs.none { it.id != stoppingTabId && it.isPlayingMedia }) {
+            activeMediaTabId = null
+            BackgroundMediaService.stop(app)
         }
     }
 
@@ -3468,31 +3674,36 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private fun scheduleBlockedCountFlush() {
         if (!blockedCountFlushScheduled.compareAndSet(false, true)) return
         viewModelScope.launch {
+            var releasedLock = false
             try {
-                delay(150)
                 while (true) {
+                    delay(150)
                     val snapshot = HashMap<String, Int>()
                     val keys = pendingBlockedDeltaByTab.keys.toList()
                     for (id in keys) {
                         val delta = pendingBlockedDeltaByTab[id]?.getAndSet(0) ?: 0
                         if (delta > 0) snapshot[id] = delta
                     }
-                    if (snapshot.isEmpty()) break
-                    _uiState.update { current ->
-                        current.copy(
-                            tabs = current.tabs.map { tab ->
-                                val delta = snapshot[tab.id]
-                                if (delta != null) tab.copy(blockedCount = tab.blockedCount + delta) else tab
-                            }
-                        )
+                    if (snapshot.isNotEmpty()) {
+                        _uiState.update { current ->
+                            current.copy(
+                                tabs = current.tabs.map { tab ->
+                                    val delta = snapshot[tab.id]
+                                    if (delta != null) tab.copy(blockedCount = tab.blockedCount + delta) else tab
+                                }
+                            )
+                        }
                     }
                     blockedCountFlushScheduled.set(false)
+                    releasedLock = true
                     val hasMore = pendingBlockedDeltaByTab.values.any { it.get() > 0 }
                     if (!hasMore || !blockedCountFlushScheduled.compareAndSet(false, true)) break
-                    delay(150)
+                    releasedLock = false
                 }
             } finally {
-                blockedCountFlushScheduled.set(false)
+                if (!releasedLock) {
+                    blockedCountFlushScheduled.set(false)
+                }
             }
         }
     }
@@ -3520,7 +3731,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             val docIdle = if (tabIsPrivate) mergePrivateUserscriptStorage(rawDocIdle) else rawDocIdle
             if (session.isDestroyed) return@launch
             val liveUrl = session.webView.url.orEmpty()
-            if (liveUrl.isNotBlank() && ScriptInjector.extractOrigin(liveUrl) != expectedOrigin) {
+            if (liveUrl.isNotBlank() && liveUrl != url) {
                 return@launch
             }
             if (docEnd.isNotEmpty() || docIdle.isNotEmpty()) {
@@ -3541,32 +3752,31 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             }
             session.evaluateJavascript(app.readerExtractor.buildCheckReadableScript()) { raw ->
                 if (session.isDestroyed) return@evaluateJavascript
+                val nowUrl = session.webView.url.orEmpty()
+                if (nowUrl.isNotBlank() && (nowUrl != url || ScriptInjector.extractOrigin(nowUrl) != expectedOrigin)) {
+                    return@evaluateJavascript
+                }
                 val readable = raw?.trim().equals("true", ignoreCase = true)
                 updateTab(tabId) { it.copy(isReaderAvailable = readable) }
             }
         }
     }
 
-    private fun buildAppendGenericCosmeticCssScript(css: String): String {
-        val cssLit = viewModelJson.encodeToString(css)
-        return """
-            (function() {
-                var css = $cssLit;
-                if (!css) return;
-                var id = 'swiftfox-cosmetic-generic';
-                var el = document.getElementById(id);
-                if (!el) {
-                    var target = document.head || document.documentElement;
-                    if (!target) return;
-                    el = document.createElement('style');
-                    el.id = id;
-                    el.type = 'text/css';
-                    target.appendChild(el);
-                }
-                if (el.textContent && el.textContent.indexOf(css) !== -1) return;
-                el.textContent = el.textContent ? (el.textContent + '\n' + css) : css;
-            })();
-        """.trimIndent()
+    private fun refreshResolvedSiteModesForAllTabs(postureProfile: app.overbay.swiftfox.data.prefs.PostureProfile) {
+        _uiState.update { state ->
+            val updatedTabs = state.tabs.map { tab ->
+                val siteOverride = SiteModeResolver.parseOrNull(
+                    effectiveSiteOverride(tab.displayHost, tab.isPrivate)?.siteModeOverride
+                )
+                val resolved = SiteModeResolver.resolve(
+                    tabOverride = tab.siteModeOverride,
+                    siteOverride = siteOverride,
+                    postureProfile = postureProfile
+                )
+                if (tab.resolvedSiteMode != resolved) tab.copy(resolvedSiteMode = resolved) else tab
+            }
+            state.copy(tabs = updatedTabs)
+        }
     }
 
     private fun applyResolvedSettingsToTab(tabId: String, reloadIfModeChanged: Boolean) {
@@ -3581,6 +3791,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         updateWebDark: Boolean = true,
         updateBgMedia: Boolean = true
     ) {
+        if (updateSiteOverrides) {
+            refreshResolvedSiteModesForAllTabs(_uiState.value.activeProfile)
+        }
         val state = _uiState.value
         val activeId = state.activeTabId
         val chromeDark = isChromeDark()

@@ -64,6 +64,7 @@ fun FilterListsOverlay(
     onDeleteList: (String) -> Unit
 ) {
     var showAddDialog by remember { mutableStateOf(false) }
+    var pendingDeleteList by remember { mutableStateOf<FilterListEntity?>(null) }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -161,7 +162,7 @@ fun FilterListsOverlay(
                 FilterListRow(
                     item = item,
                     onToggle = { enabled -> onToggleList(item.id, enabled) },
-                    onDelete = { onDeleteList(item.id) }
+                    onDelete = { pendingDeleteList = item }
                 )
             }
         }
@@ -173,6 +174,35 @@ fun FilterListsOverlay(
             onConfirm = { name, url ->
                 showAddDialog = false
                 onAddCustomList(name, url)
+            }
+        )
+    }
+
+    pendingDeleteList?.let { target ->
+        AlertDialog(
+            onDismissRequest = { pendingDeleteList = null },
+            title = { Text("Delete filter list?") },
+            text = {
+                Text("Remove \"${target.name}\" and its cached filter rules from Swiftfox?")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        pendingDeleteList = null
+                        onDeleteList(target.id)
+                    },
+                    modifier = Modifier.heightIn(min = 48.dp)
+                ) {
+                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { pendingDeleteList = null },
+                    modifier = Modifier.heightIn(min = 48.dp)
+                ) {
+                    Text("Cancel")
+                }
             }
         )
     }
@@ -331,7 +361,7 @@ private fun AddCustomFilterListDialog(
     onConfirm: (name: String, url: String) -> Unit
 ) {
     var name by remember { mutableStateOf("") }
-    var url by remember { mutableStateOf("https://") }
+    var url by remember { mutableStateOf("") }
     val cleanUrl = url.trim()
     val validUrl = (cleanUrl.startsWith("https://", ignoreCase = true) ||
         cleanUrl.startsWith("http://", ignoreCase = true)) &&
@@ -360,7 +390,7 @@ private fun AddCustomFilterListDialog(
                     singleLine = true,
                     isError = url.isNotBlank() && !validUrl,
                     supportingText = if (url.isNotBlank() && !validUrl) {
-                        { Text("URL must begin with http:// or https://") }
+                        { Text("Enter a valid http:// or https:// URL") }
                     } else {
                         null
                     },

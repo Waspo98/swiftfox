@@ -20,6 +20,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -298,7 +299,21 @@ fun UserscriptsOverlay(
                             keyboardType = KeyboardType.Uri,
                             imeAction = ImeAction.Done
                         ),
+                        keyboardActions = KeyboardActions(
+                            onDone = {
+                                if (urlIsValid) {
+                                    val target = installUrlDraft.trim()
+                                    showInstallUrlDialog = false
+                                    onInstallFromUrl(target)
+                                }
+                            }
+                        ),
                         isError = installUrlDraft.isNotBlank() && !urlIsValid,
+                        supportingText = if (installUrlDraft.isNotBlank() && !urlIsValid) {
+                            { Text("Enter a valid http:// or https:// URL") }
+                        } else {
+                            null
+                        },
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
@@ -335,8 +350,8 @@ fun UserscriptsOverlay(
             onDismissRequest = { showEditorDialog = false },
             properties = DialogProperties(usePlatformDefaultWidth = false),
             modifier = Modifier
-                .fillMaxWidth()
                 .widthIn(max = 560.dp)
+                .fillMaxWidth()
                 .imePadding()
                 .padding(horizontal = 16.dp),
             title = {

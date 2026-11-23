@@ -60,12 +60,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.overbay.swiftfox.features.sync.SyncAccountState
 import app.overbay.swiftfox.ui.browser.BrowserUiState
 import app.overbay.swiftfox.ui.theme.SwiftfoxEmblem
 import app.overbay.swiftfox.ui.theme.SwiftfoxEmblemVariant
+import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -87,6 +90,8 @@ fun SyncOverlay(
 ) {
     val syncStatus = state.syncStatus
     val settings = state.settings
+    val remoteTabGroups = remember(state.syncedRemoteTabs) { state.remoteTabGroups }
+    val intervals = remember { listOf(0 to "Manual", 30 to "30 min", 60 to "1 hour", 240 to "4 hours") }
     var showSignOutDialog by remember { mutableStateOf(false) }
 
     Scaffold(
@@ -114,7 +119,9 @@ fun SyncOverlay(
                         ) {
                             if (syncStatus.isSyncing) {
                                 CircularProgressIndicator(
-                                    modifier = Modifier.size(20.dp),
+                                    modifier = Modifier
+                                        .size(20.dp)
+                                        .semantics { contentDescription = "Syncing" },
                                     strokeWidth = 2.5.dp
                                 )
                             } else {
@@ -188,24 +195,34 @@ fun SyncOverlay(
                                 )
                             }
 
+                            val isAuthenticating = account is SyncAccountState.Authenticating
                             Button(
                                 onClick = onSignIn,
-                                enabled = syncStatus.isEngineAvailable &&
-                                    account !is SyncAccountState.Authenticating,
+                                enabled = syncStatus.isEngineAvailable && !isAuthenticating,
                                 shape = RoundedCornerShape(22.dp),
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .height(52.dp)
                             ) {
-                                Icon(Icons.Rounded.AccountCircle, contentDescription = null)
-                                Spacer(Modifier.size(8.dp))
-                                Text("Sign in with Mozilla Account")
+                                if (isAuthenticating) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier
+                                            .size(18.dp)
+                                            .semantics { contentDescription = "Signing in" },
+                                        strokeWidth = 2.dp
+                                    )
+                                    Spacer(Modifier.size(8.dp))
+                                    Text("Signing in...")
+                                } else {
+                                    Icon(Icons.Rounded.AccountCircle, contentDescription = null)
+                                    Spacer(Modifier.size(8.dp))
+                                    Text("Sign in with Mozilla Account")
+                                }
                             }
 
                             OutlinedButton(
                                 onClick = onPairQr,
-                                enabled = syncStatus.isEngineAvailable &&
-                                    account !is SyncAccountState.Authenticating,
+                                enabled = syncStatus.isEngineAvailable && !isAuthenticating,
                                 shape = RoundedCornerShape(20.dp),
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -253,6 +270,11 @@ fun SyncOverlay(
                                     )
                                 }
                             }
+                            if (!syncStatus.lastSyncError.isNullOrBlank() &&
+                                syncStatus.lastSyncError != account.message
+                            ) {
+                                SyncBannerRow(message = syncStatus.lastSyncError, isError = true)
+                            }
                             Button(
                                 onClick = onSignIn,
                                 enabled = syncStatus.isEngineAvailable,
@@ -290,10 +312,13 @@ fun SyncOverlay(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(14.dp)
                             ) {
-                                val initial = (account.displayName ?: account.email ?: "M")
-                                    .trim()
+                                val initial = (
+                                    account.displayName?.trim()?.takeIf { it.isNotEmpty() }
+                                        ?: account.email?.trim()?.takeIf { it.isNotEmpty() }
+                                        ?: "M"
+                                    )
                                     .take(1)
-                                    .uppercase()
+                                    .uppercase(Locale.ROOT)
                                 Surface(
                                     shape = CircleShape,
                                     color = MaterialTheme.colorScheme.primaryContainer,
@@ -450,7 +475,7 @@ fun SyncOverlay(
                                     overflow = TextOverflow.Ellipsis
                                 )
                                 Text(
-                                    text = "${state.remoteTabGroups.size} devices · ${state.syncedRemoteTabs.size} open tabs",
+                                    text = "${remoteTabGroups.size} devices · ${state.syncedRemoteTabs.size} open tabs",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     maxLines = 1,
@@ -472,7 +497,6 @@ fun SyncOverlay(
                                 style = MaterialTheme.typography.labelLarge,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
-                            val intervals = listOf(0 to "Manual", 30 to "30 min", 60 to "1 hour", 240 to "4 hours")
                             FlowRow(
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                                 verticalArrangement = Arrangement.spacedBy(8.dp)

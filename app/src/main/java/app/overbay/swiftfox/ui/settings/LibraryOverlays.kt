@@ -56,6 +56,7 @@ import app.overbay.swiftfox.data.db.BookmarkEntity
 import app.overbay.swiftfox.data.db.DownloadRecordEntity
 import app.overbay.swiftfox.data.db.HistoryEntity
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
+import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -71,18 +72,21 @@ fun BookmarksOverlay(
     var selectedFolder by remember { mutableStateOf<String?>(null) }
 
     val folders = remember(bookmarks) {
-        bookmarks.map { it.folder.ifBlank { "Bookmarks" } }.distinct().sorted()
+        bookmarks
+            .map { it.folder.trim().ifBlank { "Bookmarks" } }
+            .distinctBy { it.lowercase(Locale.ROOT) }
+            .sortedBy { it.lowercase(Locale.ROOT) }
     }
 
     LaunchedEffect(folders) {
-        if (selectedFolder != null && selectedFolder !in folders) {
+        if (selectedFolder != null && folders.none { it.equals(selectedFolder, ignoreCase = true) }) {
             selectedFolder = null
         }
     }
 
     val filtered = remember(bookmarks, searchQuery, selectedFolder) {
         bookmarks.filter { bm ->
-            val normalizedFolder = bm.folder.ifBlank { "Bookmarks" }
+            val normalizedFolder = bm.folder.trim().ifBlank { "Bookmarks" }
             val folderMatch = selectedFolder == null || normalizedFolder.equals(selectedFolder, ignoreCase = true)
             val q = searchQuery.trim()
             val queryMatch = q.isEmpty() ||
@@ -334,6 +338,7 @@ fun HistoryOverlay(
             )
         } else {
             LazyColumn(
+                modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(
                     start = 16.dp,
                     end = 16.dp,
@@ -432,6 +437,7 @@ fun DownloadsOverlay(
             )
         } else {
             LazyColumn(
+                modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(
                     start = 16.dp,
                     end = 16.dp,

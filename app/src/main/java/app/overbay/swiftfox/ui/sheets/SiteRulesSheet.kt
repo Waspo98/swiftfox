@@ -1,6 +1,7 @@
 package app.overbay.swiftfox.ui.sheets
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -30,18 +32,24 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.overbay.swiftfox.data.db.SiteOverrideEntity
@@ -83,9 +91,16 @@ fun SiteRulesSheet(
     onLaunchZapper: () -> Unit,
     onResetAll: () -> Unit,
     globalAdblockEnabled: Boolean = true,
-    isNativeRust: Boolean = true
+    isNativeRust: Boolean = true,
+    isPrivate: Boolean = false,
+    persistentRuleIds: Set<String> = emptySet(),
+    snackbarMessage: String? = null,
+    snackbarId: Long = 0L,
+    onClearSnackbar: () -> Unit = {}
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val sheetSnackbarHostState = remember { SnackbarHostState() }
+    val javascriptEnabled = override?.javascriptEnabled != false
     val savedUa = override?.customUserAgent?.takeIf { it.isNotBlank() }
     val matchedPreset = when (savedUa) {
         null -> UserAgentPreset.DEFAULT
@@ -98,6 +113,19 @@ fun SiteRulesSheet(
     var selectedUaPreset by remember(host, savedUa) { mutableStateOf(matchedPreset) }
     var customUaDraft by remember(host, savedUa) { mutableStateOf(savedUa.orEmpty()) }
 
+    LaunchedEffect(snackbarId, snackbarMessage) {
+        if (snackbarMessage == null) {
+            sheetSnackbarHostState.currentSnackbarData?.dismiss()
+            return@LaunchedEffect
+        }
+        sheetSnackbarHostState.currentSnackbarData?.dismiss()
+        sheetSnackbarHostState.showSnackbar(
+            message = snackbarMessage,
+            duration = SnackbarDuration.Short
+        )
+        onClearSnackbar()
+    }
+
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
@@ -105,6 +133,7 @@ fun SiteRulesSheet(
         containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
         contentColor = MaterialTheme.colorScheme.onSurface
     ) {
+        Box(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -262,25 +291,36 @@ fun SiteRulesSheet(
                     }
                 }
                 if (selectedUaPreset == UserAgentPreset.CUSTOM) {
+                    val trimmedCustomUa = customUaDraft.trim()
+                    val customUaValid = trimmedCustomUa.all { it in '\u0020'..'\u007E' }
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                        verticalAlignment = Alignment.Top
                     ) {
                         OutlinedTextField(
                             value = customUaDraft,
                             onValueChange = { customUaDraft = it },
                             label = { Text("User-Agent string") },
+                            isError = trimmedCustomUa.isNotEmpty() && !customUaValid,
+                            supportingText = if (trimmedCustomUa.isNotEmpty() && !customUaValid) {
+                                { Text("Use printable ASCII characters only") }
+                            } else {
+                                null
+                            },
                             singleLine = true,
                             shape = RoundedCornerShape(16.dp),
                             modifier = Modifier.weight(1f)
                         )
                         OutlinedButton(
                             onClick = {
-                                onSetCustomUserAgent(customUaDraft.trim().takeIf { it.isNotEmpty() })
+                                onSetCustomUserAgent(trimmedCustomUa.takeIf { it.isNotEmpty() })
                             },
+                            enabled = customUaValid,
                             shape = RoundedCornerShape(20.dp),
-                            modifier = Modifier.heightIn(min = 48.dp)
+                            modifier = Modifier
+                                .padding(top = 6.dp)
+                                .heightIn(min = 48.dp)
                         ) {
                             Text("Apply")
                         }
@@ -301,9 +341,18 @@ fun SiteRulesSheet(
                 )
                 Surface(
                     onClick = onLaunchZapper,
+                    enabled = javascriptEnabled,
                     shape = RoundedCornerShape(24.dp),
-                    color = MaterialTheme.colorScheme.primaryContainer,
-                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    color = if (javascriptEnabled) {
+                        MaterialTheme.colorScheme.primaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.5f)
+                    },
+                    contentColor = if (javascriptEnabled) {
+                        MaterialTheme.colorScheme.onPrimaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
+                    },
                     modifier = Modifier.heightIn(min = 48.dp)
                 ) {
                     Row(
@@ -314,7 +363,11 @@ fun SiteRulesSheet(
                         Icon(
                             imageVector = Icons.Rounded.AutoFixHigh,
                             contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
+                            tint = if (javascriptEnabled) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
+                            },
                             modifier = Modifier.size(18.dp)
                         )
                         Text("Zap element", style = MaterialTheme.typography.labelLarge)
@@ -336,6 +389,7 @@ fun SiteRulesSheet(
                 ) {
                     Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
                         zappedRulesForHost.forEachIndexed { idx, rule ->
+                            val isSavedReadOnlyInPrivate = isPrivate && rule.id in persistentRuleIds
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -350,9 +404,18 @@ fun SiteRulesSheet(
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )
-                                    if (rule.label.isNotBlank()) {
+                                    val subtitleLine = buildString {
+                                        if (isPrivate) {
+                                            append(if (isSavedReadOnlyInPrivate) "Saved (normal mode)" else "Private session")
+                                            if (rule.label.isNotBlank()) append(" · ")
+                                        }
+                                        if (rule.label.isNotBlank()) {
+                                            append(rule.selector)
+                                        }
+                                    }
+                                    if (subtitleLine.isNotEmpty()) {
                                         Text(
-                                            text = rule.selector,
+                                            text = subtitleLine,
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                                             maxLines = 1,
@@ -360,14 +423,23 @@ fun SiteRulesSheet(
                                         )
                                     }
                                 }
-                                IconButton(
-                                    onClick = { onDeleteZappedRule(rule.id) },
-                                    modifier = Modifier.size(48.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.DeleteOutline,
-                                        contentDescription = "Delete zapped rule"
+                                if (isSavedReadOnlyInPrivate) {
+                                    Text(
+                                        text = "Saved",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(horizontal = 10.dp)
                                     )
+                                } else {
+                                    IconButton(
+                                        onClick = { onDeleteZappedRule(rule.id) },
+                                        modifier = Modifier.size(48.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.DeleteOutline,
+                                            contentDescription = "Delete zapped rule"
+                                        )
+                                    }
                                 }
                             }
                             if (idx < zappedRulesForHost.lastIndex) {
@@ -381,6 +453,15 @@ fun SiteRulesSheet(
             }
 
             Spacer(Modifier.height(4.dp))
+        }
+        SnackbarHost(
+            hostState = sheetSnackbarHostState,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .imePadding()
+                .padding(horizontal = 16.dp, vertical = 12.dp)
+        )
         }
     }
 }
@@ -396,7 +477,15 @@ private fun SiteSwitchRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = 48.dp),
+            .clip(RoundedCornerShape(12.dp))
+            .toggleable(
+                value = checked,
+                enabled = enabled,
+                role = Role.Switch,
+                onValueChange = onCheckedChange
+            )
+            .heightIn(min = 48.dp)
+            .padding(vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
@@ -415,7 +504,7 @@ private fun SiteSwitchRow(
                 overflow = TextOverflow.Ellipsis
             )
         }
-        Switch(checked = checked, onCheckedChange = onCheckedChange, enabled = enabled)
+        Switch(checked = checked, onCheckedChange = null, enabled = enabled)
     }
 }
 

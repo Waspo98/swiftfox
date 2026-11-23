@@ -4,13 +4,16 @@ import android.app.PictureInPictureParams
 import android.app.UiModeManager
 import android.app.role.RoleManager
 import android.content.ClipData
+import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.PersistableBundle
 import android.print.PrintAttributes
 import android.print.PrintManager
 import android.provider.Settings
@@ -169,7 +172,6 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val state by viewModel.uiState.collectAsStateWithLifecycle()
-            val thumbnails by viewModel.thumbnails.collectAsStateWithLifecycle()
 
             LaunchedEffect(state.settings.themeMode) {
                 applyApplicationNightMode(state.settings.themeMode)
@@ -183,7 +185,7 @@ class MainActivity : ComponentActivity() {
             ) {
                 BrowserScreen(
                     state = state,
-                    thumbnails = thumbnails,
+                    thumbnailsFlow = viewModel.thumbnails,
                     viewModel = viewModel,
                     onShareUrl = { cleanUrl, strippedCount ->
                         val shareIntent = Intent(Intent.ACTION_SEND).apply {
@@ -200,7 +202,15 @@ class MainActivity : ComponentActivity() {
                     },
                     onCopyText = { text ->
                         val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        cm.setPrimaryClip(ClipData.newPlainText("Swiftfox Link", text))
+                        val clip = ClipData.newPlainText("Swiftfox Link", text)
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                            (state.activeTab?.isPrivate == true || state.isPrivateView)
+                        ) {
+                            clip.description.extras = PersistableBundle().apply {
+                                putBoolean(ClipDescription.EXTRA_IS_SENSITIVE, true)
+                            }
+                        }
+                        cm.setPrimaryClip(clip)
                     },
                     onPrintPage = { printCurrentPage() },
                     onEnterPip = { enterSwiftfoxPip() },
@@ -238,7 +248,7 @@ class MainActivity : ComponentActivity() {
         pendingRuntimePermissionCallback = null
         exitFullscreenVideo()
         clearViewModelBridges()
-        (application as SwiftfoxApp).tabSessionPool.rebindActivityContext(applicationContext)
+        (application as SwiftfoxApp).tabSessionPool.unbindHostActivity(this, applicationContext)
         super.onDestroy()
     }
 
@@ -367,7 +377,8 @@ class MainActivity : ComponentActivity() {
         }
 
         viewModel.onShowFullscreenViewBridge = { view, callback ->
-            exitFullscreenVideo()
+            // Detach any prior fullscreen view without resetting ViewModel's isFullscreenVideo flag
+            exitFullscreenVideo(notifyViewModel = false)
             fullscreenCustomView = view
             fullscreenCallback = callback
             val decor = window.decorView as ViewGroup
@@ -425,7 +436,7 @@ class MainActivity : ComponentActivity() {
         viewModel.onExportBookmarksHtmlBridge = null
     }
 
-    private fun exitFullscreenVideo() {
+    private fun exitFullscreenVideo(notifyViewModel: Boolean = true) {
         val view = fullscreenCustomView
         fullscreenCustomView = null
         if (view != null) {
@@ -435,7 +446,9 @@ class MainActivity : ComponentActivity() {
         val callback = fullscreenCallback
         fullscreenCallback = null
         callback?.onCustomViewHidden()
-        viewModel.onFullscreenVideoExited()
+        if (notifyViewModel) {
+            viewModel.onFullscreenVideoExited()
+        }
         WindowCompat.getInsetsController(window, window.decorView)
             .show(WindowInsetsCompat.Type.systemBars())
     }
@@ -458,9 +471,17 @@ class MainActivity : ComponentActivity() {
             return
         }
         val (session, title) = pair
-        val pm = getSystemService(Context.PRINT_SERVICE) as PrintManager
+        val pm = getSystemService(Context.PRINT_SERVICE) as? PrintManager
+        if (pm == null) {
+            viewModel.showSnackbar("Printing is unavailable on this device")
+            return
+        }
         val jobName = "Swiftfox - ${title.ifBlank { "Page" }}"
-        pm.print(jobName, session.createPrintAdapter(jobName), PrintAttributes.Builder().build())
+        runCatching {
+            pm.print(jobName, session.createPrintAdapter(jobName), PrintAttributes.Builder().build())
+        }.onFailure {
+            viewModel.showSnackbar("Could not open print dialog")
+        }
     }
 
     private fun requestDefaultBrowserRole() {
@@ -469,13 +490,17 @@ class MainActivity : ComponentActivity() {
             roleManager.isRoleAvailable(RoleManager.ROLE_BROWSER) &&
             !roleManager.isRoleHeld(RoleManager.ROLE_BROWSER)
         ) {
-            defaultBrowserRoleLauncher.launch(
-                roleManager.createRequestRoleIntent(RoleManager.ROLE_BROWSER)
-            )
-        } else {
-            runCatching {
-                startActivity(Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS))
-            }
+            val launched = runCatching {
+                defaultBrowserRoleLauncher.launch(
+                    roleManager.createRequestRoleIntent(RoleManager.ROLE_BROWSER)
+                )
+            }.isSuccess
+            if (launched) return
+        }
+        runCatching {
+            startActivity(Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS))
+        }.onFailure {
+            viewModel.showSnackbar("Could not open default apps settings")
         }
     }
 }

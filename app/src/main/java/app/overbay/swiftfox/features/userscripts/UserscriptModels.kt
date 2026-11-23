@@ -1,5 +1,7 @@
 package app.overbay.swiftfox.features.userscripts
 
+import java.util.Locale
+
 /**
  * Injection timing phase supported by the Swiftfox `.user.js` runtime.
  */
@@ -10,7 +12,7 @@ enum class UserscriptRunAt(val headerValue: String) {
 
     companion object {
         fun fromHeader(raw: String?): UserscriptRunAt {
-            val normalized = raw?.trim()?.lowercase() ?: return DOCUMENT_END
+            val normalized = raw?.trim()?.lowercase(Locale.ROOT) ?: return DOCUMENT_END
             return entries.firstOrNull { it.headerValue == normalized } ?: DOCUMENT_END
         }
     }

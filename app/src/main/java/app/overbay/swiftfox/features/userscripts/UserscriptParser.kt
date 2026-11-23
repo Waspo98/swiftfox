@@ -2,6 +2,7 @@ package app.overbay.swiftfox.features.userscripts
 
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import java.util.Locale
 
 /**
  * Parses `// ==UserScript== ... // ==/UserScript==` metadata blocks and handles JSON serialization
@@ -19,7 +20,6 @@ object UserscriptParser {
         fallbackName: String = "Untitled Userscript"
     ): ParsedUserscriptMetadata {
         val cleanCode = code.removePrefix("\uFEFF")
-        val lines = cleanCode.replace("\r\n", "\n").replace("\r", "\n").split('\n')
 
         var inBlock = false
         var name: String? = null
@@ -33,7 +33,8 @@ object UserscriptParser {
         val connects = LinkedHashSet<String>()
         val unsupported = LinkedHashSet<String>()
 
-        for (line in lines) {
+        for (rawLine in cleanCode.lineSequence()) {
+            val line = rawLine.trimEnd('\r')
             if (!inBlock) {
                 if (blockStartRegex.matches(line)) {
                     inBlock = true
@@ -44,7 +45,7 @@ object UserscriptParser {
                 break
             }
             val match = directiveRegex.matchEntire(line) ?: continue
-            val key = match.groupValues[1].lowercase()
+            val key = match.groupValues[1].lowercase(Locale.ROOT)
             val value = match.groupValues.getOrElse(2) { "" }.trim()
             if (value.isEmpty()) continue
 
@@ -57,7 +58,7 @@ object UserscriptParser {
                 "exclude", "exclude-match" -> excludes.add(value)
                 "run-at" -> runAtRaw = value
                 "grant" -> grants.add(value)
-                "connect" -> connects.add(value.lowercase())
+                "connect" -> connects.add(value.lowercase(Locale.ROOT))
                 "require", "resource" -> unsupported.add("@$key")
             }
         }

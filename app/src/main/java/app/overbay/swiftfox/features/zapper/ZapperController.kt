@@ -17,6 +17,10 @@ class ZapperController(private val context: Context? = null) {
         }.getOrDefault("")
     }
 
+    fun warmUpAssets() {
+        zapperScript
+    }
+
     private val jsonParser = Json {
         ignoreUnknownKeys = true
         isLenient = true
@@ -32,6 +36,7 @@ class ZapperController(private val context: Context? = null) {
         val keyLit = jsStringLiteral(runtimeKey)
         val tokenLit = jsStringLiteral(bridgeToken)
         return buildString {
+            append("(function(){\n")
             if (zapperScript.isNotBlank()) {
                 append("if (!Object.prototype.hasOwnProperty.call(window, ").append(keyLit).append(")) {\n")
                 append(zapperScript)
@@ -39,38 +44,39 @@ class ZapperController(private val context: Context? = null) {
                 append("}\n")
             }
             append("var rt = window[").append(keyLit).append("];\n")
-            append("rt && rt.start(").append(jsStringLiteral(safeHex)).append(");")
+            append("rt && rt.start(").append(jsStringLiteral(safeHex)).append(");\n")
+            append("})();")
         }
     }
 
     fun buildStopScript(runtimeKey: String = DEFAULT_RUNTIME_KEY): String {
         val keyLit = jsStringLiteral(runtimeKey)
-        return "var rt = window[$keyLit]; rt && rt.stop();"
+        return "(function(){var rt = window[$keyLit]; rt && rt.stop();})();"
     }
 
     fun buildSetScopeScript(depth: Int, runtimeKey: String = DEFAULT_RUNTIME_KEY): String {
         val keyLit = jsStringLiteral(runtimeKey)
-        return "var rt = window[$keyLit]; rt && rt.setScopeDepth(${depth.coerceAtLeast(0)});"
+        return "(function(){var rt = window[$keyLit]; rt && rt.setScopeDepth(${depth.coerceAtLeast(0)});})();"
     }
 
     fun buildAdjustScopeScript(delta: Int, runtimeKey: String = DEFAULT_RUNTIME_KEY): String {
         val keyLit = jsStringLiteral(runtimeKey)
-        return "var rt = window[$keyLit]; rt && rt.adjustScope($delta);"
+        return "(function(){var rt = window[$keyLit]; rt && rt.adjustScope($delta);})();"
     }
 
     fun buildZapOnceScript(runtimeKey: String = DEFAULT_RUNTIME_KEY): String {
         val keyLit = jsStringLiteral(runtimeKey)
-        return "var rt = window[$keyLit]; rt && rt.zapOnce();"
+        return "(function(){var rt = window[$keyLit]; rt && rt.zapOnce();})();"
     }
 
     fun buildUndoLastZapScript(runtimeKey: String = DEFAULT_RUNTIME_KEY): String {
         val keyLit = jsStringLiteral(runtimeKey)
-        return "var rt = window[$keyLit]; rt && rt.undoLastZap();"
+        return "(function(){var rt = window[$keyLit]; rt && rt.undoLastZap();})();"
     }
 
     fun buildConfirmBlockPermanentScript(runtimeKey: String = DEFAULT_RUNTIME_KEY): String {
         val keyLit = jsStringLiteral(runtimeKey)
-        return "var rt = window[$keyLit]; rt && rt.confirmBlockPermanently();"
+        return "(function(){var rt = window[$keyLit]; rt && rt.confirmBlockPermanently();})();"
     }
 
     fun buildApplyZappedCssScript(rules: List<ZappedRuleEntity>): String {

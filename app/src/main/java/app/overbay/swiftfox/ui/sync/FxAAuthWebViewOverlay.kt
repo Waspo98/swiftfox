@@ -29,7 +29,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -46,6 +45,9 @@ import androidx.webkit.ProfileStore
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import app.overbay.swiftfox.features.sync.MozillaSyncCoordinator
+import java.util.concurrent.atomic.AtomicLong
+
+private val fxaAuthOverlayGeneration = AtomicLong(0L)
 
 /**
  * Isolated OAuth WebView flow for Mozilla Accounts sign-in and QR pairing.
@@ -66,6 +68,8 @@ fun FxAAuthWebViewOverlay(
     var redirectHandled by remember { mutableStateOf(false) }
     val currentIsRedirectUrl by rememberUpdatedState(isRedirectUrl)
     val currentOnRedirectCaptured by rememberUpdatedState(onRedirectCaptured)
+    val currentOnCancel by rememberUpdatedState(onCancel)
+    val overlayGeneration = remember { fxaAuthOverlayGeneration.incrementAndGet() }
 
     val webView = remember {
         WebView(context).apply {
@@ -127,7 +131,7 @@ fun FxAAuthWebViewOverlay(
                     view: WebView?,
                     detail: RenderProcessGoneDetail?
                 ): Boolean {
-                    onCancel()
+                    currentOnCancel()
                     return true
                 }
             }
@@ -139,24 +143,18 @@ fun FxAAuthWebViewOverlay(
         webView.loadUrl(authUrl)
     }
 
-    DisposableEffect(webView) {
-        onDispose {
-            runCatching {
-                webView.stopLoading()
-                webView.clearHistory()
-                webView.clearCache(true)
-                webView.destroy()
-            }
-            if (WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) {
+    fun cleanupAuthProfileIfStillCurrent() {
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) return
+        if (fxaAuthOverlayGeneration.get() != overlayGeneration) return
+        runCatching {
+            val store = ProfileStore.getInstance()
+            val profile = store.getProfile(MozillaSyncCoordinator.FXA_AUTH_PROFILE_NAME) ?: return
+            profile.webStorage.deleteAllData()
+            profile.cookieManager.removeAllCookies {
                 runCatching {
-                    val store = ProfileStore.getInstance()
-                    val profile = store.getProfile(MozillaSyncCoordinator.FXA_AUTH_PROFILE_NAME)
-                    profile?.webStorage?.deleteAllData()
-                    profile?.cookieManager?.removeAllCookies {
-                        runCatching {
-                            profile.cookieManager.flush()
-                            store.deleteProfile(MozillaSyncCoordinator.FXA_AUTH_PROFILE_NAME)
-                        }
+                    profile.cookieManager.flush()
+                    if (fxaAuthOverlayGeneration.get() == overlayGeneration) {
+                        store.deleteProfile(MozillaSyncCoordinator.FXA_AUTH_PROFILE_NAME)
                     }
                 }
             }
@@ -206,6 +204,16 @@ fun FxAAuthWebViewOverlay(
         ) {
             AndroidView(
                 factory = { webView },
+                onRelease = { view ->
+                    runCatching {
+                        view.stopLoading()
+                        (view.parent as? ViewGroup)?.removeView(view)
+                        view.clearHistory()
+                        view.clearCache(true)
+                        view.destroy()
+                    }
+                    cleanupAuthProfileIfStillCurrent()
+                },
                 modifier = Modifier.fillMaxSize()
             )
         }

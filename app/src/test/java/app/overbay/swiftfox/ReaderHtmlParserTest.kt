@@ -378,4 +378,45 @@ class ReaderHtmlParserTest {
         assertEquals(null, galleryImages[0].caption)
         assertEquals("Two photos", galleryImages[1].caption)
     }
+
+    @Test
+    fun parsesWrappedImagesCommaSrcsetDataPlaceholderAndWindows1252Entities() {
+        val html = """
+            <div>
+              <a href="https://example.com/gallery">
+                <img src="https://cdn.example.com/linked.jpg" alt="Linked image" />
+              </a>
+            </div>
+            <div>
+              <picture>
+                <source srcset="https://cdn.example.com/pic.webp" />
+                <img src="https://cdn.example.com/pic.jpg" alt="Picture image" />
+              </picture>
+            </div>
+            <p>
+              <img src="" srcset="data:image/gif;base64,R0lGODlhAQABAAAAACw= 1w, https://res.cloudinary.com/demo/image/upload/w_800,c_limit,f_auto/sample.jpg 800w, https://res.cloudinary.com/demo/image/upload/w_1200,c_limit/sample.jpg 1200w" alt="Cloudinary" />
+            </p>
+            <p>Don&#146;t miss &#147;this&#148; &#151; only &#128;5</p>
+        """.trimIndent()
+
+        val blocks = ReaderHtmlParser.parse(html)
+        val images = blocks.filterIsInstance<ReaderBlock.Image>()
+        assertEquals(
+            listOf(
+                "https://cdn.example.com/linked.jpg",
+                "https://cdn.example.com/pic.jpg",
+                "https://res.cloudinary.com/demo/image/upload/w_800,c_limit,f_auto/sample.jpg"
+            ),
+            images.map { it.url }
+        )
+        assertEquals("Linked image", images[0].alt)
+        assertEquals("Picture image", images[1].alt)
+        assertEquals("Cloudinary", images[2].alt)
+
+        val paragraph = blocks.filterIsInstance<ReaderBlock.Paragraph>().single()
+        assertEquals(
+            "Don\u2019t miss \u201Cthis\u201D \u2014 only \u20AC5",
+            paragraph.runs.joinToString("") { it.text }
+        )
+    }
 }

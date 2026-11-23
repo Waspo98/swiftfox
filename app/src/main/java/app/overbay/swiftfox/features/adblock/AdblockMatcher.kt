@@ -323,17 +323,16 @@ class FallbackKotlinAdblockMatcher(rulesText: String) : AdblockMatcher {
         else -> null
     }
 
+    private data class ParsedUrlParts(
+        val host: String,
+        val pathAndQuery: String
+    )
+
     override fun checkNetworkRequest(url: String, sourceUrl: String, requestType: String): Boolean {
-        val reqUri = parseUri(url) ?: return false
-        val reqHost = reqUri.host?.lowercase(java.util.Locale.ROOT)?.trim('[', ']') ?: return false
-        val reqPath = buildString {
-            append(reqUri.rawPath ?: "/")
-            reqUri.rawQuery?.let {
-                append('?')
-                append(it)
-            }
-        }
-        val sourceHost = parseUri(sourceUrl)?.host?.lowercase(java.util.Locale.ROOT)?.trim('[', ']')?.removePrefix("www.").orEmpty()
+        val reqParts = parseUrlLenient(url) ?: return false
+        val reqHost = reqParts.host
+        val reqPath = reqParts.pathAndQuery
+        val sourceHost = parseUrlLenient(sourceUrl)?.host?.removePrefix("www.").orEmpty()
         val isThirdParty = sourceHost.isNotBlank() && !isSameSite(reqHost, sourceHost)
         val normType = requestType.lowercase(java.util.Locale.ROOT)
 
@@ -359,6 +358,7 @@ class FallbackKotlinAdblockMatcher(rulesText: String) : AdblockMatcher {
         requestType: String
     ): NetworkRule? {
         if (ruleMap.isEmpty()) return null
+        var firstNonImportant: NetworkRule? = null
         var candidate = reqHost
         while (candidate.isNotEmpty()) {
             val rules = ruleMap[candidate]
@@ -381,14 +381,15 @@ class FallbackKotlinAdblockMatcher(rulesText: String) : AdblockMatcher {
                     }
                     if (rule.includedTypes.isNotEmpty() && requestType !in rule.includedTypes) continue
                     if (rule.excludedTypes.isNotEmpty() && requestType in rule.excludedTypes) continue
-                    return rule
+                    if (rule.isImportant) return rule
+                    if (firstNonImportant == null) firstNonImportant = rule
                 }
             }
             val dotIdx = candidate.indexOf('.')
             if (dotIdx < 0) break
             candidate = candidate.substring(dotIdx + 1)
         }
-        return null
+        return firstNonImportant
     }
 
     private fun isAdblockSeparator(ch: Char): Boolean {
@@ -402,7 +403,7 @@ class FallbackKotlinAdblockMatcher(rulesText: String) : AdblockMatcher {
     }
 
     override fun cosmeticResources(url: String): CosmeticPayload {
-        val rawHost = parseUri(url)?.host?.lowercase(java.util.Locale.ROOT)?.removePrefix("www.") ?: ""
+        val rawHost = parseUrlLenient(url)?.host?.removePrefix("www.") ?: ""
         val hidden = LinkedHashSet<String>()
         val exceptions = LinkedHashSet<String>()
         exceptions.addAll(globalUnhideSelectors)
@@ -475,8 +476,39 @@ class FallbackKotlinAdblockMatcher(rulesText: String) : AdblockMatcher {
 
     override fun close() = Unit
 
-    private fun parseUri(url: String): URI? =
-        runCatching { URI(url) }.getOrNull()
+    private fun parseUrlLenient(url: String): ParsedUrlParts? {
+        val trimmed = url.trim()
+        if (trimmed.isEmpty()) return null
+        val strict = runCatching { URI(trimmed) }.getOrNull()
+        val strictHost = strict?.host?.lowercase(java.util.Locale.ROOT)?.trim('[', ']')
+        if (strict != null && !strictHost.isNullOrBlank()) {
+            val rawPath = strict.rawPath.orEmpty().ifEmpty { "/" }
+            val pathAndQuery = buildString {
+                append(rawPath)
+                strict.rawQuery?.let {
+                    append('?')
+                    append(it)
+                }
+            }
+            return ParsedUrlParts(host = strictHost, pathAndQuery = pathAndQuery)
+        }
+        val schemeIdx = trimmed.indexOf("://")
+        if (schemeIdx <= 0) return null
+        val afterScheme = trimmed.substring(schemeIdx + 3)
+        val noFragment = afterScheme.substringBefore('#')
+        val pathStart = noFragment.indexOfAny(charArrayOf('/', '?'))
+        val authority = (if (pathStart >= 0) noFragment.substring(0, pathStart) else noFragment)
+            .substringAfterLast('@')
+        val hostPart = if (authority.startsWith('[')) {
+            authority.substringBefore(']').removePrefix("[")
+        } else {
+            authority.substringBefore(':')
+        }.lowercase(java.util.Locale.ROOT).trim()
+        if (hostPart.isBlank()) return null
+        val tail = if (pathStart >= 0) noFragment.substring(pathStart) else "/"
+        val pathAndQuery = if (tail.startsWith("?")) "/$tail" else tail.ifEmpty { "/" }
+        return ParsedUrlParts(host = hostPart, pathAndQuery = pathAndQuery)
+    }
 
     private fun isSameSite(hostA: String, hostB: String): Boolean {
         if (hostA == hostB) return true
@@ -486,7 +518,7 @@ class FallbackKotlinAdblockMatcher(rulesText: String) : AdblockMatcher {
     }
 
     private fun registrableDomain(host: String): String {
-        val clean = host.lowercase().trimEnd('.')
+        val clean = host.lowercase(java.util.Locale.ROOT).trimEnd('.')
         val parts = clean.split('.')
         if (parts.size <= 2) return clean
         val lastTwo = "${parts[parts.size - 2]}.${parts[parts.size - 1]}"

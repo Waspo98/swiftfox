@@ -2,6 +2,7 @@ package app.overbay.swiftfox.ui.sheets
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -53,10 +54,15 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -87,9 +93,25 @@ fun QuickControlsSheet(
     onPinEssential: () -> Unit,
     onCycleToolbarPlacement: () -> Unit,
     onOpenOverlay: (BrowserOverlay) -> Unit,
-    onSendToZenSpace: () -> Unit = {}
+    onSendToZenSpace: () -> Unit = {},
+    onClearSnackbar: () -> Unit = {}
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val sheetSnackbarHostState = remember { SnackbarHostState() }
+
+    LaunchedEffect(state.snackbarId, state.snackbarMessage) {
+        val msg = state.snackbarMessage
+        if (msg == null) {
+            sheetSnackbarHostState.currentSnackbarData?.dismiss()
+            return@LaunchedEffect
+        }
+        sheetSnackbarHostState.currentSnackbarData?.dismiss()
+        sheetSnackbarHostState.showSnackbar(
+            message = msg,
+            duration = SnackbarDuration.Short
+        )
+        onClearSnackbar()
+    }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -98,24 +120,33 @@ fun QuickControlsSheet(
         containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
         contentColor = MaterialTheme.colorScheme.onSurface
     ) {
-        QuickControlsContent(
-            state = state,
-            onToggleBookmark = onToggleBookmark,
-            onShareCleanUrl = onShareCleanUrl,
-            onPrintPage = onPrintPage,
-            onToggleSiteMode = onToggleSiteMode,
-            onToggleWebDarkMode = onToggleWebDarkMode,
-            onToggleShieldAdblock = onToggleShieldAdblock,
-            onEnterPip = onEnterPip,
-            onLaunchZapper = onLaunchZapper,
-            onOpenReaderMode = onOpenReaderMode,
-            onOpenSiteRules = onOpenSiteRules,
-            onFindInPage = onFindInPage,
-            onPinEssential = onPinEssential,
-            onCycleToolbarPlacement = onCycleToolbarPlacement,
-            onOpenOverlay = onOpenOverlay,
-            onSendToZenSpace = onSendToZenSpace
-        )
+        Box(modifier = Modifier.fillMaxWidth()) {
+            QuickControlsContent(
+                state = state,
+                onToggleBookmark = onToggleBookmark,
+                onShareCleanUrl = onShareCleanUrl,
+                onPrintPage = onPrintPage,
+                onToggleSiteMode = onToggleSiteMode,
+                onToggleWebDarkMode = onToggleWebDarkMode,
+                onToggleShieldAdblock = onToggleShieldAdblock,
+                onEnterPip = onEnterPip,
+                onLaunchZapper = onLaunchZapper,
+                onOpenReaderMode = onOpenReaderMode,
+                onOpenSiteRules = onOpenSiteRules,
+                onFindInPage = onFindInPage,
+                onPinEssential = onPinEssential,
+                onCycleToolbarPlacement = onCycleToolbarPlacement,
+                onOpenOverlay = onOpenOverlay,
+                onSendToZenSpace = onSendToZenSpace
+            )
+            SnackbarHost(
+                hostState = sheetSnackbarHostState,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(horizontal = 16.dp, vertical = 12.dp)
+            )
+        }
     }
 }
 
@@ -155,12 +186,15 @@ fun QuickControlsContent(
         else -> "Dark Reader on"
     }
 
+    val shieldEnabled = !isWebPage || state.settings.adblockEnabled
     val shieldSubtitle = when {
+        isWebPage && !state.settings.adblockEnabled -> "Disabled in Settings"
         !state.settings.adblockEnabled -> "Shield off"
         isWebPage && siteAdblockDisabled -> "Paused on site"
         isWebPage -> "${activeTab.blockedCount} blocked"
         else -> "${state.adblockStatus.totalRules} rules ready"
     }
+    val jsEnabledForSite = state.activeSiteOverride?.javascriptEnabled != false
 
     Column(
         modifier = modifier
@@ -292,6 +326,7 @@ fun QuickControlsContent(
                     subtitle = shieldSubtitle,
                     icon = if (isShieldActive) Icons.Rounded.Shield else Icons.Rounded.Security,
                     active = isShieldActive,
+                    enabled = shieldEnabled,
                     onClick = onToggleShieldAdblock,
                     modifier = Modifier
                         .weight(1f)
@@ -299,9 +334,14 @@ fun QuickControlsContent(
                 )
                 QuickControlTile(
                     title = "PiP / Play",
-                    subtitle = if (activeTab?.isPlayingMedia == true) "Playing now" else "Media ready",
+                    subtitle = when {
+                        !isWebPage -> "Open a page first"
+                        activeTab.isPlayingMedia -> "Playing now"
+                        else -> "Media ready"
+                    },
                     icon = Icons.Rounded.PictureInPictureAlt,
-                    active = activeTab?.isPlayingMedia == true,
+                    active = isWebPage && activeTab.isPlayingMedia,
+                    enabled = isWebPage,
                     onClick = onEnterPip,
                     modifier = Modifier
                         .weight(1f)
@@ -322,6 +362,7 @@ fun QuickControlsContent(
                 QuickActionPill(
                     label = "Zap element",
                     icon = Icons.Rounded.AutoFixHigh,
+                    enabled = jsEnabledForSite,
                     onClick = onLaunchZapper
                 )
                 QuickActionPill(
@@ -462,12 +503,12 @@ private fun QuickControlTile(
                 },
                 modifier = Modifier.size(40.dp)
             ) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = null,
-                    tint = iconColor,
-                    modifier = Modifier.padding(9.dp)
-                )
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = if (enabled) iconColor else iconColor.copy(alpha = 0.45f),
+                modifier = Modifier.padding(9.dp)
+            )
             }
             Column(modifier = Modifier.weight(1f)) {
                 Text(
@@ -480,10 +521,10 @@ private fun QuickControlTile(
                 Text(
                     text = subtitle,
                     style = MaterialTheme.typography.bodySmall,
-                    color = if (active) {
-                        MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.88f)
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
+                    color = when {
+                        !enabled -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+                        active -> MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.88f)
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant
                     },
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
@@ -497,13 +538,23 @@ private fun QuickControlTile(
 private fun QuickActionPill(
     label: String,
     icon: ImageVector,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    enabled: Boolean = true
 ) {
     Surface(
         onClick = onClick,
+        enabled = enabled,
         shape = RoundedCornerShape(24.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        contentColor = MaterialTheme.colorScheme.onSurface,
+        color = if (enabled) {
+            MaterialTheme.colorScheme.surfaceContainerHigh
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.45f)
+        },
+        contentColor = if (enabled) {
+            MaterialTheme.colorScheme.onSurface
+        } else {
+            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
+        },
         modifier = Modifier.heightIn(min = 48.dp)
     ) {
         Row(
@@ -514,7 +565,11 @@ private fun QuickActionPill(
             Icon(
                 imageVector = icon,
                 contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
+                tint = if (enabled) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
+                },
                 modifier = Modifier.size(18.dp)
             )
             Text(

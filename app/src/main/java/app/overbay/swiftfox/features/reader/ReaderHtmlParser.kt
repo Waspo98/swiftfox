@@ -302,8 +302,20 @@ object ReaderHtmlParser {
     private fun codePointToString(codePoint: Int?): String? {
         if (codePoint == null || codePoint <= 0 || codePoint > 0x10FFFF) return null
         if (codePoint in 0xD800..0xDFFF) return null
-        return String(Character.toChars(codePoint))
+        // HTML5 maps legacy numeric entities 128..159 to Windows-1252 punctuation characters
+        val mapped = WINDOWS_1252_MAP[codePoint] ?: codePoint
+        return String(Character.toChars(mapped))
     }
+
+    private val WINDOWS_1252_MAP = mapOf(
+        0x80 to 0x20AC, 0x82 to 0x201A, 0x83 to 0x0192, 0x84 to 0x201E,
+        0x85 to 0x2026, 0x86 to 0x2020, 0x87 to 0x2021, 0x88 to 0x02C6,
+        0x89 to 0x2030, 0x8A to 0x0160, 0x8B to 0x2039, 0x8C to 0x0152,
+        0x8E to 0x017D, 0x91 to 0x2018, 0x92 to 0x2019, 0x93 to 0x201C,
+        0x94 to 0x201D, 0x95 to 0x2022, 0x96 to 0x2013, 0x97 to 0x2014,
+        0x98 to 0x02DC, 0x99 to 0x2122, 0x9A to 0x0161, 0x9B to 0x203A,
+        0x9C to 0x0153, 0x9E to 0x017E, 0x9F to 0x0178
+    )
 
     private fun tokenize(html: String): List<HtmlToken> {
         val tokens = mutableListOf<HtmlToken>()
@@ -637,9 +649,13 @@ object ReaderHtmlParser {
                     }
                 }
             } else {
+                val wrappedImages = collectDirectOrWrappedImages(looseNodes)
                 val runs = collectRunsFromNodes(looseNodes)
                 if (runs.isNotEmpty()) {
                     blocks.add(ReaderBlock.Paragraph(id = nextId("p"), runs = runs))
+                }
+                wrappedImages.forEach { img ->
+                    extractImageBlock(img, caption = null, nextId = nextId)?.let { blocks.add(it) }
                 }
             }
             looseNodes.clear()
@@ -1050,14 +1066,49 @@ object ReaderHtmlParser {
         flushPair()
     }
 
-    private fun parseFirstSrcsetUrl(raw: String?): String? {
+    private val SRCSET_DESCRIPTOR_REGEX = Regex("""^\d+(?:\.\d+)?[wx]$""", RegexOption.IGNORE_CASE)
+
+    /**
+     * Parses an HTML `srcset` attribute without splitting commas inside CDN URL path segments
+     * (e.g. Cloudinary / Substack / Medium `w_800,c_limit,f_auto/... 800w`) and skips `data:` placeholders.
+     */
+    internal fun parseFirstSrcsetUrl(raw: String?): String? {
         if (raw.isNullOrBlank()) return null
-        return raw.split(',')
-            .asSequence()
-            .map { candidate ->
-                candidate.trim().split(Regex("""\s+""")).firstOrNull().orEmpty()
+        val s = raw.trim()
+        var i = 0
+        val len = s.length
+        while (i < len) {
+            while (i < len && (s[i].isWhitespace() || s[i] == ',')) i++
+            if (i >= len) break
+            val urlStart = i
+            while (i < len && !s[i].isWhitespace()) {
+                // Commas inside URLs are valid unless followed by whitespace or end-of-string
+                if (s[i] == ',' && (i + 1 >= len || s[i + 1].isWhitespace())) {
+                    break
+                }
+                i++
             }
-            .firstOrNull { it.isNotBlank() }
+            var candidate = s.substring(urlStart, i).trimEnd(',')
+            // Skip optional descriptor(s) up to next candidate separator comma
+            var inParens = false
+            while (i < len) {
+                val c = s[i]
+                if (c == '(') inParens = true
+                else if (c == ')') inParens = false
+                else if (c == ',' && !inParens) {
+                    i++
+                    break
+                }
+                i++
+            }
+            if (candidate.isNotBlank() &&
+                !SRCSET_DESCRIPTOR_REGEX.matches(candidate) &&
+                !candidate.startsWith("data:", ignoreCase = true)
+            ) {
+                return candidate
+            }
+        }
+        return null
     }
 
     private fun extractImageBlock(

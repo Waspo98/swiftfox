@@ -10,7 +10,10 @@ data class SpaceEntity(
     val iconKey: String = "fox",
     val containerProfileName: String? = null,
     val sortOrder: Int = 0,
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    val syncGuid: String? = null,
+    val themeColorHex: String? = null,
+    val zenContainerGuid: String? = null
 )
 
 @Entity(tableName = "essentials")
@@ -20,7 +23,9 @@ data class EssentialEntity(
     val title: String,
     val url: String,
     val domain: String,
-    val sortOrder: Int = 0
+    val sortOrder: Int = 0,
+    val syncGuid: String? = null,
+    val zenContainerGuid: String? = null
 )
 
 @Entity(tableName = "tabs")
@@ -42,7 +47,10 @@ data class BookmarkEntity(
     val title: String,
     val url: String,
     val folder: String = "Bookmarks",
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    val syncGuid: String? = null,
+    val parentGuid: String? = null,
+    val updatedAt: Long = System.currentTimeMillis()
 )
 
 @Entity(tableName = "history")
@@ -132,4 +140,29 @@ data class UserscriptStorageEntity(
     val storageKey: String,
     val valueJson: String,
     val updatedAt: Long = System.currentTimeMillis()
+)
+
+@Entity(tableName = "synced_remote_tabs")
+data class SyncedRemoteTabEntity(
+    @PrimaryKey val id: String,
+    val deviceId: String,
+    val deviceName: String,
+    val deviceType: String = "DESKTOP",
+    val title: String,
+    val url: String,
+    val iconUrl: String? = null,
+    val lastUsedAt: Long = 0L,
+    val position: Int = 0
+)
+
+@Entity(tableName = "zen_pinned_items")
+data class ZenPinnedItemEntity(
+    @PrimaryKey val id: String,
+    val spaceId: String,
+    val zenWorkspaceUuid: String,
+    val title: String,
+    val url: String,
+    val folderName: String? = null,
+    val isPinned: Boolean = true,
+    val sortOrder: Int = 0
 )

@@ -3,6 +3,7 @@ package app.overbay.swiftfox.ui.settings
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,7 +15,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -56,6 +57,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -70,6 +72,7 @@ import app.overbay.swiftfox.data.prefs.ThemeMode
 import app.overbay.swiftfox.data.prefs.ToolbarPlacement
 import app.overbay.swiftfox.data.prefs.WebDarkEngine
 import app.overbay.swiftfox.data.prefs.WebDarkModePreference
+import app.overbay.swiftfox.features.sync.SyncAccountState
 import app.overbay.swiftfox.ui.browser.BrowserOverlay
 import app.overbay.swiftfox.ui.browser.BrowserUiState
 import app.overbay.swiftfox.ui.browser.BrowserViewModel
@@ -89,8 +92,14 @@ fun SettingsScreen(
 ) {
     val settings = state.settings
     var showClearDataDialog by remember { mutableStateOf(false) }
-    var customTemplateDraft by remember(settings.customSearchUrlTemplate) {
-        mutableStateOf(settings.customSearchUrlTemplate)
+    var showAllSiteOverrides by remember { mutableStateOf(false) }
+    var customTemplateDraft by remember { mutableStateOf(settings.customSearchUrlTemplate) }
+    var lastCommittedTemplate by remember { mutableStateOf(settings.customSearchUrlTemplate) }
+    if (settings.customSearchUrlTemplate != lastCommittedTemplate) {
+        lastCommittedTemplate = settings.customSearchUrlTemplate
+        if (customTemplateDraft.trim() != settings.customSearchUrlTemplate) {
+            customTemplateDraft = settings.customSearchUrlTemplate
+        }
     }
 
     Scaffold(
@@ -113,11 +122,42 @@ fun SettingsScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
+                .imePadding()
                 .verticalScroll(rememberScrollState())
-                .navigationBarsPadding()
                 .padding(horizontal = 16.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(20.dp)
         ) {
+            // Account, Sync & Interop
+            SettingsSection(title = "Account & Sync") {
+                val syncSubtitle = when (val acct = state.syncStatus.accountState) {
+                    is SyncAccountState.Connected -> {
+                        val who = acct.email ?: acct.displayName ?: "Mozilla Account"
+                        val suffix = state.syncStatus.lastSyncSummary?.let { " · $it" }.orEmpty()
+                        "$who$suffix"
+                    }
+                    is SyncAccountState.NeedsReauth -> acct.message
+                    SyncAccountState.Authenticating -> "Completing Mozilla sign-in..."
+                    SyncAccountState.SignedOut -> "Sync bookmarks, history, open tabs & Zen Spaces"
+                }
+                SettingsNavigationRow(
+                    title = "Firefox & Zen Sync",
+                    subtitle = syncSubtitle,
+                    onClick = { viewModel.setOverlay(BrowserOverlay.SYNC) }
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+                SettingsNavigationRow(
+                    title = "Synced Open Tabs",
+                    subtitle = "${state.remoteTabGroups.size} devices · ${state.syncedRemoteTabs.size} open tabs",
+                    onClick = { viewModel.setOverlay(BrowserOverlay.SYNCED_TABS) }
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+                SettingsNavigationRow(
+                    title = "Import / Export Chrome bookmarks",
+                    subtitle = "Import Netscape bookmarks.html (${state.bookmarks.size} saved)",
+                    onClick = { viewModel.setOverlay(BrowserOverlay.BOOKMARKS) }
+                )
+            }
+
             // Appearance & Theme
             SettingsSection(title = "Appearance & Theme") {
                 SettingGroup(label = "Theme mode") {
@@ -257,21 +297,18 @@ fun SettingsScreen(
                     )
                     SettingsSliderRow(
                         label = "Brightness",
-                        valueText = "${settings.darkReaderBrightness}%",
                         value = settings.darkReaderBrightness.toFloat(),
                         valueRange = 50f..150f,
                         onValueChange = { viewModel.setDarkReaderBrightness(it.roundToInt()) }
                     )
                     SettingsSliderRow(
                         label = "Contrast",
-                        valueText = "${settings.darkReaderContrast}%",
                         value = settings.darkReaderContrast.toFloat(),
                         valueRange = 50f..150f,
                         onValueChange = { viewModel.setDarkReaderContrast(it.roundToInt()) }
                     )
                     SettingsSliderRow(
                         label = "Sepia warmth",
-                        valueText = "${settings.darkReaderSepia}%",
                         value = settings.darkReaderSepia.toFloat(),
                         valueRange = 0f..100f,
                         onValueChange = { viewModel.setDarkReaderSepia(it.roundToInt()) }
@@ -426,17 +463,47 @@ fun SettingsScreen(
                 }
 
                 if (settings.searchEngine == SearchEngineId.CUSTOM) {
-                    OutlinedTextField(
-                        value = customTemplateDraft,
-                        onValueChange = {
-                            customTemplateDraft = it
-                            viewModel.setCustomSearchUrlTemplate(it)
-                        },
-                        label = { Text("Custom search URL (use %s for query)") },
-                        singleLine = true,
-                        shape = RoundedCornerShape(16.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                    val trimmedDraft = customTemplateDraft.trim()
+                    val isValidTemplate = trimmedDraft.contains("%s") &&
+                        (trimmedDraft.startsWith("https://", ignoreCase = true) ||
+                            trimmedDraft.startsWith("http://", ignoreCase = true))
+                    val hasUnsavedChanges = trimmedDraft != settings.customSearchUrlTemplate
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = customTemplateDraft,
+                            onValueChange = { customTemplateDraft = it },
+                            label = { Text("Custom search URL (use %s for query)") },
+                            isError = trimmedDraft.isNotEmpty() && !isValidTemplate,
+                            supportingText = {
+                                Text(
+                                    text = when {
+                                        trimmedDraft.isEmpty() || isValidTemplate ->
+                                            "Example: https://kagi.com/search?q=%s"
+                                        !trimmedDraft.contains("%s") ->
+                                            "Must include %s where the search query goes"
+                                        else ->
+                                            "URL must start with https:// or http://"
+                                    }
+                                )
+                            },
+                            singleLine = true,
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        if (hasUnsavedChanges && isValidTemplate) {
+                            OutlinedButton(
+                                onClick = {
+                                    lastCommittedTemplate = trimmedDraft
+                                    viewModel.setCustomSearchUrlTemplate(trimmedDraft)
+                                    viewModel.showSnackbar("Saved custom search engine")
+                                },
+                                shape = RoundedCornerShape(18.dp),
+                                modifier = Modifier.heightIn(min = 48.dp)
+                            ) {
+                                Text("Save custom search URL")
+                            }
+                        }
+                    }
                 }
 
                 SettingsSwitchRow(
@@ -520,24 +587,52 @@ fun SettingsScreen(
                 if (state.siteOverrides.isNotEmpty()) {
                     SettingGroup(label = "Saved site overrides (${state.siteOverrides.size})") {
                         Column {
-                            val entries = state.siteOverrides.values.take(6)
+                            val allEntries = state.siteOverrides.values.sortedBy { it.host }
+                            val entries = if (showAllSiteOverrides) allEntries else allEntries.take(6)
                             entries.forEachIndexed { idx, entry ->
+                                val summary = buildList {
+                                    entry.siteModeOverride?.let { add(it.lowercase().replaceFirstChar(Char::uppercase)) }
+                                    if (entry.httpsOnlyBypass) add("HTTP allowed")
+                                    if (entry.adblockDisabled) add("Shield off")
+                                    if (!entry.javascriptEnabled) add("JS off")
+                                    if (!entry.cookiesEnabled) add("Cookies off")
+                                    entry.webDarkModeOverride?.let { add(if (it) "Dark on" else "Dark off") }
+                                    entry.allowCamera?.let { add(if (it) "Camera allowed" else "Camera blocked") }
+                                    entry.allowMic?.let { add(if (it) "Mic allowed" else "Mic blocked") }
+                                    entry.allowLocation?.let { add(if (it) "Location allowed" else "Location blocked") }
+                                    entry.allowProtectedMedia?.let { add(if (it) "DRM allowed" else "DRM blocked") }
+                                    entry.externalAppPolicyOverride?.let { raw ->
+                                        val label = ExternalAppLinkPolicy.entries.find { it.name == raw }?.label ?: raw
+                                        add("External links: $label")
+                                    }
+                                    if (!entry.customUserAgent.isNullOrBlank()) add("Custom UA")
+                                }.joinToString(" · ")
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .heightIn(min = 52.dp)
-                                        .padding(start = 4.dp, top = 2.dp, bottom = 2.dp),
+                                        .padding(start = 4.dp, top = 4.dp, bottom = 4.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Text(
-                                        text = entry.host,
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.weight(1f)
-                                    )
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = entry.host,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        if (summary.isNotEmpty()) {
+                                            Text(
+                                                text = summary,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                maxLines = 2,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                    }
                                     IconButton(
-                                        onClick = { viewModel.resetSiteOverride(entry.host) },
+                                        onClick = { viewModel.resetSiteOverride(entry.host, forcePersistent = true) },
                                         modifier = Modifier.size(48.dp)
                                     ) {
                                         Icon(
@@ -549,6 +644,16 @@ fun SettingsScreen(
                                 if (idx < entries.lastIndex) {
                                     HorizontalDivider(
                                         color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
+                                    )
+                                }
+                            }
+                            if (allEntries.size > 6) {
+                                TextButton(
+                                    onClick = { showAllSiteOverrides = !showAllSiteOverrides },
+                                    modifier = Modifier.align(Alignment.End)
+                                ) {
+                                    Text(
+                                        if (showAllSiteOverrides) "Show fewer" else "Show all (${allEntries.size})"
                                     )
                                 }
                             }
@@ -651,7 +756,7 @@ private fun AboutSwiftfoxCard() {
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Text(
-                    text = "Android WebView 120Hz Engine · System Autofill enabled",
+                    text = "120Hz WebView · adblock-rust · Firefox & Zen Sync",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -728,7 +833,14 @@ private fun SettingsSwitchRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = 52.dp),
+            .clip(RoundedCornerShape(12.dp))
+            .toggleable(
+                value = checked,
+                role = Role.Switch,
+                onValueChange = onCheckedChange
+            )
+            .heightIn(min = 52.dp)
+            .padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
@@ -747,7 +859,7 @@ private fun SettingsSwitchRow(
                 overflow = TextOverflow.Ellipsis
             )
         }
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
+        Switch(checked = checked, onCheckedChange = null)
     }
 }
 
@@ -793,11 +905,13 @@ private fun SettingsNavigationRow(
 @Composable
 private fun SettingsSliderRow(
     label: String,
-    valueText: String,
     value: Float,
     valueRange: ClosedFloatingPointRange<Float>,
-    onValueChange: (Float) -> Unit
+    onValueChange: (Float) -> Unit,
+    formatValue: (Float) -> String = { "${it.roundToInt()}%" }
 ) {
+    var draftValue by remember(value) { mutableStateOf(value) }
+
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -806,14 +920,19 @@ private fun SettingsSliderRow(
         ) {
             Text(label, style = MaterialTheme.typography.titleSmall)
             Text(
-                text = valueText,
+                text = formatValue(draftValue),
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.primary
             )
         }
         Slider(
-            value = value,
-            onValueChange = onValueChange,
+            value = draftValue,
+            onValueChange = { draftValue = it },
+            onValueChangeFinished = {
+                if (draftValue != value) {
+                    onValueChange(draftValue)
+                }
+            },
             valueRange = valueRange
         )
     }

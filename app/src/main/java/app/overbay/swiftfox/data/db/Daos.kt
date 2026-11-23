@@ -5,6 +5,7 @@ import androidx.room.Delete
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -21,6 +22,9 @@ interface SpaceDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAll(spaces: List<SpaceEntity>)
 
+    @Query("UPDATE spaces SET syncGuid = NULL, zenContainerGuid = NULL WHERE syncGuid IS NOT NULL")
+    suspend fun clearSyncMetadata()
+
     @Query("DELETE FROM spaces WHERE id = :spaceId")
     suspend fun deleteById(spaceId: String)
 }
@@ -30,6 +34,9 @@ interface EssentialDao {
     @Query("SELECT * FROM essentials ORDER BY sortOrder ASC")
     fun observeAll(): Flow<List<EssentialEntity>>
 
+    @Query("SELECT * FROM essentials ORDER BY sortOrder ASC")
+    suspend fun getAll(): List<EssentialEntity>
+
     @Query("SELECT COUNT(*) FROM essentials")
     suspend fun count(): Int
 
@@ -38,6 +45,9 @@ interface EssentialDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAll(essentials: List<EssentialEntity>)
+
+    @Query("UPDATE essentials SET syncGuid = NULL, zenContainerGuid = NULL WHERE syncGuid IS NOT NULL")
+    suspend fun clearSyncMetadata()
 
     @Query("DELETE FROM essentials WHERE id = :id")
     suspend fun deleteById(id: String)
@@ -54,6 +64,9 @@ interface TabDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(tab: TabEntity)
 
+    @Query("UPDATE tabs SET spaceId = :newSpaceId WHERE spaceId = :oldSpaceId AND isPrivate = 0")
+    suspend fun reassignSpace(oldSpaceId: String, newSpaceId: String)
+
     @Query("DELETE FROM tabs WHERE id = :tabId")
     suspend fun deleteById(tabId: String)
 
@@ -66,8 +79,17 @@ interface BookmarkDao {
     @Query("SELECT * FROM bookmarks ORDER BY createdAt DESC")
     fun observeAll(): Flow<List<BookmarkEntity>>
 
+    @Query("SELECT * FROM bookmarks ORDER BY createdAt DESC")
+    suspend fun getAll(): List<BookmarkEntity>
+
+    @Query("SELECT * FROM bookmarks WHERE id = :id LIMIT 1")
+    suspend fun findById(id: String): BookmarkEntity?
+
     @Query("SELECT * FROM bookmarks WHERE url = :url LIMIT 1")
     suspend fun findByUrl(url: String): BookmarkEntity?
+
+    @Query("SELECT * FROM bookmarks WHERE url = :url")
+    suspend fun findAllByUrl(url: String): List<BookmarkEntity>
 
     @Query(
         "SELECT * FROM bookmarks WHERE title LIKE '%' || :query || '%' OR url LIKE '%' || :query || '%' ORDER BY createdAt DESC LIMIT :limit"
@@ -76,6 +98,12 @@ interface BookmarkDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(bookmark: BookmarkEntity)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAll(bookmarks: List<BookmarkEntity>)
+
+    @Query("UPDATE bookmarks SET syncGuid = NULL, parentGuid = NULL WHERE syncGuid IS NOT NULL")
+    suspend fun clearSyncMetadata()
 
     @Query("DELETE FROM bookmarks WHERE url = :url")
     suspend fun deleteByUrl(url: String)
@@ -89,6 +117,12 @@ interface HistoryDao {
     @Query("SELECT * FROM history ORDER BY lastVisitedAt DESC LIMIT :limit")
     fun observeRecent(limit: Int = 200): Flow<List<HistoryEntity>>
 
+    @Query("SELECT * FROM history ORDER BY lastVisitedAt DESC LIMIT :limit")
+    suspend fun getRecent(limit: Int = 500): List<HistoryEntity>
+
+    @Query("SELECT * FROM history WHERE url IN (:urls)")
+    suspend fun findByUrls(urls: List<String>): List<HistoryEntity>
+
     @Query(
         "SELECT * FROM history WHERE title LIKE '%' || :query || '%' OR url LIKE '%' || :query || '%' ORDER BY visitCount DESC, lastVisitedAt DESC LIMIT :limit"
     )
@@ -99,6 +133,9 @@ interface HistoryDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(entry: HistoryEntity)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAll(entries: List<HistoryEntity>)
 
     @Query("DELETE FROM history WHERE url = :url")
     suspend fun deleteByUrl(url: String)
@@ -175,6 +212,9 @@ interface ZappedRuleDao {
     @Query("SELECT * FROM zapped_rules WHERE host = :host ORDER BY createdAt DESC")
     fun observeByHost(host: String): Flow<List<ZappedRuleEntity>>
 
+    @Query("SELECT * FROM zapped_rules WHERE host = :host ORDER BY createdAt ASC")
+    suspend fun getForHost(host: String): List<ZappedRuleEntity>
+
     @Query("SELECT * FROM zapped_rules WHERE host = :host AND enabled = 1 ORDER BY createdAt ASC")
     suspend fun getEnabledForHost(host: String): List<ZappedRuleEntity>
 
@@ -228,4 +268,43 @@ interface UserscriptStorageDao {
 
     @Query("DELETE FROM userscript_storage WHERE scriptId = :scriptId")
     suspend fun deleteAllForScript(scriptId: String)
+}
+
+@Dao
+interface SyncedRemoteTabDao {
+    @Query("SELECT * FROM synced_remote_tabs ORDER BY deviceName ASC, position ASC")
+    fun observeAll(): Flow<List<SyncedRemoteTabEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAll(tabs: List<SyncedRemoteTabEntity>)
+
+    @Query("DELETE FROM synced_remote_tabs")
+    suspend fun clearAll()
+
+    @Transaction
+    suspend fun replaceAll(tabs: List<SyncedRemoteTabEntity>) {
+        clearAll()
+        if (tabs.isNotEmpty()) upsertAll(tabs)
+    }
+}
+
+@Dao
+interface ZenPinnedItemDao {
+    @Query("SELECT * FROM zen_pinned_items ORDER BY sortOrder ASC")
+    fun observeAll(): Flow<List<ZenPinnedItemEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAll(items: List<ZenPinnedItemEntity>)
+
+    @Query("DELETE FROM zen_pinned_items WHERE spaceId = :spaceId")
+    suspend fun deleteBySpace(spaceId: String)
+
+    @Query("DELETE FROM zen_pinned_items")
+    suspend fun clearAll()
+
+    @Transaction
+    suspend fun replaceAll(items: List<ZenPinnedItemEntity>) {
+        clearAll()
+        if (items.isNotEmpty()) upsertAll(items)
+    }
 }

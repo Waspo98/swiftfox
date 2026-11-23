@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -80,7 +81,9 @@ fun SiteRulesSheet(
     onSetCustomUserAgent: (String?) -> Unit,
     onDeleteZappedRule: (String) -> Unit,
     onLaunchZapper: () -> Unit,
-    onResetAll: () -> Unit
+    onResetAll: () -> Unit,
+    globalAdblockEnabled: Boolean = true,
+    isNativeRust: Boolean = true
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val savedUa = override?.customUserAgent?.takeIf { it.isNotBlank() }
@@ -107,6 +110,7 @@ fun SiteRulesSheet(
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
                 .navigationBarsPadding()
+                .imePadding()
                 .padding(horizontal = 20.dp)
                 .padding(bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
@@ -150,10 +154,17 @@ fun SiteRulesSheet(
                     modifier = Modifier.padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
+                    val adblockSubtitle = when {
+                        !globalAdblockEnabled -> "Disabled globally in Settings"
+                        override?.adblockDisabled == true -> "Paused on $host"
+                        isNativeRust -> "Active via adblock-rust"
+                        else -> "Active via Kotlin matcher"
+                    }
                     SiteSwitchRow(
                         title = "Ad & tracker blocking",
-                        subtitle = if (override?.adblockDisabled == true) "Paused on $host" else "Active via adblock-rust",
-                        checked = override?.adblockDisabled != true,
+                        subtitle = adblockSubtitle,
+                        checked = globalAdblockEnabled && override?.adblockDisabled != true,
+                        enabled = globalAdblockEnabled,
                         onCheckedChange = { enabled -> onSetAdblockDisabled(!enabled) }
                     )
 
@@ -161,7 +172,7 @@ fun SiteRulesSheet(
 
                     SiteSwitchRow(
                         title = "JavaScript",
-                        subtitle = "Allow scripts to execute on this host",
+                        subtitle = "Allow scripts (disabling also pauses Dark Reader, Zapper & Reader)",
                         checked = override?.javascriptEnabled ?: true,
                         onCheckedChange = onSetJavascriptEnabled
                     )
@@ -170,7 +181,7 @@ fun SiteRulesSheet(
 
                     SiteSwitchRow(
                         title = "Cookies",
-                        subtitle = "Store site login & session cookies",
+                        subtitle = "Store cookies for this browsing profile while on this host",
                         checked = override?.cookiesEnabled ?: true,
                         onCheckedChange = onSetCookiesEnabled
                     )
@@ -379,7 +390,8 @@ private fun SiteSwitchRow(
     title: String,
     subtitle: String,
     checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit
+    onCheckedChange: (Boolean) -> Unit,
+    enabled: Boolean = true
 ) {
     Row(
         modifier = Modifier
@@ -403,7 +415,7 @@ private fun SiteSwitchRow(
                 overflow = TextOverflow.Ellipsis
             )
         }
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
+        Switch(checked = checked, onCheckedChange = onCheckedChange, enabled = enabled)
     }
 }
 

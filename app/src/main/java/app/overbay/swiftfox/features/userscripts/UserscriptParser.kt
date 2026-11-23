@@ -30,6 +30,8 @@ object UserscriptParser {
         val matches = LinkedHashSet<String>()
         val excludes = LinkedHashSet<String>()
         val grants = LinkedHashSet<String>()
+        val connects = LinkedHashSet<String>()
+        val unsupported = LinkedHashSet<String>()
 
         for (line in lines) {
             if (!inBlock) {
@@ -52,9 +54,11 @@ object UserscriptParser {
                 "version" -> if (version == null) version = value
                 "description" -> if (description == null) description = value
                 "match", "include" -> matches.add(value)
-                "exclude" -> excludes.add(value)
+                "exclude", "exclude-match" -> excludes.add(value)
                 "run-at" -> runAtRaw = value
                 "grant" -> grants.add(value)
+                "connect" -> connects.add(value.lowercase())
+                "require", "resource" -> unsupported.add("@$key")
             }
         }
 
@@ -66,7 +70,9 @@ object UserscriptParser {
             matches = matches.toList(),
             excludes = excludes.toList(),
             runAt = UserscriptRunAt.fromHeader(runAtRaw),
-            grants = grants.toList()
+            grants = grants.toList(),
+            connects = connects.toList(),
+            unsupportedDirectives = unsupported.toList()
         )
     }
 

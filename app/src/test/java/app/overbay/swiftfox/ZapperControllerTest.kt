@@ -186,17 +186,34 @@ class ZapperControllerTest {
     }
 
     @Test
-    fun scriptBuildersFormatSafeJavascriptInvocations() {
-        val startScript = controller.buildStartScript("#FF9147")
-        assertTrue(startScript.contains("""window.__swiftfoxZapper.start("#FF9147")"""))
+    fun scriptBuildersFormatSafeJavascriptInvocationsAndRejectBareSelectors() {
+        val startScript = controller.buildStartScript("#FF9147", bridgeToken = "abc123")
+        assertTrue(startScript.contains("""var rt = window["__swiftfoxZapper"];"""))
+        assertTrue(startScript.contains("""rt && rt.start("#FF9147");"""))
+
+        val customKeyStart = controller.buildStartScript("#FFE86A17", bridgeToken = "t1", runtimeKey = "zk1")
+        assertTrue(customKeyStart.contains("""var rt = window["zk1"];"""))
+        assertTrue(customKeyStart.contains("""rt && rt.start("#E86A17");"""))
 
         val sanitizedStart = controller.buildStartScript("red; alert(1)")
-        assertTrue(sanitizedStart.contains("""window.__swiftfoxZapper.start("#E86A17")"""))
+        assertTrue(sanitizedStart.contains("""rt && rt.start("#E86A17");"""))
         assertFalse(sanitizedStart.contains("alert(1)"))
 
+        assertTrue(controller.buildSetScopeScript(3, runtimeKey = "zk1").contains("""window["zk1"]"""))
         assertTrue(controller.buildSetScopeScript(3).contains("setScopeDepth(3)"))
         assertTrue(controller.buildSetScopeScript(-2).contains("setScopeDepth(0)"))
         assertTrue(controller.buildAdjustScopeScript(-1).contains("adjustScope(-1)"))
+
+        // Over-broad bare structural selectors and CSS comment tokens must be rejected
+        assertNull(controller.sanitizeSelector("div"))
+        assertNull(controller.sanitizeSelector("html"))
+        assertNull(controller.sanitizeSelector("body"))
+        assertNull(controller.sanitizeSelector(":root"))
+        assertNull(controller.sanitizeSelector("*"))
+        assertNull(controller.sanitizeSelector("section"))
+        assertNull(controller.sanitizeSelector("div.ad/*comment*/"))
+        assertNull(controller.sanitizeSelector("div.ad*/"))
+        assertNotNull(controller.sanitizeSelector("div.cookie-banner"))
 
         val applyScript = controller.buildApplyZappedCssScript(
             listOf(
@@ -208,7 +225,7 @@ class ZapperControllerTest {
                 )
             )
         )
-        assertTrue(applyScript.contains("window.__swiftfoxApplyZappedCss"))
+        assertTrue(applyScript.contains("swiftfox-zapped"))
         assertTrue(applyScript.contains("div.annoying { display: none !important; }"))
     }
 }

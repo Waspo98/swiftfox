@@ -1,9 +1,4 @@
-(function () {
-  if (typeof window.__swiftfoxIsReadable === 'function' &&
-      typeof window.__swiftfoxExtractArticle === 'function') {
-    return;
-  }
-
+(function (ReadabilityCtor) {
   function resolveRelativeUrl(rawUrl, baseUrl) {
     if (!rawUrl) return rawUrl;
     var trimmed = String(rawUrl).trim();
@@ -15,6 +10,46 @@
       return new URL(trimmed, baseUrl).href;
     } catch (e) {
       return rawUrl;
+    }
+  }
+
+  function firstUrlFromSrcset(srcset) {
+    if (!srcset) return '';
+    var parts = String(srcset).split(',');
+    for (var i = 0; i < parts.length; i++) {
+      var candidate = parts[i].trim().split(/\s+/)[0];
+      if (candidate && !/^data:/i.test(candidate)) {
+        return candidate;
+      }
+    }
+    return '';
+  }
+
+  function promoteLazyImages(root) {
+    var images = root.querySelectorAll('img');
+    for (var i = 0; i < images.length; i++) {
+      var img = images[i];
+      var src = (img.getAttribute('src') || '').trim();
+      var isPlaceholder = !src || /^data:image\//i.test(src) || src === 'about:blank';
+      if (isPlaceholder) {
+        var lazy =
+          img.getAttribute('data-src') ||
+          img.getAttribute('data-original') ||
+          img.getAttribute('data-lazy-src') ||
+          img.getAttribute('data-actualsrc') ||
+          firstUrlFromSrcset(img.getAttribute('data-srcset')) ||
+          firstUrlFromSrcset(img.getAttribute('srcset'));
+        if (!lazy && img.parentElement && img.parentElement.tagName === 'PICTURE') {
+          var sources = img.parentElement.querySelectorAll('source[srcset], source[data-srcset]');
+          for (var s = 0; s < sources.length; s++) {
+            lazy = firstUrlFromSrcset(sources[s].getAttribute('srcset') || sources[s].getAttribute('data-srcset'));
+            if (lazy) break;
+          }
+        }
+        if (lazy) {
+          img.setAttribute('src', lazy.trim());
+        }
+      }
     }
   }
 
@@ -30,7 +65,7 @@
     return false;
   }
 
-  window.__swiftfoxIsReadable = function () {
+  function isReadable() {
     try {
       if (!document || !document.body) {
         return false;
@@ -92,20 +127,18 @@
     } catch (e) {
       return false;
     }
-  };
+  }
 
-  window.__swiftfoxExtractArticle = function () {
+  function extractArticle() {
     try {
-      var ReadabilityCtor = typeof window.Readability === 'function'
-        ? window.Readability
-        : (typeof Readability === 'function' ? Readability : null);
-
-      if (!ReadabilityCtor || !document || !document.documentElement) {
+      if (typeof ReadabilityCtor !== 'function' || !document || !document.documentElement) {
         return null;
       }
 
       var clone = document.cloneNode(true);
       var baseUrl = document.baseURI || (window.location ? window.location.href : '');
+
+      promoteLazyImages(clone);
 
       if (baseUrl) {
         var anchors = clone.querySelectorAll('a[href]');
@@ -127,7 +160,8 @@
         }
       }
 
-      var stripNodes = clone.querySelectorAll('script, style, iframe, noscript');
+      // Preserve <noscript> so Readability._unwrapNoscriptImages can recover lazy fallback images.
+      var stripNodes = clone.querySelectorAll('script, style, iframe');
       for (var k = 0; k < stripNodes.length; k++) {
         var node = stripNodes[k];
         if (node.parentNode) {
@@ -156,7 +190,6 @@
         title: (article.title || document.title || '').trim(),
         byline: article.byline ? String(article.byline).trim() || null : null,
         siteName: article.siteName ? String(article.siteName).trim() || null : null,
-        excerpt: article.excerpt ? String(article.excerpt).trim() || null : null,
         htmlContent: article.content,
         wordCount: wordCount,
         readingTimeMinutes: readingTimeMinutes,
@@ -165,5 +198,10 @@
     } catch (e) {
       return null;
     }
+  }
+
+  return {
+    isReadable: isReadable,
+    extractArticle: extractArticle
   };
-})();
+})

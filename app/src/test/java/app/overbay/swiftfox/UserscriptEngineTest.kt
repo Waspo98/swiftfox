@@ -9,6 +9,7 @@ import app.overbay.swiftfox.features.userscripts.UserscriptParser
 import app.overbay.swiftfox.features.userscripts.UserscriptRepository
 import app.overbay.swiftfox.features.userscripts.UserscriptRunAt
 import app.overbay.swiftfox.features.userscripts.UserscriptUrlMatcher
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.map
@@ -116,15 +117,21 @@ class UserscriptEngineTest {
 
         val globInclude = listOf("http*://*.google.*/*")
         assertTrue(UserscriptUrlMatcher.matches("https://www.google.co.uk/search?q=fox", globInclude, emptyList()))
+        assertFalse(UserscriptUrlMatcher.matches("https://evil.com/www.google.com/", globInclude, emptyList()))
 
         assertFalse(UserscriptUrlMatcher.matches("https://example.com/", emptyList(), emptyList()))
         assertFalse(UserscriptUrlMatcher.matches("about:blank", listOf("<all_urls>"), emptyList()))
         assertFalse(UserscriptUrlMatcher.matches("file:///sdcard/test.html", listOf("<all_urls>"), emptyList()))
         assertFalse(UserscriptUrlMatcher.matches("javascript:alert(1)", listOf("<all_urls>"), emptyList()))
+
+        // Nested quantifiers & oversized user regex patterns must fail closed (ReDoS protection)
+        assertFalse(UserscriptUrlMatcher.matches("https://aaaaaaaaaaaaaa.example.com/", listOf("/(a+)+$/"), emptyList()))
+        val overSizedRegex = "/" + "a".repeat(260) + "/"
+        assertFalse(UserscriptUrlMatcher.matches("https://example.com/" + "a".repeat(260), listOf(overSizedRegex), emptyList()))
     }
 
     @Test
-    fun bridgeBuildInjectionScriptWrapsApiStorageAndIdleTiming() {
+    fun bridgeBuildShimAndPerScriptSnippetsEnforceIsolationAndUrlGuards() {
         val scriptDao = FakeUserscriptDao()
         val storageDao = FakeUserscriptStorageDao()
         val bridge = UserscriptBridge(
@@ -134,7 +141,8 @@ class UserscriptEngineTest {
             storageDao = storageDao
         )
 
-        assertEquals("", bridge.buildInjectionScript(emptyList(), UserscriptRunAt.DOCUMENT_END))
+        assertEquals("", bridge.buildShimInitScript(bridgeToken = "tok-1", runtimeKey = "rk1"))
+        assertTrue(bridge.buildPerScriptSnippets(emptyList(), UserscriptRunAt.DOCUMENT_END).isEmpty())
 
         val entity = UserscriptEntity(
             id = "script-1",
@@ -144,7 +152,7 @@ class UserscriptEngineTest {
             description = "Demo",
             code = "GM_addStyle('body { color: red; }');\n// trailing comment without newline",
             matchesJson = UserscriptParser.encodeStringList(listOf("https://example.com/*")),
-            excludesJson = "[]",
+            excludesJson = UserscriptParser.encodeStringList(listOf("https://example.com/private/*")),
             runAt = UserscriptRunAt.DOCUMENT_IDLE.headerValue,
             grantsJson = UserscriptParser.encodeStringList(listOf("GM_addStyle", "GM_getValue"))
         )
@@ -153,21 +161,38 @@ class UserscriptEngineTest {
             "theme" to "\"amber\""
         )
 
-        val endJs = bridge.buildInjectionScript(listOf(entity to storage), UserscriptRunAt.DOCUMENT_END)
-        assertTrue(endJs.contains("window.__swiftfoxGmRuntime.createApi(\"script-1\""))
+        val endSnippets = bridge.buildPerScriptSnippets(
+            scriptsWithStorage = listOf(entity to storage),
+            runAt = UserscriptRunAt.DOCUMENT_END,
+            bridgeToken = "tok-1",
+            runtimeKey = "rk1",
+            includeUrlGuard = true
+        )
+        assertEquals(1, endSnippets.size)
+        val endJs = endSnippets.single()
+        assertTrue(endJs.contains("window[\"rk1\"]"))
+        assertTrue(endJs.contains("__sfRt.createApi(\"tok-1\", \"script-1\""))
         assertTrue(endJs.contains("\"count\":42"))
         assertTrue(endJs.contains("\"theme\":\"amber\""))
-        assertTrue(endJs.contains("const { GM_info, GM_addStyle, GM_getValue, GM_setValue, GM_deleteValue, GM_listValues, GM_xmlhttpRequest, GM } = api;"))
-        assertTrue(endJs.contains("// trailing comment without newline\n  } catch (e)"))
+        assertTrue(endJs.contains("(function(GM_info, GM_addStyle, GM_getValue, GM_setValue, GM_deleteValue, GM_listValues, GM_xmlhttpRequest, GM, unsafeWindow) {"))
+        assertTrue(endJs.contains("}).call(window, __sfApi.GM_info"))
+        assertTrue(endJs.contains("__sfHref"))
+        assertTrue(endJs.contains("__swiftfoxRanUserscripts"))
+        assertTrue(endJs.contains("// trailing comment without newline\n    }).call(window"))
         assertFalse(endJs.contains("setTimeout(function()"))
 
-        val idleJs = bridge.buildInjectionScript(listOf(entity to storage), UserscriptRunAt.DOCUMENT_IDLE)
+        val idleJs = bridge.buildPerScriptSnippets(
+            scriptsWithStorage = listOf(entity to storage),
+            runAt = UserscriptRunAt.DOCUMENT_IDLE,
+            runtimeKey = "rk1"
+        ).single()
         assertTrue(idleJs.contains("setTimeout(function() {"))
         assertTrue(idleJs.contains("}, 0);"))
     }
 
+    @OptIn(ExperimentalCoroutinesApi::class)
     @Test
-    fun bridgeHandlesStorageAndEnforcesXhrGrantsAndScheme() = runTest {
+    fun bridgeHandlesStorageAndEnforcesXhrGrantsConnectAndScheme() = runTest {
         val dispatcher = StandardTestDispatcher(testScheduler)
         val scriptDao = FakeUserscriptDao()
         val storageDao = FakeUserscriptStorageDao()
@@ -191,69 +216,190 @@ class UserscriptEngineTest {
             scriptDao = scriptDao,
             storageDao = storageDao,
             client = mockClient,
-            ioDispatcher = dispatcher
+            ioDispatcher = dispatcher,
+            mainDispatcher = dispatcher
         )
 
-        bridge.handleSetValue("s1", "counter", "7")
+        // Unknown script cannot write to storage
+        bridge.handleSetValue("unknown-script", "counter", "7")
+        advanceUntilIdle()
+        assertEquals(null, storageDao.getValue("unknown-script", "counter"))
+
+        // Enabled granted script can write and delete storage on matching page
+        scriptDao.upsert(
+            UserscriptEntity(
+                id = "s1",
+                name = "Storage Script",
+                code = "console.log(0);",
+                matchesJson = UserscriptParser.encodeStringList(listOf("https://example.com/*")),
+                grantsJson = UserscriptParser.encodeStringList(listOf("GM_setValue", "GM_deleteValue")),
+                enabled = true
+            )
+        )
+        bridge.handleSetValue("s1", "counter", "7", pageUrl = "https://example.com/page")
         advanceUntilIdle()
         assertEquals("7", storageDao.getValue("s1", "counter")?.valueJson)
 
-        bridge.handleDeleteValue("s1", "counter")
+        // Fail-closed: blank or missing pageUrl must be rejected for storage mutations
+        bridge.handleSetValue("s1", "counter", "888", pageUrl = null)
+        bridge.handleSetValue("s1", "counter", "888", pageUrl = "   ")
+        advanceUntilIdle()
+        assertEquals("7", storageDao.getValue("s1", "counter")?.valueJson)
+
+        // Non-matching page cannot mutate script storage
+        bridge.handleSetValue("s1", "counter", "999", pageUrl = "https://evil.org/attack")
+        advanceUntilIdle()
+        assertEquals("7", storageDao.getValue("s1", "counter")?.valueJson)
+
+        bridge.handleDeleteValue("s1", "counter", pageUrl = "https://example.com/page")
         advanceUntilIdle()
         assertEquals(null, storageDao.getValue("s1", "counter"))
 
-        // Script with @grant none must be denied XHR
+        // Script with @grant none (even alongside GM_xmlhttpRequest) must be denied XHR and storage
         scriptDao.upsert(
             UserscriptEntity(
                 id = "no-xhr",
                 name = "No XHR",
                 code = "console.log(1);",
-                grantsJson = UserscriptParser.encodeStringList(listOf("none")),
+                matchesJson = UserscriptParser.encodeStringList(listOf("<all_urls>")),
+                grantsJson = UserscriptParser.encodeStringList(listOf("none", "GM_xmlhttpRequest")),
                 enabled = true
             )
         )
+        bridge.handleSetValue("no-xhr", "k", "1", pageUrl = "https://example.com/")
+        advanceUntilIdle()
+        assertEquals(null, storageDao.getValue("no-xhr", "k"))
+
         var deniedJs: String? = null
         bridge.handleXmlHttpRequest(
             scriptId = "no-xhr",
             reqId = "req-1",
-            requestJson = """{"method":"GET","url":"https://example.com/api"}"""
+            requestJson = """{"method":"GET","url":"https://example.com/api"}""",
+            pageUrl = "https://example.com/",
+            bridgeToken = "tok"
         ) { deniedJs = it }
         advanceUntilIdle()
         assertNotNull(deniedJs)
-        assertTrue(deniedJs!!.contains("resolveXhr(\"req-1\",\"onerror\"") || deniedJs!!.contains("resolveXhr(\"req-1\", \"onerror\""))
+        assertTrue(deniedJs!!.contains("r.resolveXhr(\"tok\",\"req-1\",\"onerror\""))
 
-        // Script with GM.xmlHttpRequest must reject file:// scheme
+        // Script with GM.xmlHttpRequest must fail closed on missing pageUrl and reject file:// scheme / SSRF
         scriptDao.upsert(
             UserscriptEntity(
                 id = "with-xhr",
                 name = "With XHR",
                 code = "console.log(2);",
+                matchesJson = UserscriptParser.encodeStringList(listOf("<all_urls>")),
                 grantsJson = UserscriptParser.encodeStringList(listOf("GM.xmlHttpRequest")),
                 enabled = true
             )
         )
+        var missingPageJs: String? = null
+        bridge.handleXmlHttpRequest(
+            scriptId = "with-xhr",
+            reqId = "req-nopage",
+            requestJson = """{"method":"GET","url":"https://api.example.com/v1"}""",
+            pageUrl = null,
+            bridgeToken = "tok"
+        ) { missingPageJs = it }
+        advanceUntilIdle()
+        assertNotNull(missingPageJs)
+        assertTrue(missingPageJs!!.contains("\"onerror\""))
+
         var badSchemeJs: String? = null
         bridge.handleXmlHttpRequest(
             scriptId = "with-xhr",
             reqId = "req-2",
-            requestJson = """{"method":"GET","url":"file:///etc/passwd"}"""
+            requestJson = """{"method":"GET","url":"file:///etc/passwd"}""",
+            pageUrl = "https://example.com/",
+            bridgeToken = "tok"
         ) { badSchemeJs = it }
         advanceUntilIdle()
         assertNotNull(badSchemeJs)
         assertTrue(badSchemeJs!!.contains("\"onerror\""))
 
-        // Granted script with https:// URL succeeds via OkHttp
+        var ssrfJs: String? = null
+        bridge.handleXmlHttpRequest(
+            scriptId = "with-xhr",
+            reqId = "req-ssrf",
+            requestJson = """{"method":"GET","url":"http://192.168.86.200:8080/admin"}""",
+            pageUrl = "https://public.example.com/",
+            bridgeToken = "tok"
+        ) { ssrfJs = it }
+        advanceUntilIdle()
+        assertNotNull(ssrfJs)
+        assertTrue(ssrfJs!!.contains("\"onerror\""))
+
+        // Granted script with https:// URL succeeds via OkHttp (including GET with stray data field)
+        var getWithDataJs: String? = null
+        bridge.handleXmlHttpRequest(
+            scriptId = "with-xhr",
+            reqId = "req-get",
+            requestJson = """{"method":"GET","url":"https://api.example.com/v1","data":"ignored"}""",
+            pageUrl = "https://public.example.com/",
+            bridgeToken = "tok"
+        ) { getWithDataJs = it }
+        advanceUntilIdle()
+        assertNotNull(getWithDataJs)
+        assertTrue(getWithDataJs!!.contains("\"onload\""))
+
         var okJs: String? = null
         bridge.handleXmlHttpRequest(
             scriptId = "with-xhr",
             reqId = "req-3",
-            requestJson = """{"method":"POST","url":"https://api.example.com/v1","data":"ping","timeout":500}"""
+            requestJson = """{"method":"POST","url":"https://api.example.com/v1","data":"ping","timeout":500}""",
+            pageUrl = "https://public.example.com/",
+            bridgeToken = "tok"
         ) { okJs = it }
         advanceUntilIdle()
         assertNotNull(okJs)
-        assertTrue(okJs!!.contains("\"onload\""))
-        assertTrue(okJs!!.contains("200"))
-        assertTrue(okJs!!.contains("X-Test: Swiftfox"))
+        val resolvedOk = okJs!!
+        assertTrue(resolvedOk.contains("\"onload\""))
+        assertTrue(resolvedOk.contains("200"))
+        assertTrue(resolvedOk.contains("X-Test: Swiftfox"))
+    }
+
+    @Test
+    fun parserAndUrlMatcherHandleExcludeMatchConnectFragmentsPortsAndUnsupportedDirectives() {
+        val meta = UserscriptParser.parse(
+            """
+                // ==UserScript==
+                // @name          Connect Demo
+                // @match         https://example.com:443/article
+                // @include       https://blog.example.org
+                // @exclude-match https://example.com/private/*
+                // @connect       api.example.com
+                // @require       https://cdn.example.com/lib.js
+                // ==/UserScript==
+                console.log('ok');
+            """.trimIndent()
+        )
+        assertEquals(listOf("https://example.com/private/*"), meta.excludes)
+        assertEquals(listOf("api.example.com"), meta.connects)
+        assertEquals(listOf("@require"), meta.unsupportedDirectives)
+
+        // Default port normalization + fragment stripping
+        assertTrue(
+            UserscriptUrlMatcher.matches(
+                url = "https://example.com/article#section-2",
+                matches = meta.matches,
+                excludes = meta.excludes
+            )
+        )
+        // Trailing-slash-less @include matches root URL with trailing slash
+        assertTrue(
+            UserscriptUrlMatcher.matches(
+                url = "https://blog.example.org/",
+                matches = meta.matches,
+                excludes = meta.excludes
+            )
+        )
+        assertFalse(
+            UserscriptUrlMatcher.matches(
+                url = "https://example.com/private/secret",
+                matches = listOf("https://example.com/*"),
+                excludes = meta.excludes
+            )
+        )
     }
 
     @Test
@@ -312,6 +458,124 @@ class UserscriptEngineTest {
         repo.deleteScript(installed.id)
         assertEquals(null, scriptDao.getById(installed.id))
         assertTrue(storageDao.getAllForScript(installed.id).isEmpty())
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun bridgeStripsForbiddenHeadersBlocksLanRedirectsAndEnforcesStorageQuota() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val scriptDao = FakeUserscriptDao()
+        val storageDao = FakeUserscriptStorageDao()
+        val recorded = mutableListOf<okhttp3.Request>()
+
+        val mockClient = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val req = chain.request()
+                recorded += req
+                if (req.url.encodedPath == "/redir") {
+                    Response.Builder()
+                        .request(req)
+                        .protocol(Protocol.HTTP_1_1)
+                        .code(302)
+                        .message("Found")
+                        .header("Location", "http://192.168.86.200/admin")
+                        .body(ByteArray(0).toResponseBody(null))
+                        .build()
+                } else {
+                    Response.Builder()
+                        .request(req)
+                        .protocol(Protocol.HTTP_1_1)
+                        .code(200)
+                        .message("OK")
+                        .body("ok".toResponseBody("text/plain".toMediaType()))
+                        .build()
+                }
+            }
+            .build()
+
+        val bridge = UserscriptBridge(
+            context = null,
+            scope = this,
+            scriptDao = scriptDao,
+            storageDao = storageDao,
+            client = mockClient,
+            ioDispatcher = dispatcher,
+            mainDispatcher = dispatcher
+        )
+
+        scriptDao.upsert(
+            UserscriptEntity(
+                id = "s-sec",
+                name = "Security Checks",
+                code = "console.log(0);",
+                matchesJson = UserscriptParser.encodeStringList(listOf("<all_urls>")),
+                grantsJson = UserscriptParser.encodeStringList(listOf("GM_xmlhttpRequest", "GM_setValue")),
+                enabled = true
+            )
+        )
+
+        var headerJs: String? = null
+        bridge.handleXmlHttpRequest(
+            scriptId = "s-sec",
+            reqId = "req-hdr",
+            requestJson = """
+                {
+                  "method": "POST",
+                  "url": "https://api.example.com/submit",
+                  "data": "hello",
+                  "headers": {
+                    "Cookie": "secret=1",
+                    "Origin": "https://evil.org",
+                    "Referer": "https://evil.org",
+                    "Host": "spoof.example",
+                    "Sec-Fetch-Site": "cross-site",
+                    "Content-Type": "application/json",
+                    "X-Custom": "swiftfox"
+                  }
+                }
+            """.trimIndent(),
+            pageUrl = "https://public.example.com/",
+            bridgeToken = "tok"
+        ) { headerJs = it }
+        advanceUntilIdle()
+        assertNotNull(headerJs)
+        assertTrue(headerJs!!.contains("\"onload\""))
+        val sentReq = recorded.single()
+        assertEquals(null, sentReq.header("Cookie"))
+        assertEquals(null, sentReq.header("Origin"))
+        assertEquals(null, sentReq.header("Referer"))
+        assertEquals(null, sentReq.header("Sec-Fetch-Site"))
+        assertEquals("swiftfox", sentReq.header("X-Custom"))
+        assertEquals(0, sentReq.headers.values("Content-Type").size)
+        assertEquals("application/json", sentReq.body?.contentType()?.let { "${it.type}/${it.subtype}" })
+
+        recorded.clear()
+        var redirJs: String? = null
+        bridge.handleXmlHttpRequest(
+            scriptId = "s-sec",
+            reqId = "req-redir",
+            requestJson = """{"method":"GET","url":"https://api.example.com/redir"}""",
+            pageUrl = "https://public.example.com/",
+            bridgeToken = "tok"
+        ) { redirJs = it }
+        advanceUntilIdle()
+        assertNotNull(redirJs)
+        assertTrue(redirJs!!.contains("\"onerror\""))
+        assertEquals(1, recorded.size)
+
+        // Storage key count cap (100 keys max per script) and per-value size cap
+        repeat(100) { idx ->
+            bridge.handleSetValue("s-sec", "k$idx", "$idx", pageUrl = "https://example.com/")
+        }
+        bridge.handleSetValue("s-sec", "k100", "100", pageUrl = "https://example.com/")
+        advanceUntilIdle()
+        assertEquals(100, storageDao.getAllForScript("s-sec").size)
+        assertEquals(null, storageDao.getValue("s-sec", "k100"))
+
+        val oversized = "\"" + "x".repeat(300_000) + "\""
+        bridge.handleSetValue("s-sec", "k0", oversized, pageUrl = "https://example.com/")
+        advanceUntilIdle()
+        assertEquals("0", storageDao.getValue("s-sec", "k0")?.valueJson)
     }
 
     private class FakeUserscriptDao : UserscriptDao {

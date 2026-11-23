@@ -146,7 +146,16 @@ data class BrowserSettings(
     val pullToRefreshEnabled: Boolean = true,
     val swipeUrlBarSwitchTabs: Boolean = true,
     val backgroundMediaEnabled: Boolean = true,
-    val blockThirdPartyCookies: Boolean = true
+    val blockThirdPartyCookies: Boolean = true,
+    val syncBookmarksEnabled: Boolean = true,
+    val syncHistoryEnabled: Boolean = true,
+    val syncTabsEnabled: Boolean = true,
+    val syncZenSpacesEnabled: Boolean = true,
+    val syncPeriodicIntervalMinutes: Int = 60,
+    val syncLastTimestampMs: Long = 0L,
+    val syncLocalHistorySeeded: Boolean = false,
+    val syncZenSeparateEssentials: Boolean? = null,
+    val hasSeededDefaults: Boolean = false
 ) {
     fun profileFor(posture: DevicePosture): PostureProfile = when (posture) {
         DevicePosture.FOLDED -> foldedProfile

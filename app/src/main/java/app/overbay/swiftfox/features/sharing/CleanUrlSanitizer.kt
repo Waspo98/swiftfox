@@ -1,6 +1,6 @@
 package app.overbay.swiftfox.features.sharing
 
-import java.net.URI
+import app.overbay.swiftfox.features.omnibox.OmniboxEngine
 
 data class SanitizedUrlResult(
     val url: String,
@@ -19,7 +19,6 @@ object CleanUrlSanitizer {
         "igsh",
         "mc_cid",
         "mc_eid",
-        "si",
         "ref_src",
         "ref_url",
         "spm",
@@ -37,7 +36,7 @@ object CleanUrlSanitizer {
         "ttclid",
         "scid",
         "s_cid",
-        "feature"
+        "icid"
     )
 
     private val trackingPrefixes = listOf(
@@ -46,13 +45,17 @@ object CleanUrlSanitizer {
         "hsa_",
         "mtm_",
         "pk_",
-        "icid"
+        "icid_"
     )
 
     fun sanitize(rawUrl: String): SanitizedUrlResult {
         val trimmed = rawUrl.trim()
         val queryStart = trimmed.indexOf('?')
         if (queryStart < 0) return SanitizedUrlResult(trimmed, 0)
+
+        // Do not mutate SPA hash routes like https://example.com/#route?utm_source=x
+        val firstHash = trimmed.indexOf('#')
+        if (firstHash in 0 until queryStart) return SanitizedUrlResult(trimmed, 0)
 
         val fragmentStart = trimmed.indexOf('#', queryStart)
         val base = trimmed.substring(0, queryStart)
@@ -65,15 +68,20 @@ object CleanUrlSanitizer {
 
         if (query.isEmpty()) return SanitizedUrlResult(trimmed, 0)
 
-        val host = runCatching { URI(trimmed).host?.lowercase().orEmpty() }.getOrDefault("")
+        val host = OmniboxEngine.extractHost(trimmed)
+        val isYouTube = host == "youtube.com" || host.endsWith(".youtube.com") || host == "youtu.be"
+        val isSpotify = host == "spotify.com" || host.endsWith(".spotify.com")
         val kept = mutableListOf<String>()
         var stripped = 0
 
         for (pair in query.split('&')) {
             if (pair.isEmpty()) continue
             val key = pair.substringBefore('=').lowercase()
-            val isYouTubeFeature = key == "feature" && (host.contains("youtube.com") || host.contains("youtu.be"))
-            val isTracking = (key in exactTrackingParams && (key != "feature" || isYouTubeFeature)) ||
+            val isYouTubeFeature = key == "feature" && isYouTube
+            val isScopedSi = key == "si" && (isYouTube || isSpotify)
+            val isTracking = key in exactTrackingParams ||
+                isYouTubeFeature ||
+                isScopedSi ||
                 trackingPrefixes.any { key.startsWith(it) }
             if (isTracking) {
                 stripped++

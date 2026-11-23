@@ -2,16 +2,21 @@ package app.overbay.swiftfox.engine
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.MutableContextWrapper
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.print.PrintDocumentAdapter
 import android.view.View
 import android.webkit.CookieManager
-import android.webkit.JavascriptInterface
 import android.webkit.URLUtil
 import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import androidx.webkit.Profile
+import androidx.webkit.ProfileStore
 import androidx.webkit.ScriptHandler
 import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewCompat
@@ -19,6 +24,10 @@ import androidx.webkit.WebViewFeature
 import app.overbay.swiftfox.data.prefs.SiteMode
 import app.overbay.swiftfox.features.darkreader.DarkReaderInjector
 import app.overbay.swiftfox.features.darkreader.ResolvedWebDarkState
+import org.json.JSONObject
+import java.security.SecureRandom
+import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 
 data class ContextMenuHit(
     val type: Int,
@@ -26,18 +35,53 @@ data class ContextMenuHit(
     val imageUrl: String? = null
 )
 
+data class BridgeTokenSet(
+    val mediaToken: String,
+    val zapperToken: String,
+    val darkReaderToken: String,
+    val cosmeticToken: String,
+    val gmToken: String,
+    val readerToken: String
+) {
+    val darkReaderKey: String = "__sfDr_${darkReaderToken.take(12)}"
+    val gmKey: String = "__sfGm_${gmToken.take(12)}"
+    val zapperKey: String = "__sfZap_${zapperToken.take(12)}"
+    val readerKey: String = "__sfRd_${readerToken.take(12)}"
+
+    companion object {
+        fun generate(): BridgeTokenSet = BridgeTokenSet(
+            mediaToken = BrowserSession.generateHexToken(),
+            zapperToken = BrowserSession.generateHexToken(),
+            darkReaderToken = BrowserSession.generateHexToken(),
+            cosmeticToken = BrowserSession.generateHexToken(),
+            gmToken = BrowserSession.generateHexToken(),
+            readerToken = BrowserSession.generateHexToken()
+        )
+    }
+}
+
 interface SessionHostCallbacks : WebNavigationCallbacks, WebChromeCallbacks {
     fun onDownloadRequested(
+        tabId: String,
         url: String,
         userAgent: String,
         contentDisposition: String?,
-        mimeType: String?
+        mimeType: String?,
+        profileName: String,
+        isPrivate: Boolean
     )
-    fun onBlobDownloadReady(fileName: String, mimeType: String, base64Data: String, sourceUrl: String)
-    fun onMediaPlaybackStateChanged(tabId: String, isPlaying: Boolean, title: String)
+    fun onBlobDownloadReady(
+        tabId: String,
+        fileName: String,
+        mimeType: String,
+        base64Data: String,
+        sourceUrl: String,
+        isPrivate: Boolean
+    )
+    fun onBlobDownloadFailed(tabId: String, message: String)
+    fun onMediaPlaybackStateChanged(tabId: String, isPlaying: Boolean, hasVideo: Boolean, title: String)
     fun onFindMatchesUpdated(tabId: String, activeMatchOrdinal: Int, numberOfMatches: Int)
     fun onContextMenuLongPress(tabId: String, hit: ContextMenuHit)
-    fun onScrollTopChanged(tabId: String, atTop: Boolean)
 
     // Milestone 2 JS Bridges
     fun onZapperSelectionChanged(tabId: String, json: String)
@@ -45,9 +89,11 @@ interface SessionHostCallbacks : WebNavigationCallbacks, WebChromeCallbacks {
     fun onZapperUndoTemporaryZap(tabId: String, json: String)
     fun onZapperPermanentRule(tabId: String, json: String)
     fun onDarkReaderStatus(tabId: String, json: String)
-    fun onUserscriptSetValue(scriptId: String, key: String, valueJson: String)
-    fun onUserscriptDeleteValue(scriptId: String, key: String)
-    fun onUserscriptXmlHttpRequest(tabId: String, scriptId: String, reqId: String, requestJson: String)
+    fun onCosmeticDomTokens(tabId: String, pageUrl: String, classesJson: String, idsJson: String)
+    fun onUserscriptSetValue(tabId: String, pageUrl: String, scriptId: String, key: String, valueJson: String)
+    fun onUserscriptDeleteValue(tabId: String, pageUrl: String, scriptId: String, key: String)
+    fun onUserscriptXmlHttpRequest(tabId: String, pageUrl: String, scriptId: String, reqId: String, requestJson: String)
+    fun onUserscriptAbortXmlHttpRequest(tabId: String, reqId: String)
 }
 
 class BrowserSession(
@@ -57,9 +103,35 @@ class BrowserSession(
     context: Context,
     private val hostCallbacks: SessionHostCallbacks
 ) {
-    val webView: SwiftfoxWebView = SwiftfoxWebView(context)
+    private data class PendingBlobDownload(
+        val blobUrl: String,
+        val fileName: String,
+        val mimeType: String,
+        val expiresAtMs: Long
+    )
+
+    private val mutableContext = MutableContextWrapper(context)
+    val webView: SwiftfoxWebView = SwiftfoxWebView(mutableContext)
+
+    @Volatile
+    var tokens: BridgeTokenSet = BridgeTokenSet.generate()
+        private set
+
+    @Volatile
+    private var lastTokenOrigin: String = ""
+
+    val webViewClient: SwiftfoxWebViewClient = SwiftfoxWebViewClient(
+        tabId = tabId,
+        callbacks = hostCallbacks,
+        mediaTokenProvider = { tokens.mediaToken }
+    )
     private val defaultMobileUserAgent: String
-    private var documentStartHandler: ScriptHandler? = null
+    private val documentStartHandlers = mutableListOf<ScriptHandler>()
+    private val pendingBlobDownloads = ConcurrentHashMap<String, PendingBlobDownload>()
+
+    @Volatile
+    var isDestroyed: Boolean = false
+        private set
 
     var currentSiteMode: SiteMode = SiteMode.MOBILE
         private set
@@ -67,12 +139,44 @@ class BrowserSession(
     private var currentCustomUa: String? = null
     private var currentJsEnabled: Boolean = true
     private var currentCookiesEnabled: Boolean = true
+    private var currentBlockThirdParty: Boolean = true
+
+    val userAgentString: String
+        get() = runCatching { webView.settings.userAgentString }.getOrDefault(defaultMobileUserAgent)
 
     init {
         configureProfile()
         defaultMobileUserAgent = webView.settings.userAgentString
         configureSettings()
         configureClients()
+    }
+
+    fun rotateTokensForOrigin(origin: String): BridgeTokenSet {
+        val normalized = origin.trim().lowercase(Locale.ROOT)
+        if (normalized.isNotEmpty() && normalized != lastTokenOrigin) {
+            lastTokenOrigin = normalized
+            tokens = BridgeTokenSet.generate()
+            pendingBlobDownloads.clear()
+        }
+        return tokens
+    }
+
+    fun rebindContext(newContext: Context) {
+        if (!isDestroyed) {
+            mutableContext.baseContext = newContext
+        }
+    }
+
+    private fun cookieManagerForProfile(): CookieManager {
+        if (profileName != DEFAULT_PROFILE_NAME &&
+            WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)
+        ) {
+            val profileCm = runCatching {
+                ProfileStore.getInstance().getProfile(profileName)?.cookieManager
+            }.getOrNull()
+            if (profileCm != null) return profileCm
+        }
+        return CookieManager.getInstance()
     }
 
     private fun configureProfile() {
@@ -85,7 +189,11 @@ class BrowserSession(
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun configureSettings() {
-        webView.importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_YES
+        webView.importantForAutofill = if (isPrivate) {
+            View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
+        } else {
+            View.IMPORTANT_FOR_AUTOFILL_YES
+        }
         webView.isVerticalScrollBarEnabled = true
         webView.isHorizontalScrollBarEnabled = false
         webView.overScrollMode = View.OVER_SCROLL_ALWAYS
@@ -102,157 +210,294 @@ class BrowserSession(
             javaScriptCanOpenWindowsAutomatically = false
             setSupportMultipleWindows(true)
             allowFileAccess = false
-            allowContentAccess = true
+            allowContentAccess = false
             mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
             if (isPrivate) {
                 cacheMode = WebSettings.LOAD_NO_CACHE
             }
         }
 
-        CookieManager.getInstance().setAcceptCookie(true)
-        CookieManager.getInstance().setAcceptThirdPartyCookies(webView, false)
+        runCatching {
+            val cm = cookieManagerForProfile()
+            cm.setAcceptCookie(true)
+            cm.setAcceptThirdPartyCookies(webView, false)
+        }
     }
 
     private fun configureClients() {
-        webView.webViewClient = SwiftfoxWebViewClient(tabId, hostCallbacks)
+        webView.webViewClient = webViewClient
         webView.webChromeClient = SwiftfoxChromeClient(tabId, hostCallbacks)
 
-        webView.onScrollTopChanged = { atTop ->
-            hostCallbacks.onScrollTopChanged(tabId, atTop)
-        }
-
         webView.setFindListener { activeMatchOrdinal, numberOfMatches, _ ->
-            hostCallbacks.onFindMatchesUpdated(tabId, activeMatchOrdinal, numberOfMatches)
+            if (!isDestroyed) hostCallbacks.onFindMatchesUpdated(tabId, activeMatchOrdinal, numberOfMatches)
         }
 
         webView.setDownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
+            if (isDestroyed) return@setDownloadListener
             if (url.startsWith("blob:", ignoreCase = true)) {
-                val safeName = URLUtil.guessFileName(url, contentDisposition, mimeType)
-                    .replace("'", "")
-                val safeMime = (mimeType ?: "application/octet-stream").replace("'", "")
-                val safeUrl = url.replace("'", "")
-                webView.evaluateJavascript(
-                    "window.__swiftfoxFetchBlob && window.__swiftfoxFetchBlob('$safeUrl', '$safeName', '$safeMime');",
-                    null
-                )
+                triggerBlobDownload(url, URLUtil.guessFileName(url, contentDisposition, mimeType), mimeType)
             } else if (url.startsWith("data:", ignoreCase = true)) {
-                val guessedMime = url.substringAfter("data:").substringBefore(";", "application/octet-stream")
+                val meta = if (url.length >= 5) url.substring(5).substringBefore(",") else ""
+                val guessedMime = meta.substringBefore(";").trim().ifBlank { "application/octet-stream" }
                 val safeName = URLUtil.guessFileName(url, contentDisposition, guessedMime)
-                hostCallbacks.onBlobDownloadReady(safeName, guessedMime, url, url)
+                hostCallbacks.onBlobDownloadReady(tabId, safeName, guessedMime, url, url, isPrivate)
             } else {
-                hostCallbacks.onDownloadRequested(url, userAgent, contentDisposition, mimeType)
+                hostCallbacks.onDownloadRequested(
+                    tabId = tabId,
+                    url = url,
+                    userAgent = userAgent,
+                    contentDisposition = contentDisposition,
+                    mimeType = mimeType,
+                    profileName = profileName,
+                    isPrivate = isPrivate
+                )
             }
         }
 
         webView.setOnLongClickListener {
+            if (isDestroyed) return@setOnLongClickListener false
             val result = webView.hitTestResult
             val extra = result.extra
-            if (!extra.isNullOrBlank()) {
-                when (result.type) {
-                    android.webkit.WebView.HitTestResult.SRC_ANCHOR_TYPE,
-                    android.webkit.WebView.HitTestResult.IMAGE_TYPE,
-                    android.webkit.WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE -> {
+            when (result.type) {
+                WebView.HitTestResult.SRC_ANCHOR_TYPE -> {
+                    if (!extra.isNullOrBlank()) {
                         hostCallbacks.onContextMenuLongPress(
                             tabId,
-                            ContextMenuHit(
-                                type = result.type,
-                                url = extra,
-                                imageUrl = if (result.type != android.webkit.WebView.HitTestResult.SRC_ANCHOR_TYPE) extra else null
-                            )
+                            ContextMenuHit(type = result.type, url = extra, imageUrl = null)
                         )
                         return@setOnLongClickListener true
                     }
+                }
+                WebView.HitTestResult.IMAGE_TYPE -> {
+                    if (!extra.isNullOrBlank()) {
+                        hostCallbacks.onContextMenuLongPress(
+                            tabId,
+                            ContextMenuHit(type = result.type, url = extra, imageUrl = extra)
+                        )
+                        return@setOnLongClickListener true
+                    }
+                }
+                WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE -> {
+                    // Request both the anchor href and image src asynchronously from Chromium
+                    val handler = Handler(Looper.getMainLooper()) { msg ->
+                        if (isDestroyed) return@Handler true
+                        val anchorUrl = msg.data.getString("url")?.takeIf { it.isNotBlank() }
+                        val srcUrl = msg.data.getString("src")?.takeIf { it.isNotBlank() } ?: extra
+                        val resolvedUrl = anchorUrl ?: srcUrl
+                        if (!resolvedUrl.isNullOrBlank()) {
+                            hostCallbacks.onContextMenuLongPress(
+                                tabId,
+                                ContextMenuHit(
+                                    type = result.type,
+                                    url = resolvedUrl,
+                                    imageUrl = srcUrl
+                                )
+                            )
+                        }
+                        true
+                    }
+                    webView.requestFocusNodeHref(handler.obtainMessage())
+                    return@setOnLongClickListener true
                 }
             }
             false
         }
 
-        webView.addJavascriptInterface(
-            object {
-                @JavascriptInterface
-                fun onBlobData(fileName: String, mimeType: String, base64Data: String, sourceUrl: String) {
-                    hostCallbacks.onBlobDownloadReady(fileName, mimeType, base64Data, sourceUrl)
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
+            runCatching {
+                WebViewCompat.addWebMessageListener(
+                    webView,
+                    NATIVE_CHANNEL_NAME,
+                    setOf("*")
+                ) { _, message, sourceOrigin, isMainFrame, _ ->
+                    if (isDestroyed || !isMainFrame) return@addWebMessageListener
+                    val raw = message.data ?: return@addWebMessageListener
+                    val obj = runCatching { JSONObject(raw) }.getOrNull() ?: return@addWebMessageListener
+                    handleNativeChannelMessage(obj, sourceOrigin?.toString().orEmpty())
                 }
-            },
-            "SwiftfoxBlobBridge"
-        )
-
-        webView.addJavascriptInterface(
-            object {
-                @JavascriptInterface
-                fun onMediaStateChanged(isPlaying: Boolean, title: String) {
-                    webView.isMediaCurrentlyPlaying = isPlaying
-                    hostCallbacks.onMediaPlaybackStateChanged(tabId, isPlaying, title)
-                }
-            },
-            "SwiftfoxMediaBridge"
-        )
-
-        webView.addJavascriptInterface(
-            object {
-                @JavascriptInterface
-                fun onSelectionChanged(json: String) {
-                    hostCallbacks.onZapperSelectionChanged(tabId, json)
-                }
-
-                @JavascriptInterface
-                fun onTemporaryZap(json: String) {
-                    hostCallbacks.onZapperTemporaryZap(tabId, json)
-                }
-
-                @JavascriptInterface
-                fun onUndoTemporaryZap(json: String) {
-                    hostCallbacks.onZapperUndoTemporaryZap(tabId, json)
-                }
-
-                @JavascriptInterface
-                fun onPermanentRule(json: String) {
-                    hostCallbacks.onZapperPermanentRule(tabId, json)
-                }
-            },
-            "SwiftfoxZapperBridge"
-        )
-
-        webView.addJavascriptInterface(
-            object {
-                @JavascriptInterface
-                fun onDarkReaderStatus(json: String) {
-                    hostCallbacks.onDarkReaderStatus(tabId, json)
-                }
-            },
-            "SwiftfoxDarkReaderBridge"
-        )
-
-        webView.addJavascriptInterface(
-            object {
-                @JavascriptInterface
-                fun onSetValue(scriptId: String, key: String, valueJson: String) {
-                    hostCallbacks.onUserscriptSetValue(scriptId, key, valueJson)
-                }
-
-                @JavascriptInterface
-                fun onDeleteValue(scriptId: String, key: String) {
-                    hostCallbacks.onUserscriptDeleteValue(scriptId, key)
-                }
-
-                @JavascriptInterface
-                fun onXmlHttpRequest(scriptId: String, reqId: String, requestJson: String) {
-                    hostCallbacks.onUserscriptXmlHttpRequest(tabId, scriptId, reqId, requestJson)
-                }
-            },
-            "SwiftfoxGmBridge"
-        )
+            }
+        }
     }
 
-    fun applySiteMode(mode: SiteMode, reloadIfChanged: Boolean) {
-        applySiteOverrides(
-            mode = mode,
-            customUserAgent = currentCustomUa,
-            javascriptEnabled = currentJsEnabled,
-            cookiesEnabled = currentCookiesEnabled,
-            blockThirdParty = true,
-            reloadIfChanged = reloadIfChanged
+    private fun handleNativeChannelMessage(obj: JSONObject, sourceOriginRaw: String) {
+        val channel = obj.optString("channel")
+        val token = obj.optString("token")
+        val curTokens = tokens
+        val committedUrl = webViewClient.committedMainFrameUrl
+        val committedOrigin = ScriptInjector.extractOrigin(committedUrl)
+        val msgOrigin = ScriptInjector.extractOrigin(sourceOriginRaw)
+
+        when (channel) {
+            "media" -> {
+                if (token.isEmpty() || token != curTokens.mediaToken) return
+                val isPlaying = obj.optBoolean("isPlaying", false)
+                val hasVideo = obj.optBoolean("hasVideo", false)
+                val title = obj.optString("title", "")
+                webView.isMediaCurrentlyPlaying = isPlaying
+                hostCallbacks.onMediaPlaybackStateChanged(tabId, isPlaying, hasVideo, title)
+            }
+
+            "blob" -> {
+                pruneExpiredBlobDownloads()
+                val nonce = obj.optString("nonce")
+                val pending = if (nonce.isNotEmpty()) pendingBlobDownloads.remove(nonce) else null
+                if (pending == null || System.currentTimeMillis() > pending.expiresAtMs) return
+                val base64Data = obj.optString("base64Data", "")
+                if (base64Data.isBlank() || base64Data.length > MAX_BLOB_BASE64_CHARS) {
+                    hostCallbacks.onBlobDownloadFailed(tabId, "Blob download exceeds 25 MB limit")
+                    return
+                }
+                val resolvedMime = obj.optString("mimeType", "").ifBlank { pending.mimeType }
+                hostCallbacks.onBlobDownloadReady(
+                    tabId = tabId,
+                    fileName = pending.fileName,
+                    mimeType = resolvedMime,
+                    base64Data = base64Data,
+                    sourceUrl = pending.blobUrl,
+                    isPrivate = isPrivate
+                )
+            }
+
+            "blob_error" -> {
+                pruneExpiredBlobDownloads()
+                val nonce = obj.optString("nonce")
+                val pending = if (nonce.isNotEmpty()) pendingBlobDownloads.remove(nonce) else null
+                if (pending != null) {
+                    val msg = obj.optString("message", "").ifBlank { "Download failed" }
+                    hostCallbacks.onBlobDownloadFailed(tabId, msg)
+                }
+            }
+
+            "zapper" -> {
+                if (token.isEmpty() || token != curTokens.zapperToken) return
+                val payload = obj.optString("json", "")
+                when (obj.optString("event")) {
+                    "onSelectionChanged" -> hostCallbacks.onZapperSelectionChanged(tabId, payload)
+                    "onTemporaryZap" -> hostCallbacks.onZapperTemporaryZap(tabId, payload)
+                    "onUndoTemporaryZap" -> hostCallbacks.onZapperUndoTemporaryZap(tabId, payload)
+                    "onPermanentRule" -> hostCallbacks.onZapperPermanentRule(tabId, payload)
+                }
+            }
+
+            "darkReader" -> {
+                if (token.isEmpty() || token != curTokens.darkReaderToken) return
+                hostCallbacks.onDarkReaderStatus(tabId, obj.optString("json", ""))
+            }
+
+            "cosmetic" -> {
+                if (token.isEmpty() || token != curTokens.cosmeticToken) return
+                if (committedOrigin == null || msgOrigin != committedOrigin) return
+                hostCallbacks.onCosmeticDomTokens(
+                    tabId = tabId,
+                    pageUrl = committedUrl,
+                    classesJson = obj.optString("classesJson", "[]"),
+                    idsJson = obj.optString("idsJson", "[]")
+                )
+            }
+
+            "gm" -> {
+                if (token.isEmpty() || token != curTokens.gmToken) return
+                if (committedOrigin == null || msgOrigin != committedOrigin) return
+                when (obj.optString("action")) {
+                    "setValue" -> hostCallbacks.onUserscriptSetValue(
+                        tabId = tabId,
+                        pageUrl = committedUrl,
+                        scriptId = obj.optString("scriptId", ""),
+                        key = obj.optString("key", ""),
+                        valueJson = obj.optString("valueJson", "")
+                    )
+                    "deleteValue" -> hostCallbacks.onUserscriptDeleteValue(
+                        tabId = tabId,
+                        pageUrl = committedUrl,
+                        scriptId = obj.optString("scriptId", ""),
+                        key = obj.optString("key", "")
+                    )
+                    "xhr" -> hostCallbacks.onUserscriptXmlHttpRequest(
+                        tabId = tabId,
+                        pageUrl = committedUrl,
+                        scriptId = obj.optString("scriptId", ""),
+                        reqId = obj.optString("reqId", ""),
+                        requestJson = obj.optString("requestJson", "")
+                    )
+                    "abortXhr" -> hostCallbacks.onUserscriptAbortXmlHttpRequest(
+                        tabId = tabId,
+                        reqId = obj.optString("reqId", "")
+                    )
+                }
+            }
+        }
+    }
+
+    private fun pruneExpiredBlobDownloads() {
+        val now = System.currentTimeMillis()
+        pendingBlobDownloads.entries.removeIf { it.value.expiresAtMs < now }
+        if (pendingBlobDownloads.size > 32) {
+            pendingBlobDownloads.clear()
+        }
+    }
+
+    fun triggerBlobDownload(blobUrl: String, fileName: String, mimeType: String?) {
+        if (isDestroyed) return
+        pruneExpiredBlobDownloads()
+        val safeName = fileName.ifBlank { "download_${System.currentTimeMillis()}" }
+        val safeMime = mimeType?.takeIf { it.isNotBlank() } ?: "application/octet-stream"
+        val nonce = generateHexToken()
+        pendingBlobDownloads[nonce] = PendingBlobDownload(
+            blobUrl = blobUrl,
+            fileName = safeName,
+            mimeType = safeMime,
+            expiresAtMs = System.currentTimeMillis() + BLOB_PENDING_TTL_MS
         )
+
+        val quotedUrl = JSONObject.quote(blobUrl)
+        val quotedNonce = JSONObject.quote(nonce)
+        val quotedMime = JSONObject.quote(safeMime)
+        val js = """
+            (function() {
+              var ch = window.SwiftfoxNativeChannel;
+              if (!ch || typeof ch.postMessage !== 'function') return;
+              fetch($quotedUrl)
+                .then(function(r) {
+                  if (!r.ok) throw new Error('HTTP ' + r.status);
+                  return r.blob();
+                })
+                .then(function(blob) {
+                  if (blob.size > $MAX_BLOB_BYTES) {
+                    ch.postMessage(JSON.stringify({
+                      channel: 'blob_error',
+                      nonce: $quotedNonce,
+                      message: 'Blob download exceeds 25 MB limit'
+                    }));
+                    return;
+                  }
+                  var reader = new FileReader();
+                  reader.onloadend = function() {
+                    ch.postMessage(JSON.stringify({
+                      channel: 'blob',
+                      nonce: $quotedNonce,
+                      mimeType: blob.type || $quotedMime,
+                      base64Data: typeof reader.result === 'string' ? reader.result : ''
+                    }));
+                  };
+                  reader.onerror = function() {
+                    ch.postMessage(JSON.stringify({
+                      channel: 'blob_error',
+                      nonce: $quotedNonce,
+                      message: 'Failed to read blob data'
+                    }));
+                  };
+                  reader.readAsDataURL(blob);
+                })
+                .catch(function() {
+                  ch.postMessage(JSON.stringify({
+                    channel: 'blob_error',
+                    nonce: $quotedNonce,
+                    message: 'Blob download failed'
+                  }));
+                });
+            })();
+        """.trimIndent()
+        webView.evaluateJavascript(js, null)
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -262,10 +507,13 @@ class BrowserSession(
         javascriptEnabled: Boolean,
         cookiesEnabled: Boolean,
         blockThirdParty: Boolean,
-        reloadIfChanged: Boolean
+        reloadIfChanged: Boolean,
+        applyProfileCookiePolicy: Boolean = true
     ) {
+        if (isDestroyed) return
         val normalizedCustomUa = customUserAgent?.trim()?.takeIf { it.isNotEmpty() }
         val modeChanged = currentSiteMode != mode
+        val effectiveModeChanged = modeChanged && normalizedCustomUa == null
         val uaChanged = currentCustomUa != normalizedCustomUa
         val jsChanged = currentJsEnabled != javascriptEnabled
         val cookieChanged = currentCookiesEnabled != cookiesEnabled
@@ -274,6 +522,7 @@ class BrowserSession(
         currentCustomUa = normalizedCustomUa
         currentJsEnabled = javascriptEnabled
         currentCookiesEnabled = cookiesEnabled
+        currentBlockThirdParty = blockThirdParty
 
         webView.settings.apply {
             javaScriptEnabled = javascriptEnabled
@@ -287,20 +536,26 @@ class BrowserSession(
         }
 
         runCatching {
-            val cm = CookieManager.getInstance()
-            cm.setAcceptCookie(cookiesEnabled)
+            val cm = cookieManagerForProfile()
+            // CookieManager.setAcceptCookie is profile-wide; only the active tab should drive it
+            if (applyProfileCookiePolicy) {
+                cm.setAcceptCookie(cookiesEnabled)
+            }
             cm.setAcceptThirdPartyCookies(webView, cookiesEnabled && !blockThirdParty)
         }
 
-        if ((modeChanged || uaChanged || jsChanged || cookieChanged) && reloadIfChanged) {
+        if ((effectiveModeChanged || uaChanged || jsChanged || cookieChanged) && reloadIfChanged) {
             val current = webView.url.orEmpty()
-            if (current.startsWith("http://") || current.startsWith("https://")) {
+            if (current.startsWith("http://", ignoreCase = true) ||
+                current.startsWith("https://", ignoreCase = true)
+            ) {
                 webView.reload()
             }
         }
     }
 
     fun applyWebDarkening(enabled: Boolean) {
+        if (isDestroyed) return
         if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
             runCatching {
                 WebSettingsCompat.setAlgorithmicDarkeningAllowed(webView.settings, enabled)
@@ -309,28 +564,33 @@ class BrowserSession(
     }
 
     fun applyWebDarkMode(state: ResolvedWebDarkState, darkReaderInjector: DarkReaderInjector) {
+        if (isDestroyed) return
+        val curTokens = tokens
         if (state.useDarkReader) {
             // Never run Chromium Algorithmic Darkening alongside Dark Reader
             applyWebDarkening(false)
             val currentUrl = webView.url.orEmpty()
-            if (currentUrl.startsWith("http://") || currentUrl.startsWith("https://")) {
-                evaluateJavascript(darkReaderInjector.buildApplyScript(state))
+            val originAtCall = ScriptInjector.extractOrigin(currentUrl)
+            if (originAtCall != null) {
+                val keyLit = JSONObject.quote(curTokens.darkReaderKey)
+                // Probe if DarkReader runtime is already attached so slider/settings updates send ~150B instead of ~112KB
+                evaluateJavascript("Object.prototype.hasOwnProperty.call(window, $keyLit)") { loaded ->
+                    if (isDestroyed) return@evaluateJavascript
+                    if (ScriptInjector.extractOrigin(webView.url.orEmpty()) != originAtCall) return@evaluateJavascript
+                    val script = if (loaded?.trim().equals("true", ignoreCase = true)) {
+                        darkReaderInjector.buildFastApplyScript(state, curTokens.darkReaderKey)
+                    } else {
+                        darkReaderInjector.buildApplyScript(state, curTokens.darkReaderToken, curTokens.darkReaderKey)
+                    }
+                    evaluateJavascript(script)
+                }
             }
         } else if (state.useAlgorithmicLite) {
-            evaluateJavascript(darkReaderInjector.buildDisableScript())
+            evaluateJavascript(darkReaderInjector.buildDisableScript(curTokens.darkReaderKey))
             applyWebDarkening(true)
         } else {
-            evaluateJavascript(darkReaderInjector.buildDisableScript())
+            evaluateJavascript(darkReaderInjector.buildDisableScript(curTokens.darkReaderKey))
             applyWebDarkening(false)
-        }
-    }
-
-    fun applyThirdPartyCookieBlocking(blockThirdParty: Boolean) {
-        runCatching {
-            CookieManager.getInstance().setAcceptThirdPartyCookies(
-                webView,
-                currentCookiesEnabled && !blockThirdParty
-            )
         }
     }
 
@@ -338,45 +598,63 @@ class BrowserSession(
         webView.allowBackgroundPlayback = enabled
     }
 
-    fun updateDocumentStartScript(
+    fun clearDocumentStartScripts() {
+        documentStartHandlers.forEach { runCatching { it.remove() } }
+        documentStartHandlers.clear()
+    }
+
+    fun updateDocumentStartScripts(
+        origin: String,
         cosmeticCss: String,
         zappedCss: String,
-        documentStartUserscriptJs: String
+        gmShimInitJs: String,
+        documentStartUserscriptSnippets: List<String>
     ) {
-        documentStartHandler = ScriptInjector.registerDocumentStartScript(
+        if (isDestroyed) return
+        val newHandlers = ScriptInjector.registerDocumentStartScripts(
             webView = webView,
-            previousHandler = documentStartHandler,
+            previousHandlers = documentStartHandlers,
+            origin = origin,
             cosmeticCss = cosmeticCss,
             zappedCss = zappedCss,
-            documentStartUserscriptJs = documentStartUserscriptJs
+            gmShimInitJs = gmShimInitJs,
+            documentStartUserscriptSnippets = documentStartUserscriptSnippets
         )
+        documentStartHandlers.clear()
+        documentStartHandlers.addAll(newHandlers)
     }
 
     fun evaluateJavascript(script: String, onResult: ((String?) -> Unit)? = null) {
-        if (script.isBlank()) return
+        if (isDestroyed || script.isBlank()) return
         webView.evaluateJavascript(script) { result ->
             onResult?.invoke(result)
         }
     }
 
     fun loadUrl(url: String) {
-        webView.loadUrl(url)
+        if (!isDestroyed) webView.loadUrl(url)
     }
 
     fun reload() {
-        webView.reload()
+        if (!isDestroyed) webView.reload()
     }
 
     fun stopLoading() {
-        webView.stopLoading()
+        if (!isDestroyed) webView.stopLoading()
     }
 
-    fun canGoBack(): Boolean = webView.canGoBack()
-    fun canGoForward(): Boolean = webView.canGoForward()
-    fun goBack() = webView.goBack()
-    fun goForward() = webView.goForward()
+    fun canGoBack(): Boolean = !isDestroyed && webView.canGoBack()
+    fun canGoForward(): Boolean = !isDestroyed && webView.canGoForward()
+    fun goBack() {
+        if (!isDestroyed) webView.goBack()
+    }
+
+    fun goForward() {
+        if (!isDestroyed) webView.goForward()
+    }
 
     fun findAllAsync(query: String) {
+        if (isDestroyed) return
         if (query.isBlank()) {
             webView.clearMatches()
         } else {
@@ -384,14 +662,20 @@ class BrowserSession(
         }
     }
 
-    fun findNext(forward: Boolean) = webView.findNext(forward)
-    fun clearFindMatches() = webView.clearMatches()
+    fun findNext(forward: Boolean) {
+        if (!isDestroyed) webView.findNext(forward)
+    }
+
+    fun clearFindMatches() {
+        if (!isDestroyed) webView.clearMatches()
+    }
 
     fun setMediaPaused(pause: Boolean) {
+        if (isDestroyed) return
         val js = if (pause) {
-            "document.querySelectorAll('audio,video').forEach(function(e){e.pause();});"
+            "document.querySelectorAll('audio,video').forEach(function(e){ try { e.pause(); } catch(err){} });"
         } else {
-            "var e=document.querySelector('video,audio'); if(e){e.play();}"
+            "(function(){ var e = (window.__swiftfoxLastMedia && window.__swiftfoxLastMedia.isConnected) ? window.__swiftfoxLastMedia : document.querySelector('video,audio'); if(e){ var p = e.play(); if(p && p.catch) p.catch(function(){}); } })();"
         }
         webView.evaluateJavascript(js, null)
     }
@@ -400,15 +684,15 @@ class BrowserSession(
         webView.createPrintDocumentAdapter(title.ifBlank { "Swiftfox Page" })
 
     fun saveState(bundle: Bundle) {
-        webView.saveState(bundle)
+        if (!isDestroyed) webView.saveState(bundle)
     }
 
     fun restoreState(bundle: Bundle) {
-        webView.restoreState(bundle)
+        if (!isDestroyed) webView.restoreState(bundle)
     }
 
     fun captureThumbnail(targetWidth: Int = 360, targetHeight: Int = 480): Bitmap? {
-        if (webView.width <= 0 || webView.height <= 0) return null
+        if (isDestroyed || webView.width <= 0 || webView.height <= 0) return null
         return runCatching {
             val scale = targetWidth.toFloat() / webView.width.toFloat()
             val scaledH = (webView.height * scale).toInt().coerceIn(180, targetHeight)
@@ -421,8 +705,30 @@ class BrowserSession(
     }
 
     fun destroy() {
-        runCatching { documentStartHandler?.remove() }
-        documentStartHandler = null
+        if (isDestroyed) return
+        isDestroyed = true
+        webView.isMediaCurrentlyPlaying = false
+        clearDocumentStartScripts()
+        pendingBlobDownloads.clear()
+        // Detach all clients, listeners, and bridges BEFORE loadUrl("about:blank")
+        // so teardown/hibernation never fires stale callbacks into BrowserViewModel.
+        webView.setFindListener(null)
+        webView.setDownloadListener(null)
+        webView.setOnLongClickListener(null)
+        webView.webViewClient = WebViewClient()
+        webView.webChromeClient = null
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
+            runCatching {
+                WebViewCompat.removeWebMessageListener(webView, NATIVE_CHANNEL_NAME)
+            }
+        }
+        if (isPrivate) {
+            runCatching {
+                webView.clearCache(true)
+                webView.clearHistory()
+                webView.clearFormData()
+            }
+        }
         webView.stopLoading()
         webView.loadUrl("about:blank")
         webView.removeAllViews()
@@ -432,7 +738,18 @@ class BrowserSession(
     companion object {
         const val DEFAULT_PROFILE_NAME = Profile.DEFAULT_PROFILE_NAME
         const val PRIVATE_PROFILE_NAME = "swiftfox_private_session"
+        private const val NATIVE_CHANNEL_NAME = "SwiftfoxNativeChannel"
+        private const val MAX_BLOB_BYTES = 25 * 1024 * 1024
+        private const val MAX_BLOB_BASE64_CHARS = 36_000_000
+        private const val BLOB_PENDING_TTL_MS = 60_000L
         private const val DESKTOP_USER_AGENT =
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+        private val secureRandom = SecureRandom()
+
+        internal fun generateHexToken(): String {
+            val bytes = ByteArray(16)
+            secureRandom.nextBytes(bytes)
+            return bytes.joinToString("") { "%02x".format(Locale.ROOT, it) }
+        }
     }
 }

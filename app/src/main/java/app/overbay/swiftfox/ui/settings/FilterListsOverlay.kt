@@ -48,6 +48,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.overbay.swiftfox.data.db.FilterListEntity
 import app.overbay.swiftfox.features.adblock.AdblockEngineStatus
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import java.text.NumberFormat
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -259,11 +260,13 @@ private fun FilterListRow(
     val subtitleText = when {
         !item.lastError.isNullOrBlank() -> "Update failed: ${item.lastError}"
         item.lastUpdatedAt > 0L -> {
-            val relative = DateUtils.getRelativeTimeSpanString(
-                item.lastUpdatedAt,
-                System.currentTimeMillis(),
-                DateUtils.MINUTE_IN_MILLIS
-            )
+            val relative = remember(item.lastUpdatedAt) {
+                DateUtils.getRelativeTimeSpanString(
+                    item.lastUpdatedAt,
+                    System.currentTimeMillis(),
+                    DateUtils.MINUTE_IN_MILLIS
+                ).toString()
+            }
             "$formattedRules rules · Updated $relative"
         }
         item.enabled -> "Starter protection active · Tap Update all to sync"
@@ -330,9 +333,10 @@ private fun AddCustomFilterListDialog(
     var name by remember { mutableStateOf("") }
     var url by remember { mutableStateOf("https://") }
     val cleanUrl = url.trim()
-    val validUrl = cleanUrl.startsWith("https://", ignoreCase = true) ||
-        cleanUrl.startsWith("http://", ignoreCase = true)
-    val canSubmit = name.isNotBlank() && validUrl && cleanUrl.length > "https://".length
+    val validUrl = (cleanUrl.startsWith("https://", ignoreCase = true) ||
+        cleanUrl.startsWith("http://", ignoreCase = true)) &&
+        cleanUrl.toHttpUrlOrNull() != null
+    val canSubmit = name.isNotBlank() && validUrl
 
     AlertDialog(
         onDismissRequest = onDismiss,

@@ -2,6 +2,7 @@ package app.overbay.swiftfox.features.reader
 
 import android.content.Context
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlin.math.roundToInt
 
@@ -15,7 +16,6 @@ class ReaderExtractor(private val context: Context?) {
         val title: String? = null,
         val byline: String? = null,
         val siteName: String? = null,
-        val excerpt: String? = null,
         val htmlContent: String? = null,
         val wordCount: Int? = null,
         val readingTimeMinutes: Int? = null,
@@ -43,40 +43,50 @@ class ReaderExtractor(private val context: Context?) {
     }
 
     /**
-     * Returns JavaScript that evaluates to boolean `true` or `false` inside `WebView.evaluateJavascript`.
+     * Returns JavaScript that evaluates to boolean `true` or `false` inside `WebView.evaluateJavascript`
+     * without consulting spoofable page globals.
      */
     fun buildCheckReadableScript(): String = buildString {
         append("(function(){")
         if (bridgeJs.isNotEmpty()) {
-            append("if(typeof window.__swiftfoxIsReadable!=='function'){")
-            append(bridgeJs)
-            append('\n')
-            append("}")
+            append("var rt=(").append(bridgeJs).append(")(null);")
+            append("return Boolean(rt&&rt.isReadable());")
+        } else {
+            append("return false;")
         }
-        append("return typeof window.__swiftfoxIsReadable==='function'&&Boolean(window.__swiftfoxIsReadable());")
         append("})();")
     }
 
     /**
-     * Returns JavaScript that lazily injects Readability + bridge if undefined and extracts the article JSON.
+     * Fast-path probe script used when Readability + bridge are already attached under [runtimeKey].
      */
-    fun buildExtractScript(): String = buildString {
-        append("(function(){")
-        if (readabilityJs.isNotEmpty()) {
-            append("if(typeof window.Readability!=='function'){")
-            append(readabilityJs)
-            append('\n')
-            append("if(typeof Readability==='function'){window.Readability=Readability;}")
-            append("}")
+    fun buildFastExtractScript(runtimeKey: String = DEFAULT_RUNTIME_KEY): String {
+        val keyLit = json.encodeToString(runtimeKey)
+        return "(function(){var rt=window[$keyLit];return rt&&typeof rt.extractArticle==='function'?rt.extractArticle():null;})();"
+    }
+
+    /**
+     * Returns JavaScript that lazily injects Readability (isolated from host page UMD globals)
+     * + bridge under an unguessable [runtimeKey] and extracts the article JSON.
+     */
+    fun buildExtractScript(runtimeKey: String = DEFAULT_RUNTIME_KEY): String {
+        val keyLit = json.encodeToString(runtimeKey)
+        return buildString {
+            append("(function(){")
+            if (readabilityJs.isNotEmpty() && bridgeJs.isNotEmpty()) {
+                append("if(!Object.prototype.hasOwnProperty.call(window,").append(keyLit).append(")){")
+                append("var define=undefined,exports=undefined,module=undefined;")
+                append(readabilityJs)
+                append('\n')
+                append("var __ctor=typeof Readability==='function'?Readability:null;")
+                append("var __rt=(").append(bridgeJs).append(")(__ctor);")
+                append("try{Object.defineProperty(window,").append(keyLit).append(",{value:__rt,writable:false,configurable:false,enumerable:false});}catch(e){window[").append(keyLit).append("]=__rt;}")
+                append("}")
+            }
+            append("var rt=window[").append(keyLit).append("];")
+            append("return rt&&typeof rt.extractArticle==='function'?rt.extractArticle():null;")
+            append("})();")
         }
-        if (bridgeJs.isNotEmpty()) {
-            append("if(typeof window.__swiftfoxExtractArticle!=='function'){")
-            append(bridgeJs)
-            append('\n')
-            append("}")
-        }
-        append("return typeof window.__swiftfoxExtractArticle==='function'?window.__swiftfoxExtractArticle():null;")
-        append("})();")
     }
 
     /**
@@ -97,6 +107,9 @@ class ReaderExtractor(private val context: Context?) {
 
         val payloadJson = unwrappedJson.trim()
         if (payloadJson.isEmpty() || payloadJson == "null" || !payloadJson.startsWith("{")) {
+            return null
+        }
+        if (payloadJson.length > MAX_EXTRACTION_CHARS) {
             return null
         }
 
@@ -122,7 +135,6 @@ class ReaderExtractor(private val context: Context?) {
             title = resolvedTitle,
             byline = payload.byline?.trim()?.takeIf { it.isNotEmpty() },
             siteName = resolvedSiteName,
-            excerpt = payload.excerpt?.trim()?.takeIf { it.isNotEmpty() },
             blocks = blocks,
             wordCount = wordCount,
             readingTimeMinutes = readingTimeMinutes
@@ -138,12 +150,36 @@ class ReaderExtractor(private val context: Context?) {
                 is ReaderBlock.Quote -> block.text
                 is ReaderBlock.CodeBlock -> block.code
                 is ReaderBlock.BulletItem -> block.runs.joinToString("") { it.text }
+                is ReaderBlock.Image -> listOfNotNull(block.caption, block.alt).joinToString(" ")
+                is ReaderBlock.Table -> buildString {
+                    block.caption?.let { append(it).append(' ') }
+                    block.headers.forEach { cell ->
+                        append(cell.joinToString("") { it.text }).append(' ')
+                    }
+                    block.rows.forEach { row ->
+                        row.forEach { cell ->
+                            append(cell.joinToString("") { it.text }).append(' ')
+                        }
+                    }
+                }
+                is ReaderBlock.DefinitionItem -> buildString {
+                    append(block.term.joinToString("") { it.text }).append(' ')
+                    block.definitions.forEach { def ->
+                        append(def.joinToString("") { it.text }).append(' ')
+                    }
+                }
                 is ReaderBlock.Divider -> ""
             }
             if (text.isNotBlank()) {
-                total += text.trim().split(Regex("\\s+")).count { it.isNotEmpty() }
+                total += text.trim().split(WHITESPACE_REGEX).count { it.isNotEmpty() }
             }
         }
         return total
+    }
+
+    companion object {
+        const val DEFAULT_RUNTIME_KEY = "__swiftfoxReader"
+        private const val MAX_EXTRACTION_CHARS = 2 * 1024 * 1024
+        private val WHITESPACE_REGEX = Regex("\\s+")
     }
 }

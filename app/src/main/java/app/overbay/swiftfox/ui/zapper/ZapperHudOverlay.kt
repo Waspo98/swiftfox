@@ -52,7 +52,8 @@ fun ZapperHudOverlay(
     onBlockPermanently: () -> Unit,
     onUndoTemporaryZap: () -> Unit,
     onDone: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    applyNavigationBarPadding: Boolean = false
 ) {
     val context = LocalContext.current
     val reduceMotion = remember(context) {
@@ -66,7 +67,7 @@ fun ZapperHudOverlay(
     }
 
     val containerModifier = modifier
-        .navigationBarsPadding()
+        .let { base -> if (applyNavigationBarPadding) base.navigationBarsPadding() else base }
         .padding(horizontal = 16.dp, vertical = 12.dp)
         .widthIn(max = 560.dp)
         .fillMaxWidth()

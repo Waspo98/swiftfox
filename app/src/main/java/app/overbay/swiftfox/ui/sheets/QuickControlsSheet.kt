@@ -21,6 +21,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.MenuBook
+import androidx.compose.material.icons.automirrored.rounded.SendToMobile
 import androidx.compose.material.icons.rounded.AutoFixHigh
 import androidx.compose.material.icons.rounded.Bookmark
 import androidx.compose.material.icons.rounded.BookmarkBorder
@@ -28,6 +29,7 @@ import androidx.compose.material.icons.rounded.Bookmarks
 import androidx.compose.material.icons.rounded.Code
 import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.DesktopWindows
+import androidx.compose.material.icons.rounded.Devices
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.FilterList
 import androidx.compose.material.icons.rounded.FindInPage
@@ -41,6 +43,7 @@ import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.Smartphone
+import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.ViewAgenda
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -61,6 +64,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.overbay.swiftfox.data.prefs.SiteMode
 import app.overbay.swiftfox.data.prefs.WebDarkEngine
+import app.overbay.swiftfox.features.sync.SyncAccountState
 import app.overbay.swiftfox.ui.browser.BrowserOverlay
 import app.overbay.swiftfox.ui.browser.BrowserUiState
 
@@ -82,7 +86,8 @@ fun QuickControlsSheet(
     onFindInPage: () -> Unit,
     onPinEssential: () -> Unit,
     onCycleToolbarPlacement: () -> Unit,
-    onOpenOverlay: (BrowserOverlay) -> Unit
+    onOpenOverlay: (BrowserOverlay) -> Unit,
+    onSendToZenSpace: () -> Unit = {}
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
@@ -108,7 +113,8 @@ fun QuickControlsSheet(
             onFindInPage = onFindInPage,
             onPinEssential = onPinEssential,
             onCycleToolbarPlacement = onCycleToolbarPlacement,
-            onOpenOverlay = onOpenOverlay
+            onOpenOverlay = onOpenOverlay,
+            onSendToZenSpace = onSendToZenSpace
         )
     }
 }
@@ -131,7 +137,8 @@ fun QuickControlsContent(
     onPinEssential: () -> Unit,
     onCycleToolbarPlacement: () -> Unit,
     onOpenOverlay: (BrowserOverlay) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onSendToZenSpace: () -> Unit = {}
 ) {
     val activeTab = state.activeTab
     val isWebPage = activeTab != null && !activeTab.isStartPage
@@ -255,7 +262,8 @@ fun QuickControlsContent(
                     title = if (isDesktop) "Desktop site" else "Mobile site",
                     subtitle = "${state.windowState.posture.label}: ${state.activeProfile.defaultSiteMode.label}",
                     icon = if (isDesktop) Icons.Rounded.DesktopWindows else Icons.Rounded.Smartphone,
-                    active = isDesktop,
+                    active = isDesktop && isWebPage,
+                    enabled = isWebPage,
                     onClick = onToggleSiteMode,
                     modifier = Modifier
                         .weight(1f)
@@ -336,12 +344,34 @@ fun QuickControlsContent(
                     icon = Icons.Rounded.PushPin,
                     onClick = onPinEssential
                 )
+                if (!activeTab.isPrivate &&
+                    state.syncStatus.accountState is SyncAccountState.Connected &&
+                    !state.activeSpace?.syncGuid.isNullOrBlank()
+                ) {
+                    QuickActionPill(
+                        label = "Send to Zen",
+                        icon = Icons.AutoMirrored.Rounded.SendToMobile,
+                        onClick = onSendToZenSpace
+                    )
+                }
             }
             QuickActionPill(
                 label = "Bar: ${state.activeProfile.toolbarPlacement.label}",
                 icon = Icons.Rounded.ViewAgenda,
                 onClick = onCycleToolbarPlacement
             )
+            QuickActionPill(
+                label = if (state.syncStatus.accountState is SyncAccountState.Connected) "Sync" else "Firefox Sync",
+                icon = Icons.Rounded.Sync,
+                onClick = { onOpenOverlay(BrowserOverlay.SYNC) }
+            )
+            if (state.syncStatus.accountState is SyncAccountState.Connected || state.syncedRemoteTabs.isNotEmpty()) {
+                QuickActionPill(
+                    label = "Synced tabs",
+                    icon = Icons.Rounded.Devices,
+                    onClick = { onOpenOverlay(BrowserOverlay.SYNCED_TABS) }
+                )
+            }
             QuickActionPill(
                 label = "Filter lists",
                 icon = Icons.Rounded.FilterList,
@@ -383,7 +413,8 @@ private fun QuickControlTile(
     icon: ImageVector,
     active: Boolean,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true
 ) {
     val containerColor = if (active) {
         MaterialTheme.colorScheme.primaryContainer
@@ -408,10 +439,11 @@ private fun QuickControlTile(
 
     Surface(
         onClick = onClick,
+        enabled = enabled,
         modifier = modifier.heightIn(min = 82.dp),
         shape = RoundedCornerShape(20.dp),
-        color = containerColor,
-        contentColor = contentColor,
+        color = if (enabled) containerColor else containerColor.copy(alpha = 0.45f),
+        contentColor = if (enabled) contentColor else contentColor.copy(alpha = 0.5f),
         border = border
     ) {
         Row(

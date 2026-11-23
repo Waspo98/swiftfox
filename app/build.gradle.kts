@@ -10,8 +10,19 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
-// Configuration-cache safe branch detection via tracked .git/HEAD input
-val gitBranch = providers.fileContents(rootProject.layout.projectDirectory.file(".git/HEAD"))
+// Configuration-cache safe branch detection via tracked .git/HEAD (supports git worktrees)
+val gitHeadFile = run {
+    val dotGit = rootProject.file(".git")
+    if (dotGit.isFile) {
+        val gitDirLine = dotGit.readLines().firstOrNull()?.trim().orEmpty()
+        val relGitDir = gitDirLine.removePrefix("gitdir:").trim()
+        val resolvedDir = File(relGitDir).let { if (it.isAbsolute) it else File(rootProject.projectDir, relGitDir) }
+        File(resolvedDir, "HEAD")
+    } else {
+        File(dotGit, "HEAD")
+    }
+}
+val gitBranch = providers.fileContents(layout.file(provider { gitHeadFile }))
     .asText
     .map { text ->
         val line = text.lines().firstOrNull()?.trim().orEmpty()
@@ -65,10 +76,14 @@ android {
         applicationId = if (isBeta) "app.overbay.swiftfox.beta" else "app.overbay.swiftfox"
         minSdk = 31
         targetSdk = 35
-        versionCode = 2
-        versionName = if (isBeta) "0.2.0-beta" else "0.2.0"
+        versionCode = 3
+        versionName = if (isBeta) "0.3.0-beta" else "0.3.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        ndk {
+            abiFilters += listOf("arm64-v8a", "x86_64")
+        }
     }
 
     sourceSets {
@@ -127,6 +142,7 @@ android {
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+            excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"
         }
     }
 }
@@ -161,7 +177,6 @@ dependencies {
     implementation(libs.androidx.webkit)
     implementation(libs.androidx.window)
     implementation(libs.androidx.datastore.preferences)
-    implementation(libs.androidx.media)
     implementation(libs.androidx.swiperefreshlayout)
     implementation(libs.androidx.work.runtime.ktx)
 
@@ -170,6 +185,17 @@ dependencies {
     ksp(libs.androidx.room.compiler)
 
     implementation(libs.okhttp)
+    implementation(libs.mozilla.service.firefox.accounts)
+    implementation(libs.mozilla.browser.storage.sync)
+    implementation(libs.mozilla.concept.toolbar)
+    implementation(libs.mozilla.support.appservices)
+    implementation(libs.mozilla.lib.fetch.okhttp)
+    implementation("net.java.dev.jna:jna:${libs.versions.jna.get()}@aar")
+    implementation(libs.androidx.camera.core)
+    implementation(libs.androidx.camera.camera2)
+    implementation(libs.androidx.camera.lifecycle)
+    implementation(libs.androidx.camera.view)
+    implementation(libs.zxing.core)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
 

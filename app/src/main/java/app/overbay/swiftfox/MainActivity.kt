@@ -6,6 +6,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.net.Uri
 import android.os.Bundle
@@ -24,6 +25,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.runtime.getValue
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -35,13 +37,19 @@ import app.overbay.swiftfox.features.foldable.PostureObserver
 import app.overbay.swiftfox.ui.browser.BrowserScreen
 import app.overbay.swiftfox.ui.browser.BrowserViewModel
 import app.overbay.swiftfox.ui.theme.SwiftfoxTheme
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
+import java.io.IOException
+import java.time.LocalDate
 
 class MainActivity : ComponentActivity() {
 
     private val viewModel: BrowserViewModel by viewModels()
 
     private var pendingFileCallback: ValueCallback<Array<Uri>>? = null
+    private var pendingRuntimePermissionCallback: ((Map<String, Boolean>) -> Unit)? = null
     private var fullscreenCustomView: View? = null
     private var fullscreenCallback: WebChromeClient.CustomViewCallback? = null
 
@@ -52,8 +60,16 @@ class MainActivity : ComponentActivity() {
         pendingFileCallback = null
         if (callback == null) return@registerForActivityResult
 
-        val uris = WebChromeClient.FileChooserParams.parseResult(result.resultCode, result.data)
+        val uris = parseFileChooserResult(result.resultCode, result.data)
         callback.onReceiveValue(uris)
+    }
+
+    private val runtimePermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { grantMap ->
+        val cb = pendingRuntimePermissionCallback
+        pendingRuntimePermissionCallback = null
+        cb?.invoke(grantMap)
     }
 
     private val defaultBrowserRoleLauncher = registerForActivityResult(
@@ -64,19 +80,70 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri == null) return@registerForActivityResult
-        val code = runCatching {
-            contentResolver.openInputStream(uri)?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }
-        }.getOrNull()
-        if (code != null) {
-            val fallbackName = uri.lastPathSegment
-                ?.substringAfterLast('/')
-                ?.removeSuffix(".user.js")
-                ?.removeSuffix(".js")
-                ?.takeIf { it.isNotBlank() }
-                ?: "Imported Userscript"
-            viewModel.installUserscriptFromCode(code, fallbackName)
-        } else {
-            viewModel.showSnackbar("Could not read selected userscript file")
+        lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching { readBoundedUriText(uri, MAX_USERSCRIPT_IMPORT_BYTES) }
+            }
+            val code = result.getOrNull()
+            if (code != null) {
+                val fallbackName = uri.lastPathSegment
+                    ?.substringAfterLast('/')
+                    ?.removeSuffix(".user.js")
+                    ?.removeSuffix(".js")
+                    ?.takeIf { it.isNotBlank() }
+                    ?: "Imported Userscript"
+                viewModel.installUserscriptFromCode(code, fallbackName)
+            } else {
+                val msg = result.exceptionOrNull()?.message
+                    ?.takeIf { it.isNotBlank() }
+                    ?: "Could not read selected userscript file"
+                viewModel.showSnackbar(msg)
+            }
+        }
+    }
+
+    private val importBookmarksLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@registerForActivityResult
+        lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching { readBoundedUriText(uri, MAX_BOOKMARKS_IMPORT_BYTES) }
+            }
+            val html = result.getOrNull()
+            if (html != null) {
+                viewModel.importBookmarksFromHtml(html)
+            } else {
+                val msg = result.exceptionOrNull()?.message
+                    ?.takeIf { it.isNotBlank() }
+                    ?: "Could not read selected bookmarks HTML file"
+                viewModel.showSnackbar(msg)
+            }
+        }
+    }
+
+    private val exportBookmarksLauncher = registerForActivityResult(
+        ActivityResultContracts.CreateDocument("text/html")
+    ) { uri ->
+        if (uri == null) return@registerForActivityResult
+        lifecycleScope.launch {
+            val html = withContext(Dispatchers.Default) {
+                viewModel.buildBookmarksExportHtml()
+            }
+            val ok = withContext(Dispatchers.IO) {
+                runCatching {
+                    val out = contentResolver.openOutputStream(uri) ?: return@runCatching false
+                    out.bufferedWriter(Charsets.UTF_8).use { writer ->
+                        writer.write(html)
+                    }
+                    true
+                }.getOrDefault(false)
+            }
+            if (ok) {
+                viewModel.showSnackbar("Exported bookmarks to HTML")
+            } else {
+                viewModel.showSnackbar("Could not export bookmarks file")
+            }
         }
     }
 
@@ -85,9 +152,14 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         window.isNavigationBarContrastEnforced = false
 
+        (application as SwiftfoxApp).tabSessionPool.rebindActivityContext(this)
+        viewModel.updateSystemDarkTheme(isNightConfiguration(resources.configuration))
+
         bindViewModelBridges()
         observeFoldablePosture()
-        viewModel.openExternalIncomingIntent(intent)
+        if (savedInstanceState == null) {
+            viewModel.openExternalIncomingIntent(intent)
+        }
 
         setContent {
             val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -129,6 +201,22 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        viewModel.updateSystemDarkTheme(isNightConfiguration(newConfig))
+    }
+
+    override fun onDestroy() {
+        pendingFileCallback?.onReceiveValue(null)
+        pendingFileCallback = null
+        pendingRuntimePermissionCallback?.invoke(emptyMap())
+        pendingRuntimePermissionCallback = null
+        exitFullscreenVideo()
+        clearViewModelBridges()
+        (application as SwiftfoxApp).tabSessionPool.rebindActivityContext(applicationContext)
+        super.onDestroy()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
@@ -138,8 +226,8 @@ class MainActivity : ComponentActivity() {
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
         val state = viewModel.uiState.value
-        val activePlaying = state.activeTab?.isPlayingMedia == true || state.isFullscreenVideo
-        if (activePlaying && state.settings.backgroundMediaEnabled) {
+        val activeVideoPlaying = state.isFullscreenVideo || state.activeTab?.isPlayingVideo == true
+        if (activeVideoPlaying && state.settings.backgroundMediaEnabled) {
             enterSwiftfoxPip()
         }
     }
@@ -150,6 +238,48 @@ class MainActivity : ComponentActivity() {
     ) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         viewModel.onPictureInPictureChanged(isInPictureInPictureMode)
+    }
+
+    private fun readBoundedUriText(uri: Uri, maxBytes: Int): String {
+        val input = contentResolver.openInputStream(uri)
+            ?: throw IOException("Could not open selected file")
+        val out = ByteArrayOutputStream()
+        val buffer = ByteArray(8192)
+        var total = 0
+        input.use { stream ->
+            while (true) {
+                val read = stream.read(buffer)
+                if (read == -1) break
+                total += read
+                if (total > maxBytes) {
+                    throw IOException("Selected file exceeds ${maxBytes / (1024 * 1024)} MB limit")
+                }
+                out.write(buffer, 0, read)
+            }
+        }
+        return out.toString(Charsets.UTF_8.name())
+    }
+
+    private fun isNightConfiguration(config: Configuration): Boolean =
+        (config.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+
+    private companion object {
+        const val MAX_USERSCRIPT_IMPORT_BYTES = 2 * 1024 * 1024
+        const val MAX_BOOKMARKS_IMPORT_BYTES = 10 * 1024 * 1024
+    }
+
+    private fun parseFileChooserResult(resultCode: Int, data: Intent?): Array<Uri>? {
+        if (resultCode != RESULT_OK || data == null) return null
+        val clip = data.clipData
+        if (clip != null && clip.itemCount > 0) {
+            val list = buildList {
+                for (i in 0 until clip.itemCount) {
+                    clip.getItemAt(i)?.uri?.let { add(it) }
+                }
+            }
+            if (list.isNotEmpty()) return list.toTypedArray()
+        }
+        return WebChromeClient.FileChooserParams.parseResult(resultCode, data)
     }
 
     private fun observeFoldablePosture() {
@@ -164,8 +294,7 @@ class MainActivity : ComponentActivity() {
 
     private fun bindViewModelBridges() {
         viewModel.onSystemDarkThemeProvider = {
-            (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
-                Configuration.UI_MODE_NIGHT_YES
+            isNightConfiguration(resources.configuration)
         }
 
         viewModel.onLaunchExternalIntentBridge = { intent ->
@@ -184,6 +313,31 @@ class MainActivity : ComponentActivity() {
             }.getOrElse {
                 pendingFileCallback = null
                 false
+            }
+        }
+
+        viewModel.onRequestAndroidPermissionsBridge = { permissions, onResult ->
+            val missing = permissions.filter { perm ->
+                ContextCompat.checkSelfPermission(this, perm) != PackageManager.PERMISSION_GRANTED
+            }
+            if (missing.isEmpty()) {
+                onResult(permissions.associateWith { true })
+            } else {
+                pendingRuntimePermissionCallback?.invoke(emptyMap())
+                pendingRuntimePermissionCallback = { granted ->
+                    val merged = permissions.associateWith { perm ->
+                        granted[perm] == true ||
+                            ContextCompat.checkSelfPermission(this, perm) == PackageManager.PERMISSION_GRANTED
+                    }
+                    onResult(merged)
+                }
+                runCatching {
+                    runtimePermissionLauncher.launch(missing.toTypedArray())
+                }.onFailure {
+                    val cb = pendingRuntimePermissionCallback
+                    pendingRuntimePermissionCallback = null
+                    cb?.invoke(emptyMap())
+                }
             }
         }
 
@@ -216,6 +370,34 @@ class MainActivity : ComponentActivity() {
                 viewModel.showSnackbar("Could not open file picker")
             }
         }
+
+        viewModel.onImportBookmarksHtmlBridge = {
+            runCatching {
+                importBookmarksLauncher.launch(arrayOf("text/html", "text/plain", "*/*"))
+            }.onFailure {
+                viewModel.showSnackbar("Could not open file picker")
+            }
+        }
+
+        viewModel.onExportBookmarksHtmlBridge = {
+            runCatching {
+                exportBookmarksLauncher.launch("swiftfox-bookmarks-${LocalDate.now()}.html")
+            }.onFailure {
+                viewModel.showSnackbar("Could not open save dialog")
+            }
+        }
+    }
+
+    private fun clearViewModelBridges() {
+        viewModel.onSystemDarkThemeProvider = null
+        viewModel.onLaunchExternalIntentBridge = null
+        viewModel.onShowFileChooserBridge = null
+        viewModel.onRequestAndroidPermissionsBridge = null
+        viewModel.onShowFullscreenViewBridge = null
+        viewModel.onHideFullscreenViewBridge = null
+        viewModel.onImportUserscriptFileBridge = null
+        viewModel.onImportBookmarksHtmlBridge = null
+        viewModel.onExportBookmarksHtmlBridge = null
     }
 
     private fun exitFullscreenVideo() {
@@ -224,8 +406,11 @@ class MainActivity : ComponentActivity() {
         if (view != null) {
             (view.parent as? ViewGroup)?.removeView(view)
         }
-        fullscreenCallback?.onCustomViewHidden()
+        // Clear callback reference BEFORE invoking to prevent re-entrant StackOverflowError
+        val callback = fullscreenCallback
         fullscreenCallback = null
+        callback?.onCustomViewHidden()
+        viewModel.onFullscreenVideoExited()
         WindowCompat.getInsetsController(window, window.decorView)
             .show(WindowInsetsCompat.Type.systemBars())
     }

@@ -1,11 +1,20 @@
-(function () {
-  if (window.__swiftfoxDarkReader) {
+(function (runtimeKey, bridgeToken) {
+  if (!runtimeKey || !bridgeToken || Object.prototype.hasOwnProperty.call(window, runtimeKey)) {
     return;
   }
 
   var fetchMethodSet = false;
   var domListenerAttached = false;
   var nativeDarkCache = null;
+  var lastConfig = null;
+  var appliedSignature = null;
+
+  function buildConfigSignature(config) {
+    var brightness = typeof config.brightness === 'number' ? config.brightness : 100;
+    var contrast = typeof config.contrast === 'number' ? config.contrast : 100;
+    var sepia = typeof config.sepia === 'number' ? config.sepia : 0;
+    return [!!config.amoled, brightness, contrast, sepia].join('|');
+  }
 
   function hasExplicitDarkColorScheme(raw) {
     if (!raw || typeof raw !== 'string') return false;
@@ -100,28 +109,33 @@
     return false;
   }
 
-  function currentHref() {
+  function currentOriginKey() {
     try {
-      return window.location ? window.location.href : '';
+      return window.location ? window.location.origin : '';
     } catch (e) {
       return '';
     }
   }
 
+  function isDomSettled() {
+    return document.readyState === 'interactive' || document.readyState === 'complete';
+  }
+
   function isCacheValid() {
     if (!nativeDarkCache) return false;
-    if (nativeDarkCache.url !== currentHref()) return false;
+    if (nativeDarkCache.origin !== currentOriginKey()) return false;
     if (!nativeDarkCache.hasBody || !document.body) return false;
-    return nativeDarkCache.readyState === 'complete' ||
-      nativeDarkCache.readyState === document.readyState;
+    // Once measured after DOMContentLoaded ('interactive' or 'complete'), keep cache stable
+    // so onPageFinished and slider tweaks never flash white by disabling Dark Reader.
+    return nativeDarkCache.settled || !isDomSettled();
   }
 
   function saveCache(value) {
     if (!document.body) return;
     nativeDarkCache = {
-      url: currentHref(),
+      origin: currentOriginKey(),
       hasBody: true,
-      readyState: document.readyState || 'loading',
+      settled: isDomSettled(),
       value: !!value
     };
   }
@@ -140,14 +154,17 @@
     });
   }
 
-  function notifyStatus(active, skippedNativeDark) {
+  function notifyStatus(skippedNativeDark) {
     try {
-      if (window.SwiftfoxDarkReaderBridge &&
-          typeof window.SwiftfoxDarkReaderBridge.onDarkReaderStatus === 'function') {
-        window.SwiftfoxDarkReaderBridge.onDarkReaderStatus(
+      var ch = window.SwiftfoxNativeChannel;
+      if (bridgeToken && ch && typeof ch.postMessage === 'function') {
+        ch.postMessage(
           JSON.stringify({
-            active: !!active,
-            skippedNativeDark: !!skippedNativeDark
+            channel: 'darkReader',
+            token: bridgeToken,
+            json: JSON.stringify({
+              skippedNativeDark: !!skippedNativeDark
+            })
           })
         );
       }
@@ -169,36 +186,33 @@
     if (isCacheValid()) {
       return nativeDarkCache.value;
     }
+    // Only disable to re-probe once when transitioning from 'loading' to settled DOM
+    appliedSignature = null;
     DarkReader.disable();
     var detected = detectNativeDarkRaw();
     saveCache(detected);
-    if (restoreIfDisabled && !detected && window.__swiftfoxDarkReaderLastConfig &&
-        window.__swiftfoxDarkReaderLastConfig.enabled) {
-      enableDarkReader(window.__swiftfoxDarkReaderLastConfig);
+    if (restoreIfDisabled && !detected && lastConfig && lastConfig.enabled) {
+      enableDarkReader(lastConfig);
+      appliedSignature = buildConfigSignature(lastConfig);
     }
     return detected;
   }
 
   function scheduleDomReadyRecheck() {
-    if (domListenerAttached || document.readyState === 'complete') return;
+    if (domListenerAttached || isDomSettled()) return;
     domListenerAttached = true;
     document.addEventListener('DOMContentLoaded', function () {
       domListenerAttached = false;
-      var latest = window.__swiftfoxDarkReaderLastConfig;
-      if (latest) {
-        api.apply(latest);
+      if (lastConfig) {
+        api.apply(lastConfig);
       }
     }, { once: true });
   }
 
   var api = {
-    isNativeDarkSite: function () {
-      return evaluateNativeDark(true);
-    },
-
     apply: function (config) {
       if (!config || typeof config !== 'object') return;
-      window.__swiftfoxDarkReaderLastConfig = config;
+      lastConfig = config;
 
       if (typeof DarkReader === 'undefined') {
         return;
@@ -212,8 +226,9 @@
 
       if (!config.enabled) {
         nativeDarkCache = null;
+        appliedSignature = null;
         DarkReader.disable();
-        notifyStatus(false, false);
+        notifyStatus(false);
         return;
       }
 
@@ -223,24 +238,53 @@
       }
 
       if (config.skipNativeDark && !config.forceOverride) {
-        if (!document.body) {
+        // Wait for DOMContentLoaded before enabling Dark Reader if we're still loading
+        // and don't yet have a body background — avoids enabling early only to flash white later.
+        if (!isDomSettled() && !document.body) {
+          scheduleDomReadyRecheck();
+          if (hasExplicitDarkColorScheme(getMetaColorSchemeContent())) {
+            appliedSignature = null;
+            DarkReader.disable();
+            notifyStatus(true);
+          }
+          return;
+        }
+        if (!isDomSettled()) {
           scheduleDomReadyRecheck();
         }
         if (evaluateNativeDark(false)) {
+          appliedSignature = null;
           DarkReader.disable();
-          notifyStatus(false, true);
+          notifyStatus(true);
           return;
         }
       }
 
+      var nextSignature = buildConfigSignature(config);
+      if (isDarkReaderActive() && appliedSignature === nextSignature) {
+        notifyStatus(false);
+        return;
+      }
+
       try {
         enableDarkReader(config);
-        notifyStatus(true, false);
+        appliedSignature = nextSignature;
+        notifyStatus(false);
       } catch (e) {
-        notifyStatus(false, false);
+        appliedSignature = null;
+        notifyStatus(false);
       }
     }
   };
 
-  window.__swiftfoxDarkReader = api;
-})();
+  try {
+    Object.defineProperty(window, runtimeKey, {
+      value: api,
+      writable: false,
+      configurable: false,
+      enumerable: false
+    });
+  } catch (e) {
+    window[runtimeKey] = api;
+  }
+})

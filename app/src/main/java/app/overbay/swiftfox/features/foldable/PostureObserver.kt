@@ -11,8 +11,6 @@ import kotlinx.coroutines.flow.map
 
 data class FoldableWindowState(
     val posture: DevicePosture = DevicePosture.FOLDED,
-    val isTabletop: Boolean = false,
-    val isBookPosture: Boolean = false,
     val windowWidthDp: Int = 412
 )
 
@@ -24,30 +22,27 @@ object PostureObserver {
             .map { layoutInfo ->
                 val metrics = WindowMetricsCalculator.getOrCreate()
                     .computeCurrentWindowMetrics(activity)
-                val density = activity.resources.displayMetrics.density.coerceAtLeast(1f)
+                val density = activity.resources.displayMetrics.density.coerceAtLeast(0.5f)
                 val widthDp = (metrics.bounds.width() / density).toInt()
+                val heightDp = (metrics.bounds.height() / density).toInt()
+                val smallestWidthDp = minOf(widthDp, heightDp)
 
                 val foldingFeature = layoutInfo.displayFeatures
                     .filterIsInstance<FoldingFeature>()
                     .firstOrNull()
 
-                val isTabletop = foldingFeature != null &&
-                    foldingFeature.state == FoldingFeature.State.HALF_OPENED &&
-                    foldingFeature.orientation == FoldingFeature.Orientation.HORIZONTAL
+                val isVerticalHingeUnfolded = foldingFeature != null &&
+                    foldingFeature.orientation == FoldingFeature.Orientation.VERTICAL &&
+                    (foldingFeature.state == FoldingFeature.State.FLAT ||
+                        foldingFeature.state == FoldingFeature.State.HALF_OPENED) &&
+                    widthDp >= 600
 
-                val isBook = foldingFeature != null &&
-                    foldingFeature.state == FoldingFeature.State.HALF_OPENED &&
-                    foldingFeature.orientation == FoldingFeature.Orientation.VERTICAL
-
-                val isUnfolded = widthDp >= 600 ||
-                    (foldingFeature != null &&
-                        (foldingFeature.state == FoldingFeature.State.FLAT ||
-                            foldingFeature.state == FoldingFeature.State.HALF_OPENED))
+                // Require smallestWidthDp >= 600 or an active wide vertical-hinge book/flat layout so
+                // clamshell flip foldables and rotated cover screens stay classified as FOLDED.
+                val isUnfolded = smallestWidthDp >= 600 || isVerticalHingeUnfolded
 
                 FoldableWindowState(
                     posture = if (isUnfolded) DevicePosture.UNFOLDED else DevicePosture.FOLDED,
-                    isTabletop = isTabletop,
-                    isBookPosture = isBook,
                     windowWidthDp = widthDp
                 )
             }

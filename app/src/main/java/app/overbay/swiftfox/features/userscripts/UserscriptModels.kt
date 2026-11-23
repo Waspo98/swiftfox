@@ -27,5 +27,7 @@ data class ParsedUserscriptMetadata(
     val matches: List<String>,
     val excludes: List<String>,
     val runAt: UserscriptRunAt,
-    val grants: List<String>
+    val grants: List<String>,
+    val connects: List<String> = emptyList(),
+    val unsupportedDirectives: List<String> = emptyList()
 )

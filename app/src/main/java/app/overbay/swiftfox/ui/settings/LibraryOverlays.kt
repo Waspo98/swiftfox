@@ -5,24 +5,36 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Bookmark
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.DownloadDone
 import androidx.compose.material.icons.rounded.History
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Upload
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -30,6 +42,11 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
@@ -46,8 +63,36 @@ fun BookmarksOverlay(
     bookmarks: List<BookmarkEntity>,
     onBack: () -> Unit,
     onOpenUrl: (String) -> Unit,
-    onDeleteBookmark: (String) -> Unit
+    onDeleteBookmark: (String) -> Unit,
+    onImportBookmarksHtml: () -> Unit = {},
+    onExportBookmarksHtml: () -> Unit = {}
 ) {
+    var searchQuery by remember { mutableStateOf("") }
+    var selectedFolder by remember { mutableStateOf<String?>(null) }
+
+    val folders = remember(bookmarks) {
+        bookmarks.map { it.folder.ifBlank { "Bookmarks" } }.distinct().sorted()
+    }
+
+    LaunchedEffect(folders) {
+        if (selectedFolder != null && selectedFolder !in folders) {
+            selectedFolder = null
+        }
+    }
+
+    val filtered = remember(bookmarks, searchQuery, selectedFolder) {
+        bookmarks.filter { bm ->
+            val normalizedFolder = bm.folder.ifBlank { "Bookmarks" }
+            val folderMatch = selectedFolder == null || normalizedFolder.equals(selectedFolder, ignoreCase = true)
+            val q = searchQuery.trim()
+            val queryMatch = q.isEmpty() ||
+                bm.title.contains(q, ignoreCase = true) ||
+                bm.url.contains(q, ignoreCase = true) ||
+                normalizedFolder.contains(q, ignoreCase = true)
+            folderMatch && queryMatch
+        }
+    }
+
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
@@ -58,38 +103,187 @@ fun BookmarksOverlay(
                         Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back")
                     }
                 },
+                actions = {
+                    IconButton(onClick = onImportBookmarksHtml, modifier = Modifier.size(48.dp)) {
+                        Icon(Icons.Rounded.Upload, contentDescription = "Import HTML bookmarks")
+                    }
+                    if (bookmarks.isNotEmpty()) {
+                        IconButton(onClick = onExportBookmarksHtml, modifier = Modifier.size(48.dp)) {
+                            Icon(Icons.Rounded.Download, contentDescription = "Export HTML bookmarks")
+                        }
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
             )
         }
     ) { innerPadding ->
         if (bookmarks.isEmpty()) {
-            EmptyLibraryState(
-                title = "No bookmarks yet",
-                message = "Tap the bookmark icon inside Quick Controls on any page to save it here.",
-                icon = Icons.Rounded.Bookmark,
-                modifier = Modifier.padding(innerPadding)
-            )
-        } else {
-            LazyColumn(
-                contentPadding = PaddingValues(
-                    start = 16.dp,
-                    end = 16.dp,
-                    top = innerPadding.calculateTopPadding() + 8.dp,
-                    bottom = innerPadding.calculateBottomPadding() + 24.dp
-                ),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+                    .padding(32.dp),
+                contentAlignment = Alignment.Center
             ) {
-                items(
-                    items = bookmarks,
-                    key = { it.id },
-                    contentType = { "bookmark_row" }
-                ) { item ->
-                    LibraryItemRow(
-                        title = item.title,
-                        subtitle = OmniboxEngine.extractHost(item.url),
-                        onClick = { onOpenUrl(item.url) },
-                        onDelete = { onDeleteBookmark(item.id) }
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Bookmark,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(42.dp)
                     )
+                    Text(
+                        text = "No bookmarks yet",
+                        style = MaterialTheme.typography.titleLarge,
+                        textAlign = TextAlign.Center
+                    )
+                    Text(
+                        text = "Bookmark any page from Quick Controls, sync with Firefox/Zen, or import a Chrome bookmarks.html file.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
+                    )
+                    OutlinedButton(
+                        onClick = onImportBookmarksHtml,
+                        shape = RoundedCornerShape(20.dp),
+                        modifier = Modifier.heightIn(min = 48.dp)
+                    ) {
+                        Icon(Icons.Rounded.Upload, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.size(8.dp))
+                        Text("Import bookmarks (.html)")
+                    }
+                }
+            }
+        } else {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(top = innerPadding.calculateTopPadding())
+                    .imePadding()
+            ) {
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    placeholder = { Text("Filter bookmarks or folders") },
+                    leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
+                    trailingIcon = if (searchQuery.isNotEmpty()) {
+                        {
+                            IconButton(onClick = { searchQuery = "" }, modifier = Modifier.size(48.dp)) {
+                                Icon(Icons.Rounded.Close, contentDescription = "Clear search")
+                            }
+                        }
+                    } else {
+                        null
+                    },
+                    singleLine = true,
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 6.dp)
+                )
+
+                if (folders.size > 1) {
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        item(key = "folder_all") {
+                            FilterChip(
+                                selected = selectedFolder == null,
+                                onClick = { selectedFolder = null },
+                                label = { Text("All (${bookmarks.size})", maxLines = 1) },
+                                shape = RoundedCornerShape(18.dp),
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                                ),
+                                modifier = Modifier.heightIn(min = 48.dp)
+                            )
+                        }
+                        items(items = folders, key = { it }) { folderName ->
+                            FilterChip(
+                                selected = selectedFolder == folderName,
+                                onClick = {
+                                    selectedFolder = if (selectedFolder == folderName) null else folderName
+                                },
+                                label = { Text(folderName, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                                shape = RoundedCornerShape(18.dp),
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                                ),
+                                modifier = Modifier.heightIn(min = 48.dp)
+                            )
+                        }
+                    }
+                }
+
+                if (filtered.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .padding(32.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Search,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(36.dp)
+                            )
+                            Text(
+                                text = "No matching bookmarks",
+                                style = MaterialTheme.typography.titleMedium,
+                                textAlign = TextAlign.Center
+                            )
+                            TextButton(
+                                onClick = {
+                                    searchQuery = ""
+                                    selectedFolder = null
+                                }
+                            ) {
+                                Text("Clear filters")
+                            }
+                        }
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(
+                            start = 16.dp,
+                            end = 16.dp,
+                            top = 6.dp,
+                            bottom = innerPadding.calculateBottomPadding() + 24.dp
+                        ),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(
+                            items = filtered,
+                            key = { it.id },
+                            contentType = { "bookmark_row" }
+                        ) { item ->
+                            val host = OmniboxEngine.extractHost(item.url)
+                            val sub = if (item.folder.isNotBlank() && !item.folder.equals("Bookmarks", ignoreCase = true)) {
+                                "${item.folder} · $host"
+                            } else {
+                                host
+                            }
+                            LibraryItemRow(
+                                title = item.title,
+                                subtitle = sub,
+                                onClick = { onOpenUrl(item.url) },
+                                onDelete = { onDeleteBookmark(item.id) }
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -105,6 +299,8 @@ fun HistoryOverlay(
     onDeleteEntry: (String) -> Unit,
     onClearAll: () -> Unit
 ) {
+    var showClearConfirm by remember { mutableStateOf(false) }
+
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
@@ -117,7 +313,10 @@ fun HistoryOverlay(
                 },
                 actions = {
                     if (history.isNotEmpty()) {
-                        TextButton(onClick = onClearAll) {
+                        TextButton(
+                            onClick = { showClearConfirm = true },
+                            modifier = Modifier.heightIn(min = 48.dp)
+                        ) {
                             Text("Clear all")
                         }
                     }
@@ -158,14 +357,48 @@ fun HistoryOverlay(
             }
         }
     }
+
+    if (showClearConfirm) {
+        AlertDialog(
+            onDismissRequest = { showClearConfirm = false },
+            title = { Text("Clear browsing history?") },
+            text = {
+                Text("Deletes all recorded page visits in Swiftfox. Your bookmarks and open tabs are not affected.")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showClearConfirm = false
+                        onClearAll()
+                    },
+                    modifier = Modifier.heightIn(min = 48.dp)
+                ) {
+                    Text("Clear all")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showClearConfirm = false },
+                    modifier = Modifier.heightIn(min = 48.dp)
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DownloadsOverlay(
     downloads: List<DownloadRecordEntity>,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onOpenDownload: (DownloadRecordEntity) -> Unit = {},
+    onDeleteDownload: (DownloadRecordEntity) -> Unit = {},
+    onClearAll: () -> Unit = {}
 ) {
+    var showClearConfirm by remember { mutableStateOf(false) }
+
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
@@ -174,6 +407,16 @@ fun DownloadsOverlay(
                 navigationIcon = {
                     IconButton(onClick = onBack, modifier = Modifier.size(48.dp)) {
                         Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                actions = {
+                    if (downloads.isNotEmpty()) {
+                        TextButton(
+                            onClick = { showClearConfirm = true },
+                            modifier = Modifier.heightIn(min = 48.dp)
+                        ) {
+                            Text("Clear all")
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
@@ -202,35 +445,44 @@ fun DownloadsOverlay(
                     key = { it.id },
                     contentType = { "download_row" }
                 ) { rec ->
-                    Surface(
-                        shape = RoundedCornerShape(16.dp),
-                        color = MaterialTheme.colorScheme.surfaceContainer,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 60.dp)
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-                            verticalArrangement = Arrangement.spacedBy(2.dp)
-                        ) {
-                            Text(
-                                text = rec.fileName,
-                                style = MaterialTheme.typography.titleSmall,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Text(
-                                text = "${rec.status} · ${rec.mimeType}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                    }
+                    LibraryItemRow(
+                        title = rec.fileName,
+                        subtitle = "${rec.status} · ${rec.mimeType}",
+                        onClick = { onOpenDownload(rec) },
+                        onDelete = { onDeleteDownload(rec) }
+                    )
                 }
             }
         }
+    }
+
+    if (showClearConfirm) {
+        AlertDialog(
+            onDismissRequest = { showClearConfirm = false },
+            title = { Text("Clear download history?") },
+            text = {
+                Text("Removes all entries from your Swiftfox downloads list. Files already saved in your device Downloads folder are preserved.")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showClearConfirm = false
+                        onClearAll()
+                    },
+                    modifier = Modifier.heightIn(min = 48.dp)
+                ) {
+                    Text("Clear all")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showClearConfirm = false },
+                    modifier = Modifier.heightIn(min = 48.dp)
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 }
 

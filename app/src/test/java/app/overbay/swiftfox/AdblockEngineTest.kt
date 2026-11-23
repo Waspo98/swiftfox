@@ -55,6 +55,13 @@ class AdblockEngineTest {
             engine.inferResourceType("https://cdn.example.com/stream.m3u8", emptyMap())
         )
         assertEquals(
+            "xmlhttprequest",
+            engine.inferResourceType(
+                "https://api.example.com/data",
+                mapOf("Sec-Fetch-Dest" to "empty")
+            )
+        )
+        assertEquals(
             "other",
             engine.inferResourceType("https://example.com", emptyMap())
         )
@@ -128,11 +135,20 @@ class AdblockEngineTest {
         val matcher = FallbackKotlinAdblockMatcher(rules)
 
         val exampleCosmetic = matcher.cosmeticResources("https://sub.example.com/page")
-        assertTrue(exampleCosmetic.css.contains(".ad-banner"))
-        assertTrue(exampleCosmetic.css.contains(".sponsored-slot"))
+        assertFalse(exampleCosmetic.css.contains(".ad-banner"))
+        assertFalse(exampleCosmetic.css.contains(".sponsored-slot"))
         assertTrue(exampleCosmetic.css.contains(".promo"))
         assertFalse(exampleCosmetic.css.contains(".only-other"))
         assertTrue(exampleCosmetic.css.contains("{display:none!important}"))
+
+        val genericCss = matcher.hiddenClassIdCss(
+            classes = listOf("ad-banner", "sponsored-slot", "safe-card"),
+            ids = emptyList(),
+            exceptions = exampleCosmetic.exceptions.toSet()
+        )
+        assertTrue(genericCss.contains(".ad-banner{display:none!important}"))
+        assertTrue(genericCss.contains(".sponsored-slot{display:none!important}"))
+        assertFalse(genericCss.contains(".safe-card"))
     }
 
     @Test
@@ -210,5 +226,131 @@ class AdblockEngineTest {
                 siteDisabled = false
             ).css
         )
+    }
+
+    @Test
+    fun fallbackMatcherParsesDomainAndTypeModifiersAndMultiPartTlds() {
+        val rules = """
+            ||cdn.tracker.net^${'$'}script,domain=news.example.com|~safe.news.example.com
+            ||ads.co.uk/pixel.js${'$'}third-party
+            ||good.example.com^${'$'}badfilter
+            ||good.example.com^${'$'}csp=script-src 'none'
+            ||good.example.com^${'$'}redirect=noopjs
+        """.trimIndent()
+
+        val matcher = FallbackKotlinAdblockMatcher(rules)
+
+        // Domain + script match
+        assertTrue(
+            matcher.checkNetworkRequest(
+                url = "https://cdn.tracker.net/t.js",
+                sourceUrl = "https://news.example.com/post",
+                requestType = "script"
+            )
+        )
+        // Wrong resource type -> not blocked
+        assertFalse(
+            matcher.checkNetworkRequest(
+                url = "https://cdn.tracker.net/logo.png",
+                sourceUrl = "https://news.example.com/post",
+                requestType = "image"
+            )
+        )
+        // Negated domain -> not blocked
+        assertFalse(
+            matcher.checkNetworkRequest(
+                url = "https://cdn.tracker.net/t.js",
+                sourceUrl = "https://safe.news.example.com/post",
+                requestType = "script"
+            )
+        )
+        // Unrelated domain -> not blocked
+        assertFalse(
+            matcher.checkNetworkRequest(
+                url = "https://cdn.tracker.net/t.js",
+                sourceUrl = "https://other.org/",
+                requestType = "script"
+            )
+        )
+        // Multi-part public suffix: bbc.co.uk vs ads.co.uk MUST be third-party!
+        assertTrue(
+            matcher.checkNetworkRequest(
+                url = "https://ads.co.uk/pixel.js",
+                sourceUrl = "https://www.bbc.co.uk/news",
+                requestType = "script"
+            )
+        )
+        // Same registrable site under .co.uk is first-party -> allowed
+        assertFalse(
+            matcher.checkNetworkRequest(
+                url = "https://ads.co.uk/pixel.js",
+                sourceUrl = "https://sub.ads.co.uk/home",
+                requestType = "script"
+            )
+        )
+        // Unsupported modifiers ($badfilter, $csp, $redirect) must not become blanket blocks
+        assertFalse(
+            matcher.checkNetworkRequest(
+                url = "https://good.example.com/app.js",
+                sourceUrl = "https://other.org/",
+                requestType = "script"
+            )
+        )
+    }
+
+    @Test
+    fun fallbackMatcherIsolatesCosmeticRulesSkipsProceduralAndSupportsGenericLookup() {
+        val rules = """
+            ##.generic-ad
+            ###banner-slot
+            ##div:has-text(Sponsored)
+            ##.promo:style(opacity:0)
+            example.com#@#.generic-ad
+            example.com##.site-specific
+        """.trimIndent()
+
+        val matcher = FallbackKotlinAdblockMatcher(rules)
+        val payload = matcher.cosmeticResources("https://example.com/article")
+
+        assertTrue(payload.css.contains(".site-specific{display:none!important}"))
+        assertFalse(payload.css.contains(":has-text("))
+        assertFalse(payload.css.contains(":style("))
+        assertTrue(payload.exceptions.contains(".generic-ad"))
+
+        val genericCss = matcher.hiddenClassIdCss(
+            classes = listOf("generic-ad", "regular-card"),
+            ids = listOf("banner-slot", "main"),
+            exceptions = payload.exceptions.toSet()
+        )
+        assertTrue(genericCss.contains("#banner-slot{display:none!important}"))
+        assertFalse(genericCss.contains(".generic-ad"))
+    }
+
+    @Test
+    fun fallbackMatcherHandlesWwwNegationUnknownOptionsImportantPathBoundaryAndCssComments() {
+        val rules = """
+            ||cdn.tracker.net^${'$'}script,domain=news.example.com|~www.safe.news.example.com
+            ||unknown-opt.test^${'$'}futuremodifier
+            ||forced.test/ad.js${'$'}script,important
+            @@||forced.test/ad.js^
+            ||suffix.test/ad^
+            example.com##.ad/*comment*/
+            example.com##.good-hide
+        """.trimIndent()
+
+        val matcher = FallbackKotlinAdblockMatcher(rules)
+
+        assertTrue(matcher.checkNetworkRequest("https://cdn.tracker.net/x.js", "https://news.example.com/", "script"))
+        assertFalse(matcher.checkNetworkRequest("https://cdn.tracker.net/x.js", "https://safe.news.example.com/", "script"))
+        assertFalse(matcher.checkNetworkRequest("https://unknown-opt.test/app.js", "https://example.com/", "script"))
+        assertTrue(matcher.checkNetworkRequest("https://forced.test/ad.js", "https://example.com/", "script"))
+
+        assertTrue(matcher.checkNetworkRequest("https://suffix.test/ad?v=1", "https://example.com/", "script"))
+        assertTrue(matcher.checkNetworkRequest("https://suffix.test/ad/", "https://example.com/", "script"))
+        assertFalse(matcher.checkNetworkRequest("https://suffix.test/admin.js", "https://example.com/", "script"))
+
+        val css = matcher.cosmeticResources("https://example.com/").css
+        assertTrue(css.contains(".good-hide{display:none!important}"))
+        assertFalse(css.contains("/*comment*/"))
     }
 }

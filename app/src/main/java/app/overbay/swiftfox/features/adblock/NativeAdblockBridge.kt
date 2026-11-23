@@ -27,7 +27,15 @@ object NativeAdblockBridge {
     ): Boolean
 
     @JvmStatic
-    external fun nativeCosmeticForUrl(handle: Long, url: String): String
+    external fun nativeCosmeticForUrl(handle: Long, url: String): String?
+
+    @JvmStatic
+    external fun nativeHiddenClassIdSelectors(
+        handle: Long,
+        classesJson: String,
+        idsJson: String,
+        exceptionsJson: String
+    ): String?
 
     @JvmStatic
     external fun nativeDestroy(handle: Long)

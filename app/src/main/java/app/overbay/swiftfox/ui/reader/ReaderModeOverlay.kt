@@ -1,9 +1,13 @@
 package app.overbay.swiftfox.ui.reader
 
+import android.graphics.BitmapFactory
 import android.net.Uri
-import android.provider.Settings
+import android.util.LruCache
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -11,6 +15,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -22,6 +27,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -35,6 +41,7 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Remove
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.FilterChip
@@ -51,10 +58,14 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -66,7 +77,12 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
@@ -82,11 +98,17 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.view.WindowCompat
+import app.overbay.swiftfox.SwiftfoxApp
+import app.overbay.swiftfox.data.prefs.AccentPreset
 import app.overbay.swiftfox.data.prefs.BrowserSettings
 import app.overbay.swiftfox.data.prefs.ReaderFontFamily
 import app.overbay.swiftfox.data.prefs.ReaderSurfaceMode
+import app.overbay.swiftfox.features.adblock.AdblockEngine
+import app.overbay.swiftfox.features.omnibox.OmniboxEngine
 import app.overbay.swiftfox.features.reader.ReaderArticle
 import app.overbay.swiftfox.features.reader.ReaderBlock
 import app.overbay.swiftfox.features.reader.TextRun
@@ -108,9 +130,23 @@ import app.overbay.swiftfox.ui.theme.DayOutlineVariant
 import app.overbay.swiftfox.ui.theme.DaySurface
 import app.overbay.swiftfox.ui.theme.DaySurfaceContainer
 import app.overbay.swiftfox.ui.theme.DaySurfaceLow
+import app.overbay.swiftfox.ui.theme.ForestDarkPrimary
+import app.overbay.swiftfox.ui.theme.ForestDayPrimary
 import app.overbay.swiftfox.ui.theme.FoxAmberDarkPrimary
 import app.overbay.swiftfox.ui.theme.FoxAmberDayPrimary
+import app.overbay.swiftfox.ui.theme.IndigoDarkPrimary
+import app.overbay.swiftfox.ui.theme.IndigoDayPrimary
+import app.overbay.swiftfox.ui.theme.MonoDarkPrimary
+import app.overbay.swiftfox.ui.theme.MonoDayPrimary
+import app.overbay.swiftfox.ui.theme.rememberReduceMotion
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import java.io.ByteArrayOutputStream
 import kotlin.math.abs
+import kotlin.math.max
 import kotlin.math.roundToInt
 
 @Immutable
@@ -130,13 +166,114 @@ private val SepiaSurfaceContainer = Color(0xFFE6DAC0)
 private val SepiaOnSurface = Color(0xFF3B2F20)
 private val SepiaOnSurfaceVariant = Color(0xFF6B5942)
 private val SepiaOutlineVariant = Color(0xFFCBBBA0)
-private val SepiaAccent = Color(0xFF8C4A15)
+private val ReaderCardShape = RoundedCornerShape(14.dp)
 
 private val LineSpacingOptions = listOf(
     1.4f to "Compact",
     1.6f to "Balanced",
     1.85f to "Relaxed"
 )
+
+private object ReaderImageCache {
+    private const val MAX_IMAGE_BYTES = 8 * 1024 * 1024
+    private const val MAX_BITMAP_DIM = 1440
+
+    private val cache = object : LruCache<String, ImageBitmap>(12) {}
+
+    suspend fun load(
+        client: OkHttpClient,
+        url: String,
+        pageUrl: String,
+        isPrivate: Boolean,
+        httpsOnlyMode: Boolean,
+        adblockEnabled: Boolean,
+        siteAdblockDisabled: Boolean,
+        adblockEngine: AdblockEngine?,
+        isHostHttpsBypassed: (String) -> Boolean
+    ): ImageBitmap? {
+        val initialScheme = runCatching { Uri.parse(url).scheme?.lowercase() }.getOrNull()
+        if (initialScheme != "http" && initialScheme != "https") return null
+
+        val targetUrl = if (initialScheme == "http" && httpsOnlyMode) {
+            val host = OmniboxEngine.extractHost(url)
+            if (host.isNotBlank() && !OmniboxEngine.isLocalHostOrLan(host) && !isHostHttpsBypassed(host)) {
+                "https://" + url.substringAfter("://")
+            } else {
+                url
+            }
+        } else {
+            url
+        }
+
+        if (adblockEngine?.shouldBlock(
+                requestUrl = targetUrl,
+                pageUrl = pageUrl,
+                resourceType = "image",
+                globalEnabled = adblockEnabled,
+                siteDisabled = siteAdblockDisabled
+            ) == true
+        ) {
+            return null
+        }
+
+        if (!isPrivate) {
+            cache.get(targetUrl)?.let { return it }
+        }
+
+        return withContext(Dispatchers.IO) {
+            try {
+                val request = Request.Builder()
+                    .url(targetUrl)
+                    .get()
+                    .header("Accept", "image/webp,image/png,image/jpeg,image/*;q=0.8")
+                    .build()
+                client.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) return@withContext null
+                    val body = response.body
+                    if (body.contentLength() > MAX_IMAGE_BYTES) return@withContext null
+                    val out = ByteArrayOutputStream()
+                    val buf = ByteArray(8192)
+                    var total = 0
+                    body.byteStream().use { input ->
+                        while (true) {
+                            val read = input.read(buf)
+                            if (read == -1) break
+                            total += read
+                            if (total > MAX_IMAGE_BYTES) return@withContext null
+                            out.write(buf, 0, read)
+                        }
+                    }
+                    val bytes = out.toByteArray()
+                    if (bytes.isEmpty()) return@withContext null
+
+                    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+                    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@withContext null
+
+                    var sampleSize = 1
+                    while (bounds.outWidth / sampleSize > MAX_BITMAP_DIM ||
+                        bounds.outHeight / sampleSize > MAX_BITMAP_DIM
+                    ) {
+                        sampleSize *= 2
+                    }
+
+                    val decodeOpts = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+                    val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, decodeOpts)
+                        ?: return@withContext null
+                    val imageBitmap = decoded.asImageBitmap()
+                    if (!isPrivate) {
+                        cache.put(targetUrl, imageBitmap)
+                    }
+                    imageBitmap
+                }
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (_: Throwable) {
+                null
+            }
+        }
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -148,27 +285,59 @@ fun ReaderModeOverlay(
     onSurfaceModeChange: (ReaderSurfaceMode) -> Unit,
     onFontFamilyChange: (ReaderFontFamily) -> Unit,
     onFontSizeChange: (Int) -> Unit,
-    onLineHeightChange: (Float) -> Unit
+    onLineHeightChange: (Float) -> Unit,
+    pageUrl: String = article.url,
+    isPrivate: Boolean = false,
+    siteAdblockDisabled: Boolean = false,
+    isHostHttpsBypassed: (String) -> Boolean = { false }
 ) {
     var showAppearanceSheet by remember { mutableStateOf(false) }
     val context = LocalContext.current
-    val reduceMotion = remember(context) {
-        runCatching {
-            Settings.Global.getFloat(
-                context.contentResolver,
-                Settings.Global.ANIMATOR_DURATION_SCALE,
-                1f
-            ) == 0f
-        }.getOrDefault(false)
+    val adblockEngine = remember(context) {
+        (context.applicationContext as? SwiftfoxApp)?.adblockEngine
+    }
+    val reduceMotion = rememberReduceMotion()
+
+    val targetPalette = resolveReaderPalette(settings.readerSurfaceMode, settings)
+    val readerIsLight = when (settings.readerSurfaceMode) {
+        ReaderSurfaceMode.DAY, ReaderSurfaceMode.SEPIA -> true
+        ReaderSurfaceMode.DARK, ReaderSurfaceMode.AMOLED -> false
+        ReaderSurfaceMode.FOLLOW_APP -> targetPalette.background.luminance() > 0.5f
+    }
+    val view = LocalView.current
+    if (!view.isInEditMode) {
+        val window = (view.context as? android.app.Activity)?.window
+        if (window != null) {
+            val controller = remember(window, view) {
+                WindowCompat.getInsetsController(window, view)
+            }
+            val prevBars = remember(controller) {
+                controller.isAppearanceLightStatusBars to controller.isAppearanceLightNavigationBars
+            }
+            DisposableEffect(controller) {
+                onDispose {
+                    controller.isAppearanceLightStatusBars = prevBars.first
+                    controller.isAppearanceLightNavigationBars = prevBars.second
+                }
+            }
+            androidx.compose.runtime.SideEffect {
+                controller.isAppearanceLightStatusBars = readerIsLight
+                controller.isAppearanceLightNavigationBars = readerIsLight
+            }
+        }
     }
 
-    val targetPalette = resolveReaderPalette(settings.readerSurfaceMode)
+    val colorSpec = remember(reduceMotion) {
+        if (reduceMotion) snap<Color>() else tween<Color>(durationMillis = 200)
+    }
     val animatedBackground by animateColorAsState(
         targetValue = targetPalette.background,
+        animationSpec = colorSpec,
         label = "reader_background"
     )
     val animatedInk by animateColorAsState(
         targetValue = targetPalette.onBackground,
+        animationSpec = colorSpec,
         label = "reader_ink"
     )
     val palette = if (reduceMotion) {
@@ -250,18 +419,16 @@ fun ReaderModeOverlay(
                 .padding(innerPadding),
             contentAlignment = Alignment.TopCenter
         ) {
-            SelectionContainer(
+            LazyColumn(
                 modifier = Modifier
-                    .widthIn(max = 680.dp)
+                    .widthIn(max = 720.dp)
                     .fillMaxWidth()
-                    .fillMaxHeight()
+                    .fillMaxHeight(),
+                contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
-                ) {
-                    item(key = "reader_article_header", contentType = "article_header") {
+                item(key = "reader_article_header", contentType = "article_header") {
+                    SelectionContainer {
                         ReaderArticleHeader(
                             article = article,
                             sourceLabel = sourceLabel,
@@ -270,25 +437,32 @@ fun ReaderModeOverlay(
                             palette = palette
                         )
                     }
+                }
 
-                    items(
-                        items = article.blocks,
-                        key = { it.id },
-                        contentType = { blockContentType(it) }
-                    ) { block ->
-                        ReaderBlockItem(
-                            block = block,
-                            fontFamily = fontFamily,
-                            fontSizeSp = fontSizeSp,
-                            lineHeightMultiplier = lineHeightMultiplier,
-                            palette = palette,
-                            onOpenLink = onOpenLink
-                        )
-                    }
+                items(
+                    items = article.blocks,
+                    key = { it.id },
+                    contentType = { blockContentType(it) }
+                ) { block ->
+                    ReaderBlockItem(
+                        block = block,
+                        fontFamily = fontFamily,
+                        fontSizeSp = fontSizeSp,
+                        lineHeightMultiplier = lineHeightMultiplier,
+                        palette = palette,
+                        onOpenLink = onOpenLink,
+                        pageUrl = pageUrl,
+                        isPrivate = isPrivate,
+                        httpsOnlyMode = settings.httpsOnlyMode,
+                        adblockEnabled = settings.adblockEnabled,
+                        siteAdblockDisabled = siteAdblockDisabled,
+                        adblockEngine = adblockEngine,
+                        isHostHttpsBypassed = isHostHttpsBypassed
+                    )
+                }
 
-                    item(key = "reader_footer_spacer", contentType = "spacer") {
-                        Spacer(modifier = Modifier.height(32.dp))
-                    }
+                item(key = "reader_footer_spacer", contentType = "spacer") {
+                    Spacer(modifier = Modifier.height(32.dp))
                 }
             }
         }
@@ -370,7 +544,14 @@ private fun ReaderBlockItem(
     fontSizeSp: Int,
     lineHeightMultiplier: Float,
     palette: ReaderPalette,
-    onOpenLink: (String) -> Unit
+    onOpenLink: (String) -> Unit,
+    pageUrl: String,
+    isPrivate: Boolean,
+    httpsOnlyMode: Boolean,
+    adblockEnabled: Boolean,
+    siteAdblockDisabled: Boolean,
+    adblockEngine: AdblockEngine?,
+    isHostHttpsBypassed: (String) -> Boolean
 ) {
     val bodyLineHeightSp = (fontSizeSp * lineHeightMultiplier).sp
 
@@ -384,15 +565,17 @@ private fun ReaderBlockItem(
             }.coerceAtMost(34)
             val headingWeight = if (block.level <= 2) FontWeight.Bold else FontWeight.SemiBold
 
-            Text(
-                text = block.text,
-                fontFamily = fontFamily,
-                fontSize = headingSizeSp.sp,
-                lineHeight = (headingSizeSp * 1.28f).sp,
-                fontWeight = headingWeight,
-                color = palette.onBackground,
-                modifier = Modifier.padding(top = 6.dp)
-            )
+            SelectionContainer {
+                Text(
+                    text = block.text,
+                    fontFamily = fontFamily,
+                    fontSize = headingSizeSp.sp,
+                    lineHeight = (headingSizeSp * 1.28f).sp,
+                    fontWeight = headingWeight,
+                    color = palette.onBackground,
+                    modifier = Modifier.padding(top = 6.dp)
+                )
+            }
         }
 
         is ReaderBlock.Paragraph -> {
@@ -405,66 +588,73 @@ private fun ReaderBlockItem(
                     onOpenLink = onOpenLink
                 )
             }
-            Text(
-                text = annotated,
-                fontFamily = fontFamily,
-                fontSize = fontSizeSp.sp,
-                lineHeight = bodyLineHeightSp,
-                color = palette.onBackground
-            )
-        }
-
-        is ReaderBlock.Quote -> {
-            val quoteShape = RoundedCornerShape(14.dp)
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(quoteShape)
-                    .background(palette.surfaceContainerLow)
-                    .drawWithCache {
-                        val barWidth = 3.dp.toPx()
-                        val barInset = 10.dp.toPx()
-                        val corner = CornerRadius(barWidth / 2f, barWidth / 2f)
-                        onDrawBehind {
-                            drawRoundRect(
-                                color = palette.accent,
-                                topLeft = Offset(0f, barInset),
-                                size = Size(barWidth, (size.height - barInset * 2f).coerceAtLeast(0f)),
-                                cornerRadius = corner
-                            )
-                        }
-                    }
-                    .padding(start = 16.dp, top = 12.dp, end = 14.dp, bottom = 12.dp)
-            ) {
+            SelectionContainer {
                 Text(
-                    text = block.text,
+                    text = annotated,
                     fontFamily = fontFamily,
                     fontSize = fontSizeSp.sp,
                     lineHeight = bodyLineHeightSp,
-                    fontStyle = FontStyle.Italic,
-                    color = palette.onSurfaceVariant
+                    color = palette.onBackground
                 )
+            }
+        }
+
+        is ReaderBlock.Quote -> {
+            SelectionContainer {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(ReaderCardShape)
+                        .background(palette.surfaceContainerLow)
+                        .drawWithCache {
+                            val barWidth = 3.dp.toPx()
+                            val barInset = 10.dp.toPx()
+                            val twoBarInset = barInset * 2f
+                            val barColor = palette.accent
+                            val corner = CornerRadius(barWidth / 2f, barWidth / 2f)
+                            onDrawBehind {
+                                drawRoundRect(
+                                    color = barColor,
+                                    topLeft = Offset(0f, barInset),
+                                    size = Size(barWidth, (size.height - twoBarInset).coerceAtLeast(0f)),
+                                    cornerRadius = corner
+                                )
+                            }
+                        }
+                        .padding(start = 16.dp, top = 12.dp, end = 14.dp, bottom = 12.dp)
+                ) {
+                    Text(
+                        text = block.text,
+                        fontFamily = fontFamily,
+                        fontSize = fontSizeSp.sp,
+                        lineHeight = bodyLineHeightSp,
+                        fontStyle = FontStyle.Italic,
+                        color = palette.onSurfaceVariant
+                    )
+                }
             }
         }
 
         is ReaderBlock.CodeBlock -> {
             val codeSizeSp = (fontSizeSp - 2).coerceAtLeast(12)
-            Surface(
-                shape = RoundedCornerShape(14.dp),
-                color = palette.surfaceContainer,
-                border = BorderStroke(1.dp, palette.outlineVariant.copy(alpha = 0.4f)),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text(
-                    text = block.code,
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = codeSizeSp.sp,
-                    lineHeight = (codeSizeSp * 1.45f).sp,
-                    color = palette.onBackground,
-                    modifier = Modifier
-                        .horizontalScroll(rememberScrollState())
-                        .padding(14.dp)
-                )
+            SelectionContainer {
+                Surface(
+                    shape = ReaderCardShape,
+                    color = palette.surfaceContainer,
+                    border = BorderStroke(1.dp, palette.outlineVariant.copy(alpha = 0.4f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = block.code,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = codeSizeSp.sp,
+                        lineHeight = (codeSizeSp * 1.45f).sp,
+                        color = palette.onBackground,
+                        modifier = Modifier
+                            .horizontalScroll(rememberScrollState())
+                            .padding(14.dp)
+                    )
+                }
             }
         }
 
@@ -478,31 +668,77 @@ private fun ReaderBlockItem(
                     onOpenLink = onOpenLink
                 )
             }
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalAlignment = Alignment.Top
-            ) {
-                Text(
-                    text = block.orderedIndex?.let { "$it." } ?: "•",
-                    fontFamily = fontFamily,
-                    fontSize = fontSizeSp.sp,
-                    lineHeight = bodyLineHeightSp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = palette.accent,
-                    modifier = Modifier.widthIn(min = 20.dp)
-                )
-                Text(
-                    text = annotated,
-                    fontFamily = fontFamily,
-                    fontSize = fontSizeSp.sp,
-                    lineHeight = bodyLineHeightSp,
-                    color = palette.onBackground,
-                    modifier = Modifier.weight(1f)
-                )
+            val startPad = (4 + block.indentLevel.coerceIn(0, 4) * 18).dp
+            val marker = block.orderedIndex?.let { "$it." } ?: when (block.indentLevel % 3) {
+                0 -> "•"
+                1 -> "◦"
+                else -> "▪"
             }
+            SelectionContainer {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = startPad),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.Top
+                ) {
+                    Text(
+                        text = marker,
+                        fontFamily = fontFamily,
+                        fontSize = fontSizeSp.sp,
+                        lineHeight = bodyLineHeightSp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = palette.accent,
+                        modifier = Modifier.widthIn(min = 20.dp)
+                    )
+                    Text(
+                        text = annotated,
+                        fontFamily = fontFamily,
+                        fontSize = fontSizeSp.sp,
+                        lineHeight = bodyLineHeightSp,
+                        color = palette.onBackground,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+        }
+
+        is ReaderBlock.Image -> {
+            ReaderImageBlock(
+                block = block,
+                fontFamily = fontFamily,
+                fontSizeSp = fontSizeSp,
+                palette = palette,
+                pageUrl = pageUrl,
+                isPrivate = isPrivate,
+                httpsOnlyMode = httpsOnlyMode,
+                adblockEnabled = adblockEnabled,
+                siteAdblockDisabled = siteAdblockDisabled,
+                adblockEngine = adblockEngine,
+                isHostHttpsBypassed = isHostHttpsBypassed
+            )
+        }
+
+        is ReaderBlock.Table -> {
+            ReaderTableBlock(
+                block = block,
+                fontFamily = fontFamily,
+                fontSizeSp = fontSizeSp,
+                lineHeightMultiplier = lineHeightMultiplier,
+                palette = palette,
+                onOpenLink = onOpenLink
+            )
+        }
+
+        is ReaderBlock.DefinitionItem -> {
+            ReaderDefinitionBlock(
+                block = block,
+                fontFamily = fontFamily,
+                fontSizeSp = fontSizeSp,
+                lineHeightMultiplier = lineHeightMultiplier,
+                palette = palette,
+                onOpenLink = onOpenLink
+            )
         }
 
         is ReaderBlock.Divider -> {
@@ -510,6 +746,362 @@ private fun ReaderBlockItem(
                 modifier = Modifier.padding(vertical = 8.dp),
                 color = palette.outlineVariant.copy(alpha = 0.5f)
             )
+        }
+    }
+}
+
+@Composable
+private fun ReaderImageBlock(
+    block: ReaderBlock.Image,
+    fontFamily: FontFamily,
+    fontSizeSp: Int,
+    palette: ReaderPalette,
+    pageUrl: String,
+    isPrivate: Boolean,
+    httpsOnlyMode: Boolean,
+    adblockEnabled: Boolean,
+    siteAdblockDisabled: Boolean,
+    adblockEngine: AdblockEngine?,
+    isHostHttpsBypassed: (String) -> Boolean
+) {
+    val context = LocalContext.current
+    val httpClient = remember(context) {
+        (context.applicationContext as? SwiftfoxApp)?.httpClient ?: OkHttpClient()
+    }
+    var loadedBitmap by remember(block.url) { mutableStateOf<ImageBitmap?>(null) }
+    var loadFinished by remember(block.url) { mutableStateOf(false) }
+
+    LaunchedEffect(block.url, pageUrl, isPrivate, httpsOnlyMode, adblockEnabled, siteAdblockDisabled) {
+        loadFinished = false
+        loadedBitmap = ReaderImageCache.load(
+            client = httpClient,
+            url = block.url,
+            pageUrl = pageUrl,
+            isPrivate = isPrivate,
+            httpsOnlyMode = httpsOnlyMode,
+            adblockEnabled = adblockEnabled,
+            siteAdblockDisabled = siteAdblockDisabled,
+            adblockEngine = adblockEngine,
+            isHostHttpsBypassed = isHostHttpsBypassed
+        )
+        loadFinished = true
+    }
+
+    val captionText = block.caption ?: block.alt
+
+    if (loadFinished && loadedBitmap == null) {
+        if (!captionText.isNullOrBlank()) {
+            SelectionContainer {
+                Text(
+                    text = captionText,
+                    fontFamily = fontFamily,
+                    fontSize = (fontSizeSp - 2).coerceAtLeast(12).sp,
+                    lineHeight = ((fontSizeSp - 2).coerceAtLeast(12) * 1.4f).sp,
+                    fontStyle = FontStyle.Italic,
+                    color = palette.onSurfaceVariant,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        }
+        return
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Surface(
+            shape = ReaderCardShape,
+            color = palette.surfaceContainerLow,
+            border = BorderStroke(1.dp, palette.outlineVariant.copy(alpha = 0.35f)),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            val bmp = loadedBitmap
+            if (bmp != null) {
+                Image(
+                    bitmap = bmp,
+                    contentDescription = block.alt ?: block.caption ?: "Article image",
+                    contentScale = ContentScale.FillWidth,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 460.dp)
+                )
+            } else {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(160.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator(
+                        color = palette.accent,
+                        strokeWidth = 2.dp,
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+            }
+        }
+
+        if (!block.caption.isNullOrBlank()) {
+            SelectionContainer {
+                Text(
+                    text = block.caption,
+                    fontFamily = fontFamily,
+                    fontSize = (fontSizeSp - 2).coerceAtLeast(12).sp,
+                    lineHeight = ((fontSizeSp - 2).coerceAtLeast(12) * 1.4f).sp,
+                    fontStyle = FontStyle.Italic,
+                    color = palette.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 4.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReaderTableBlock(
+    block: ReaderBlock.Table,
+    fontFamily: FontFamily,
+    fontSizeSp: Int,
+    lineHeightMultiplier: Float,
+    palette: ReaderPalette,
+    onOpenLink: (String) -> Unit
+) {
+    val colCount = remember(block.headers, block.rows) {
+        max(
+            block.headers.size,
+            block.rows.maxOfOrNull { it.size } ?: 0
+        )
+    }
+    if (colCount == 0) return
+
+    val cellFontSizeSp = (fontSizeSp - 2).coerceAtLeast(13)
+    val cellLineHeightSp = (cellFontSizeSp * (lineHeightMultiplier - 0.1f).coerceAtLeast(1.3f)).sp
+    val scaleFactor = fontSizeSp / 16f
+
+    val columnWidths: List<Dp> = remember(block.headers, block.rows, colCount, scaleFactor) {
+        (0 until colCount).map { col ->
+            val headerLen = block.headers.getOrNull(col)?.sumOf { it.text.length } ?: 0
+            val maxDataLen = block.rows.maxOfOrNull { row ->
+                row.getOrNull(col)?.sumOf { it.text.length } ?: 0
+            } ?: 0
+            val maxChars = max(headerLen, maxDataLen)
+            val estimatedDp = (maxChars * 8.2f * scaleFactor + 28f).coerceIn(88f, 240f)
+            estimatedDp.dp
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        if (!block.caption.isNullOrBlank()) {
+            SelectionContainer {
+                Text(
+                    text = block.caption,
+                    fontFamily = fontFamily,
+                    fontSize = cellFontSizeSp.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = palette.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 2.dp)
+                )
+            }
+        }
+
+        Surface(
+            shape = ReaderCardShape,
+            color = palette.surfaceContainerLow,
+            border = BorderStroke(1.dp, palette.outlineVariant.copy(alpha = 0.55f)),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+            ) {
+                Column {
+                    if (block.headers.isNotEmpty()) {
+                        Row(
+                            modifier = Modifier
+                                .height(IntrinsicSize.Min)
+                                .background(palette.surfaceContainer)
+                        ) {
+                            block.headers.forEachIndexed { colIndex, cellRuns ->
+                                if (colIndex > 0) {
+                                    VerticalDivider(
+                                        color = palette.outlineVariant.copy(alpha = 0.35f),
+                                        thickness = 0.5.dp
+                                    )
+                                }
+                                val annotated = remember(cellRuns, palette.accent, palette.background, cellFontSizeSp) {
+                                    buildRunsAnnotatedString(
+                                        runs = cellRuns,
+                                        linkColor = palette.accent,
+                                        inlineCodeBackground = palette.background.copy(alpha = 0.55f),
+                                        inlineCodeFontSizeSp = (cellFontSizeSp * 0.9f),
+                                        onOpenLink = onOpenLink
+                                    )
+                                }
+                                SelectionContainer {
+                                    Box(
+                                        modifier = Modifier
+                                            .width(columnWidths[colIndex])
+                                            .fillMaxHeight()
+                                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                                        contentAlignment = Alignment.CenterStart
+                                    ) {
+                                        Text(
+                                            text = annotated,
+                                            fontFamily = fontFamily,
+                                            fontSize = cellFontSizeSp.sp,
+                                            lineHeight = cellLineHeightSp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = palette.onBackground
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        HorizontalDivider(
+                            color = palette.outlineVariant.copy(alpha = 0.7f),
+                            thickness = 1.dp
+                        )
+                    }
+
+                    block.rows.forEachIndexed { rowIndex, rowCells ->
+                        if (rowIndex > 0) {
+                            HorizontalDivider(
+                                color = palette.outlineVariant.copy(alpha = 0.3f),
+                                thickness = 0.5.dp
+                            )
+                        }
+                        val rowBg = if (rowIndex % 2 == 1) {
+                            palette.background.copy(alpha = 0.35f)
+                        } else {
+                            Color.Transparent
+                        }
+                        Row(
+                            modifier = Modifier
+                                .height(IntrinsicSize.Min)
+                                .background(rowBg)
+                        ) {
+                            rowCells.forEachIndexed { colIndex, cellRuns ->
+                                if (colIndex > 0) {
+                                    VerticalDivider(
+                                        color = palette.outlineVariant.copy(alpha = 0.3f),
+                                        thickness = 0.5.dp
+                                    )
+                                }
+                                val annotated = remember(cellRuns, palette.accent, palette.surfaceContainer, cellFontSizeSp) {
+                                    buildRunsAnnotatedString(
+                                        runs = cellRuns,
+                                        linkColor = palette.accent,
+                                        inlineCodeBackground = palette.surfaceContainer,
+                                        inlineCodeFontSizeSp = (cellFontSizeSp * 0.9f),
+                                        onOpenLink = onOpenLink
+                                    )
+                                }
+                                SelectionContainer {
+                                    Box(
+                                        modifier = Modifier
+                                            .width(columnWidths[colIndex])
+                                            .fillMaxHeight()
+                                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                                        contentAlignment = Alignment.TopStart
+                                    ) {
+                                        Text(
+                                            text = annotated,
+                                            fontFamily = fontFamily,
+                                            fontSize = cellFontSizeSp.sp,
+                                            lineHeight = cellLineHeightSp,
+                                            color = palette.onBackground
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReaderDefinitionBlock(
+    block: ReaderBlock.DefinitionItem,
+    fontFamily: FontFamily,
+    fontSizeSp: Int,
+    lineHeightMultiplier: Float,
+    palette: ReaderPalette,
+    onOpenLink: (String) -> Unit
+) {
+    val bodyLineHeightSp = (fontSizeSp * lineHeightMultiplier).sp
+    val termAnnotated = remember(block.term, palette.accent, palette.surfaceContainer, fontSizeSp) {
+        buildRunsAnnotatedString(
+            runs = block.term,
+            linkColor = palette.accent,
+            inlineCodeBackground = palette.surfaceContainer,
+            inlineCodeFontSizeSp = (fontSizeSp * 0.88f),
+            onOpenLink = onOpenLink
+        )
+    }
+
+    SelectionContainer {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Text(
+                text = termAnnotated,
+                fontFamily = fontFamily,
+                fontSize = fontSizeSp.sp,
+                lineHeight = bodyLineHeightSp,
+                fontWeight = FontWeight.SemiBold,
+                color = palette.onBackground
+            )
+            block.definitions.forEach { defRuns ->
+                val defAnnotated = remember(defRuns, palette.accent, palette.surfaceContainer, fontSizeSp) {
+                    buildRunsAnnotatedString(
+                        runs = defRuns,
+                        linkColor = palette.accent,
+                        inlineCodeBackground = palette.surfaceContainer,
+                        inlineCodeFontSizeSp = (fontSizeSp * 0.88f),
+                        onOpenLink = onOpenLink
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 6.dp)
+                        .drawWithCache {
+                            val barWidth = 2.dp.toPx()
+                            val vInset = 4.dp.toPx()
+                            val twoVInset = 8.dp.toPx()
+                            val barColor = palette.outlineVariant.copy(alpha = 0.65f)
+                            onDrawBehind {
+                                drawRect(
+                                    color = barColor,
+                                    topLeft = Offset(0f, vInset),
+                                    size = Size(barWidth, (size.height - twoVInset).coerceAtLeast(0f))
+                                )
+                            }
+                        }
+                        .padding(start = 12.dp)
+                ) {
+                    Text(
+                        text = defAnnotated,
+                        fontFamily = fontFamily,
+                        fontSize = fontSizeSp.sp,
+                        lineHeight = bodyLineHeightSp,
+                        color = palette.onSurfaceVariant
+                    )
+                }
+            }
         }
     }
 }
@@ -636,6 +1228,7 @@ private fun ReaderAppearanceSheet(
 
             // Font size slider + 48dp stepper buttons
             val currentFontSize = settings.readerFontSizeSp.coerceIn(14, 28)
+            var sliderFontSize by remember(currentFontSize) { mutableFloatStateOf(currentFontSize.toFloat()) }
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -650,7 +1243,7 @@ private fun ReaderAppearanceSheet(
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        text = "$currentFontSize sp",
+                        text = "${sliderFontSize.roundToInt().coerceIn(14, 28)} sp",
                         style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.primary,
                         maxLines = 1,
@@ -680,9 +1273,12 @@ private fun ReaderAppearanceSheet(
                     }
 
                     Slider(
-                        value = currentFontSize.toFloat(),
+                        value = sliderFontSize,
                         onValueChange = { value ->
-                            onFontSizeChange(value.roundToInt().coerceIn(14, 28))
+                            sliderFontSize = value.coerceIn(14f, 28f)
+                        },
+                        onValueChangeFinished = {
+                            onFontSizeChange(sliderFontSize.roundToInt().coerceIn(14, 28))
                         },
                         valueRange = 14f..28f,
                         steps = 13,
@@ -763,8 +1359,29 @@ private fun SheetSection(
 }
 
 @Composable
-private fun resolveReaderPalette(mode: ReaderSurfaceMode): ReaderPalette {
+private fun resolveReaderPalette(
+    mode: ReaderSurfaceMode,
+    settings: BrowserSettings
+): ReaderPalette {
     val scheme = MaterialTheme.colorScheme
+    val lightAccent = when {
+        settings.useDynamicColor && scheme.background.luminance() > 0.5f -> scheme.primary
+        else -> when (settings.accentPreset) {
+            AccentPreset.FOX_AMBER -> FoxAmberDayPrimary
+            AccentPreset.MIDNIGHT_INDIGO -> IndigoDayPrimary
+            AccentPreset.FOREST -> ForestDayPrimary
+            AccentPreset.MONOCHROME -> MonoDayPrimary
+        }
+    }
+    val darkAccent = when {
+        settings.useDynamicColor && scheme.background.luminance() <= 0.5f -> scheme.primary
+        else -> when (settings.accentPreset) {
+            AccentPreset.FOX_AMBER -> FoxAmberDarkPrimary
+            AccentPreset.MIDNIGHT_INDIGO -> IndigoDarkPrimary
+            AccentPreset.FOREST -> ForestDarkPrimary
+            AccentPreset.MONOCHROME -> MonoDarkPrimary
+        }
+    }
     return when (mode) {
         ReaderSurfaceMode.FOLLOW_APP -> ReaderPalette(
             background = scheme.background,
@@ -782,7 +1399,7 @@ private fun resolveReaderPalette(mode: ReaderSurfaceMode): ReaderPalette {
             surfaceContainerLow = DaySurfaceLow,
             surfaceContainer = DaySurfaceContainer,
             outlineVariant = DayOutlineVariant,
-            accent = FoxAmberDayPrimary
+            accent = lightAccent
         )
         ReaderSurfaceMode.SEPIA -> ReaderPalette(
             background = SepiaSurface,
@@ -791,7 +1408,7 @@ private fun resolveReaderPalette(mode: ReaderSurfaceMode): ReaderPalette {
             surfaceContainerLow = SepiaSurfaceLow,
             surfaceContainer = SepiaSurfaceContainer,
             outlineVariant = SepiaOutlineVariant,
-            accent = SepiaAccent
+            accent = lightAccent
         )
         ReaderSurfaceMode.DARK -> ReaderPalette(
             background = DarkSurface,
@@ -800,7 +1417,7 @@ private fun resolveReaderPalette(mode: ReaderSurfaceMode): ReaderPalette {
             surfaceContainerLow = DarkSurfaceLow,
             surfaceContainer = DarkSurfaceContainer,
             outlineVariant = DarkOutlineVariant,
-            accent = FoxAmberDarkPrimary
+            accent = darkAccent
         )
         ReaderSurfaceMode.AMOLED -> ReaderPalette(
             background = AmoledSurface,
@@ -809,7 +1426,7 @@ private fun resolveReaderPalette(mode: ReaderSurfaceMode): ReaderPalette {
             surfaceContainerLow = AmoledSurfaceLow,
             surfaceContainer = AmoledSurfaceContainer,
             outlineVariant = AmoledOutlineVariant,
-            accent = FoxAmberDarkPrimary
+            accent = darkAccent
         )
     }
 }
@@ -831,12 +1448,21 @@ private fun buildRunsAnnotatedString(
     onOpenLink: (String) -> Unit
 ): AnnotatedString = buildAnnotatedString {
     for (run in runs) {
+        val decoration = when {
+            run.linkUrl != null && run.strikethrough -> TextDecoration.combine(
+                listOf(TextDecoration.Underline, TextDecoration.LineThrough)
+            )
+            run.strikethrough -> TextDecoration.LineThrough
+            else -> null
+        }
+
         val style = SpanStyle(
             fontWeight = if (run.bold) FontWeight.Bold else null,
             fontStyle = if (run.italic) FontStyle.Italic else null,
             fontFamily = if (run.code) FontFamily.Monospace else null,
             fontSize = if (run.code) inlineCodeFontSizeSp.sp else TextStyleDefaults.UnsetFontSize,
-            background = if (run.code) inlineCodeBackground else Color.Unspecified
+            background = if (run.code) inlineCodeBackground else Color.Unspecified,
+            textDecoration = decoration
         )
 
         val linkUrl = run.linkUrl
@@ -847,7 +1473,7 @@ private fun buildRunsAnnotatedString(
                     styles = TextLinkStyles(
                         style = SpanStyle(
                             color = linkColor,
-                            textDecoration = TextDecoration.Underline
+                            textDecoration = decoration ?: TextDecoration.Underline
                         )
                     ),
                     linkInteractionListener = LinkInteractionListener {
@@ -877,6 +1503,9 @@ private fun blockContentType(block: ReaderBlock): String = when (block) {
     is ReaderBlock.Quote -> "quote"
     is ReaderBlock.CodeBlock -> "code_block"
     is ReaderBlock.BulletItem -> "bullet_item"
+    is ReaderBlock.Image -> "image"
+    is ReaderBlock.Table -> "table"
+    is ReaderBlock.DefinitionItem -> "definition_item"
     is ReaderBlock.Divider -> "divider"
 }
 

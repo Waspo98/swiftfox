@@ -9,6 +9,7 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import app.overbay.swiftfox.data.db.SwiftfoxDatabase
+import kotlinx.coroutines.CancellationException
 import java.util.concurrent.TimeUnit
 
 /**
@@ -34,16 +35,22 @@ class FilterListUpdateWorker(
             )
         }
 
-        return runCatching {
-            val db = SwiftfoxDatabase.getInstance(applicationContext)
-            val engine = AdblockEngine(applicationContext)
-            engine.initialize(db.filterListDao().getEnabled())
-            val repo = FilterListRepository(applicationContext, db.filterListDao(), engine)
-            repo.updateAllEnabled()
-        }.fold(
-            onSuccess = { Result.success() },
-            onFailure = { if (runAttemptCount < 3) Result.retry() else Result.failure() }
-        )
+        val engine = AdblockEngine(applicationContext)
+        return try {
+            try {
+                val db = SwiftfoxDatabase.getInstance(applicationContext)
+                val repo = FilterListRepository(applicationContext, db.filterListDao(), engine)
+                repo.updateAllEnabled()
+                Result.success()
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (_: Throwable) {
+                if (runAttemptCount < 3) Result.retry() else Result.failure()
+            }
+        } finally {
+            // Release native Rust engine handle so background worker runs never leak native heap
+            engine.close()
+        }
     }
 
     companion object {

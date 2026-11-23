@@ -17,24 +17,11 @@ class SwiftfoxWebView @JvmOverloads constructor(
     @Volatile
     var isMediaCurrentlyPlaying: Boolean = false
 
-    var onScrollTopChanged: ((Boolean) -> Unit)? = null
-
-    private var lastAtTop: Boolean = true
-
     override fun onWindowVisibilityChanged(visibility: Int) {
         if (visibility != View.VISIBLE && allowBackgroundPlayback && isMediaCurrentlyPlaying) {
             super.onWindowVisibilityChanged(View.VISIBLE)
         } else {
             super.onWindowVisibilityChanged(visibility)
-        }
-    }
-
-    override fun onScrollChanged(l: Int, t: Int, oldl: Int, oldt: Int) {
-        super.onScrollChanged(l, t, oldl, oldt)
-        val atTop = t <= 0
-        if (atTop != lastAtTop) {
-            lastAtTop = atTop
-            onScrollTopChanged?.invoke(atTop)
         }
     }
 }

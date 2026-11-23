@@ -10,8 +10,10 @@ import android.webkit.PermissionRequest
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebView
+import app.overbay.swiftfox.features.omnibox.OmniboxEngine
 
 data class SitePermissionPrompt(
+    val tabId: String = "",
     val host: String,
     val resources: List<String>,
     val isGeolocation: Boolean,
@@ -23,7 +25,6 @@ data class SitePermissionPrompt(
 interface WebChromeCallbacks {
     fun onProgressChanged(tabId: String, progress: Int)
     fun onTitleChanged(tabId: String, title: String)
-    fun onFaviconReceived(tabId: String, icon: Bitmap?)
     fun onShowCustomView(view: View, callback: WebChromeClient.CustomViewCallback)
     fun onHideCustomView()
     fun onShowFileChooser(
@@ -31,7 +32,9 @@ interface WebChromeCallbacks {
         chooserIntent: Intent
     ): Boolean
     fun onPermissionRequested(tabId: String, prompt: SitePermissionPrompt)
+    fun onPermissionRequestCanceled(tabId: String, webRequest: PermissionRequest?, isGeolocation: Boolean)
     fun onOpenNewWindow(parentTabId: String, resultMsg: Message?): Boolean
+    fun onCloseWindow(tabId: String)
 }
 
 class SwiftfoxChromeClient(
@@ -47,10 +50,6 @@ class SwiftfoxChromeClient(
         if (!title.isNullOrBlank()) {
             callbacks.onTitleChanged(tabId, title)
         }
-    }
-
-    override fun onReceivedIcon(view: WebView?, icon: Bitmap?) {
-        callbacks.onFaviconReceived(tabId, icon)
     }
 
     override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
@@ -75,16 +74,20 @@ class SwiftfoxChromeClient(
                 type = "*/*"
             }
         }
+        if (fileChooserParams.mode == FileChooserParams.MODE_OPEN_MULTIPLE) {
+            intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+        }
         return callbacks.onShowFileChooser(filePathCallback, intent)
     }
 
     override fun onPermissionRequest(request: PermissionRequest?) {
         if (request == null) return
-        val host = request.origin?.host?.lowercase().orEmpty()
+        val host = OmniboxEngine.normalizeHost(request.origin?.host)
         val resources = request.resources?.toList().orEmpty()
         callbacks.onPermissionRequested(
             tabId,
             SitePermissionPrompt(
+                tabId = tabId,
                 host = host,
                 resources = resources,
                 isGeolocation = false,
@@ -93,15 +96,20 @@ class SwiftfoxChromeClient(
         )
     }
 
+    override fun onPermissionRequestCanceled(request: PermissionRequest?) {
+        callbacks.onPermissionRequestCanceled(tabId, request, isGeolocation = false)
+    }
+
     override fun onGeolocationPermissionsShowPrompt(
         origin: String?,
         callback: GeolocationPermissions.Callback?
     ) {
         if (origin == null || callback == null) return
-        val host = runCatching { Uri.parse(origin).host?.lowercase().orEmpty() }.getOrDefault(origin)
+        val host = OmniboxEngine.extractHost(origin).ifBlank { OmniboxEngine.normalizeHost(origin) }
         callbacks.onPermissionRequested(
             tabId,
             SitePermissionPrompt(
+                tabId = tabId,
                 host = host,
                 resources = listOf("LOCATION"),
                 isGeolocation = true,
@@ -111,12 +119,21 @@ class SwiftfoxChromeClient(
         )
     }
 
+    override fun onGeolocationPermissionsHidePrompt() {
+        callbacks.onPermissionRequestCanceled(tabId, null, isGeolocation = true)
+    }
+
     override fun onCreateWindow(
         view: WebView?,
         isDialog: Boolean,
         isUserGesture: Boolean,
         resultMsg: Message?
     ): Boolean {
+        if (!isUserGesture && !isDialog) return false
         return callbacks.onOpenNewWindow(tabId, resultMsg)
+    }
+
+    override fun onCloseWindow(window: WebView?) {
+        callbacks.onCloseWindow(tabId)
     }
 }

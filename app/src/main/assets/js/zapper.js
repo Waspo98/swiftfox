@@ -1,30 +1,57 @@
-(function () {
+(function (runtimeKey, bridgeToken) {
   'use strict';
+  if (!runtimeKey || !bridgeToken || Object.prototype.hasOwnProperty.call(window, runtimeKey)) {
+    return;
+  }
 
   var OVERLAY_ID = '__swiftfox_zapper_overlay';
   var STYLE_ID = 'swiftfox-zapped';
   var MAX_ANCESTORS = 6;
   var MAX_PATH_SEGMENTS = 5;
+  var UNSAFE_BARE_TAGS = {
+    html: true,
+    body: true,
+    head: true,
+    div: true,
+    span: true,
+    p: true,
+    a: true,
+    main: true,
+    section: true,
+    article: true,
+    ul: true,
+    ol: true,
+    li: true,
+    table: true,
+    tr: true,
+    td: true,
+    form: true,
+    ':root': true,
+    '*': true
+  };
 
   function applyZappedCss(cssText) {
-    var style = document.getElementById(STYLE_ID);
     var text = typeof cssText === 'string' ? cssText : '';
-    if (!style) {
-      style = document.createElement('style');
-      style.id = STYLE_ID;
-      style.type = 'text/css';
-      var target = document.head || document.documentElement;
-      if (target) {
+    function attach() {
+      var style = document.getElementById(STYLE_ID);
+      if (!text) {
+        if (style) style.textContent = '';
+        return true;
+      }
+      if (!style) {
+        var target = document.head || document.documentElement;
+        if (!target) return false;
+        style = document.createElement('style');
+        style.id = STYLE_ID;
+        style.type = 'text/css';
         target.appendChild(style);
       }
+      style.textContent = text;
+      return true;
     }
-    style.textContent = text;
-  }
-
-  window.__swiftfoxApplyZappedCss = applyZappedCss;
-
-  if (window.__swiftfoxZapper) {
-    return;
+    if (!attach() && typeof document.addEventListener === 'function') {
+      document.addEventListener('DOMContentLoaded', attach, { once: true });
+    }
   }
 
   var state = {
@@ -36,13 +63,21 @@
     currentSelector: '',
     currentSummary: '',
     currentMatchCount: 0,
-    undoStack: []
+    undoStack: [],
+    touchStartX: 0,
+    touchStartY: 0,
+    touchMoved: false,
+    suppressNextClickUntil: 0
   };
 
   function normalizeHex(hex) {
     if (typeof hex !== 'string') return '#E86A17';
     var trimmed = hex.trim();
     if (/^#[0-9a-fA-F]{6}$/.test(trimmed)) return trimmed;
+    if (/^#[0-9a-fA-F]{8}$/.test(trimmed)) {
+      // Android ARGB hex (#AARRGGBB) -> strip leading alpha channel
+      return '#' + trimmed.slice(3);
+    }
     if (/^#[0-9a-fA-F]{3}$/.test(trimmed)) {
       return '#' +
         trimmed.charAt(1) + trimmed.charAt(1) +
@@ -116,13 +151,16 @@
     if (typeof value !== 'string') return false;
     var trimmed = value.trim();
     if (!trimmed || trimmed.length > 80) return false;
-    return !/[{};<\r\n]/.test(trimmed);
+    if (trimmed.indexOf('/*') !== -1 || trimmed.indexOf('*/') !== -1) return false;
+    if (/[{};<\x00-\x1f]/.test(trimmed)) return false;
+    return true;
   }
 
   function isStableId(id) {
     if (!id || typeof id !== 'string') return false;
     if (id === OVERLAY_ID || id === STYLE_ID) return false;
-    if (/[{};<\s]/.test(id)) return false;
+    if (id.indexOf('/*') !== -1 || id.indexOf('*/') !== -1) return false;
+    if (/[{};<\s\x00-\x1f]/.test(id)) return false;
     if (/^\d+$/.test(id)) return false;
     if (/^css-[a-z0-9_-]+$/i.test(id)) return false;
     if (/^ember\d*$/i.test(id)) return false;
@@ -137,7 +175,8 @@
 
   function isStableClass(cls) {
     if (!cls || typeof cls !== 'string') return false;
-    if (/[{};<\s]/.test(cls)) return false;
+    if (cls.indexOf('/*') !== -1 || cls.indexOf('*/') !== -1) return false;
+    if (/[{};<\s\x00-\x1f]/.test(cls)) return false;
     if (/^css-[a-z0-9_-]+$/i.test(cls)) return false;
     if (/^sc-[a-z0-9_-]+$/i.test(cls)) return false;
     if (/^_[a-zA-Z0-9]{5,}$/.test(cls)) return false;
@@ -186,7 +225,7 @@
 
   function getUniqueAnchorSelector(el) {
     if (!el || el === document.body || el === document.documentElement) return null;
-    var tag = getTagName(el);
+    var escapedTag = escapeCssIdent(getTagName(el));
 
     if (isStableId(el.id)) {
       var idSel = '#' + escapeCssIdent(el.id);
@@ -195,19 +234,19 @@
 
     var testId = el.getAttribute('data-testid');
     if (isSafeAttrText(testId)) {
-      var testSel = tag + '[data-testid="' + escapeAttrValue(testId.trim()) + '"]';
+      var testSel = escapedTag + '[data-testid="' + escapeAttrValue(testId.trim()) + '"]';
       if (queryCountContaining(testSel, el) === 1) return testSel;
     }
 
     var ariaLabel = el.getAttribute('aria-label');
     if (isSafeAttrText(ariaLabel)) {
-      var ariaSel = tag + '[aria-label="' + escapeAttrValue(ariaLabel.trim()) + '"]';
+      var ariaSel = escapedTag + '[aria-label="' + escapeAttrValue(ariaLabel.trim()) + '"]';
       if (queryCountContaining(ariaSel, el) === 1) return ariaSel;
     }
 
     var role = el.getAttribute('role');
     if (isSafeAttrText(role)) {
-      var roleSel = tag + '[role="' + escapeAttrValue(role.trim()) + '"]';
+      var roleSel = escapedTag + '[role="' + escapeAttrValue(role.trim()) + '"]';
       if (queryCountContaining(roleSel, el) === 1) return roleSel;
     }
 
@@ -236,6 +275,12 @@
     return sameTagTotal > 1 ? escapedTag + ':nth-of-type(' + index + ')' : escapedTag;
   }
 
+  function isUnsafeBareSelector(sel) {
+    if (!sel) return true;
+    var trimmed = sel.trim().toLowerCase();
+    return Boolean(UNSAFE_BARE_TAGS[trimmed]);
+  }
+
   function buildResilientSelector(el) {
     if (!el || el.nodeType !== 1) return '';
     var tag = getTagName(el);
@@ -243,7 +288,7 @@
 
     if (isStableId(el.id)) {
       var idSel = '#' + escapeCssIdent(el.id);
-      if (queryCountContaining(idSel, el) > 0) {
+      if (queryCountContaining(idSel, el) === 1) {
         return idSel;
       }
     }
@@ -252,11 +297,12 @@
     if (isSafeAttrText(testId)) {
       var testIdSel = '[data-testid="' + escapeAttrValue(testId.trim()) + '"]';
       var testCount = queryCountContaining(testIdSel, el);
-      if (testCount > 0 && testCount <= 10) {
+      if (testCount > 0 && testCount <= 3) {
         return testIdSel;
       }
       var tagTestSel = escapedTag + testIdSel;
-      if (queryCountContaining(tagTestSel, el) > 0) {
+      var tagTestCount = queryCountContaining(tagTestSel, el);
+      if (tagTestCount > 0 && tagTestCount <= 3) {
         return tagTestSel;
       }
     }
@@ -265,7 +311,7 @@
     if (isSafeAttrText(ariaLabel)) {
       var ariaSel = escapedTag + '[aria-label="' + escapeAttrValue(ariaLabel.trim()) + '"]';
       var ariaCount = queryCountContaining(ariaSel, el);
-      if (ariaCount > 0 && ariaCount <= 5) {
+      if (ariaCount > 0 && ariaCount <= 2) {
         return ariaSel;
       }
     }
@@ -284,7 +330,7 @@
         return '.' + escapeCssIdent(c);
       }).join('');
       var classCount = queryCountContaining(classSel, el);
-      if (classCount > 0 && classCount <= 8) {
+      if (classCount > 0 && classCount <= 3) {
         return classSel;
       }
     }
@@ -320,7 +366,7 @@
     }
 
     var pathSel = segments.join(' > ');
-    if (queryCountContaining(pathSel, el) > 0) {
+    if (pathSel && !isUnsafeBareSelector(pathSel) && queryCountContaining(pathSel, el) > 0) {
       return pathSel;
     }
 
@@ -335,10 +381,11 @@
       cur = cur.parentElement;
     }
     var fallbackSel = fallbackSegments.join(' > ');
-    if (queryCountContaining(fallbackSel, el) > 0) {
+    if (fallbackSel && !isUnsafeBareSelector(fallbackSel) && queryCountContaining(fallbackSel, el) > 0) {
       return fallbackSel;
     }
-    return escapedTag;
+    // Never fall back to a bare generic tag like "div" that could wipe out the entire site
+    return '';
   }
 
   function buildSummary(el) {
@@ -428,11 +475,18 @@
     state.overlay.style.setProperty('height', rect.height + 'px', 'important');
   }
 
-  function emitBridge(methodName, payloadObj) {
-    var bridge = window.SwiftfoxZapperBridge;
-    if (bridge && typeof bridge[methodName] === 'function') {
+  function emitBridge(eventName, payloadObj) {
+    var ch = window.SwiftfoxNativeChannel;
+    if (bridgeToken && ch && typeof ch.postMessage === 'function') {
       try {
-        bridge[methodName](JSON.stringify(payloadObj));
+        ch.postMessage(
+          JSON.stringify({
+            channel: 'zapper',
+            token: bridgeToken,
+            event: eventName,
+            json: JSON.stringify(payloadObj)
+          })
+        );
       } catch (_e) {
       }
     }
@@ -442,11 +496,14 @@
     if (state.chain.length === 0) return;
     var maxDepth = state.chain.length - 1;
     var clamped = Math.max(0, Math.min(maxDepth, depth | 0));
-    state.scopeDepth = clamped;
     var el = state.chain[clamped];
     var selector = buildResilientSelector(el);
+    if (!selector) {
+      return;
+    }
+    state.scopeDepth = clamped;
     var summary = buildSummary(el);
-    var matchCount = selector ? safeQueryMatches(selector).length : 0;
+    var matchCount = safeQueryMatches(selector).length;
 
     state.currentSelector = selector;
     state.currentSummary = summary;
@@ -479,31 +536,95 @@
     return chain;
   }
 
-  function onClick(e) {
-    if (!state.active) return;
-    var target = e.target;
+  function resolveElementFromTarget(rawTarget, clientX, clientY) {
+    var target = rawTarget;
+    if (typeof clientX === 'number' && typeof clientY === 'number' && typeof document.elementsFromPoint === 'function') {
+      var stack = document.elementsFromPoint(clientX, clientY);
+      for (var i = 0; i < stack.length; i++) {
+        var cand = stack[i];
+        if (cand && cand.id !== OVERLAY_ID) {
+          target = cand;
+          break;
+        }
+      }
+    }
     if (target && target.nodeType !== 1) {
       target = target.parentElement;
     }
-    if (!target) return;
+    if (!target) return null;
     if (target.id === OVERLAY_ID || (target.closest && target.closest('#' + OVERLAY_ID))) {
-      return;
+      return null;
     }
-
-    e.preventDefault();
-    e.stopPropagation();
-    e.stopImmediatePropagation();
-
     if (target === document.body || target === document.documentElement) {
-      return;
+      return null;
     }
+    return target;
+  }
 
+  function selectTargetElement(target) {
+    if (!target) return;
     var chain = buildAncestorChain(target);
     if (chain.length === 0) return;
 
     state.chain = chain;
     ensureOverlay();
     selectAtDepth(0);
+  }
+
+  function onTouchStart(e) {
+    if (!state.active || !e.touches || e.touches.length !== 1) return;
+    state.touchStartX = e.touches[0].clientX;
+    state.touchStartY = e.touches[0].clientY;
+    state.touchMoved = false;
+  }
+
+  function onTouchMove(e) {
+    if (!state.active || !e.touches || e.touches.length !== 1) return;
+    var dx = Math.abs(e.touches[0].clientX - state.touchStartX);
+    var dy = Math.abs(e.touches[0].clientY - state.touchStartY);
+    if (dx > 12 || dy > 12) {
+      state.touchMoved = true;
+    }
+  }
+
+  function onTouchEnd(e) {
+    if (!state.active || state.touchMoved) return;
+    var touch = (e.changedTouches && e.changedTouches[0]) ? e.changedTouches[0] : null;
+    var target = resolveElementFromTarget(
+      e.target,
+      touch ? touch.clientX : undefined,
+      touch ? touch.clientY : undefined
+    );
+    if (!target) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
+    state.suppressNextClickUntil = Date.now() + 450;
+    selectTargetElement(target);
+  }
+
+  function onClick(e) {
+    if (!state.active) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
+
+    if (Date.now() < state.suppressNextClickUntil) {
+      return;
+    }
+    var target = resolveElementFromTarget(e.target, e.clientX, e.clientY);
+    selectTargetElement(target);
+  }
+
+  function onBlockInteraction(e) {
+    if (!state.active) return;
+    if (e.type === 'focusin' && e.target && typeof e.target.blur === 'function') {
+      try { e.target.blur(); } catch (_e) {}
+    }
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
   }
 
   function start(accentHex) {
@@ -513,7 +634,12 @@
     ensureOverlay();
     if (!state.active) {
       state.active = true;
+      document.addEventListener('touchstart', onTouchStart, { capture: true, passive: true });
+      document.addEventListener('touchmove', onTouchMove, { capture: true, passive: true });
+      document.addEventListener('touchend', onTouchEnd, true);
       document.addEventListener('click', onClick, true);
+      document.addEventListener('submit', onBlockInteraction, true);
+      document.addEventListener('focusin', onBlockInteraction, true);
       window.addEventListener('scroll', updateOverlayPosition, true);
       window.addEventListener('resize', updateOverlayPosition, true);
     } else {
@@ -563,6 +689,7 @@
   }
 
   function undoLastZap() {
+    if (state.undoStack.length === 0) return false;
     var entry = state.undoStack.pop();
     if (entry && entry.el) {
       if (entry.prevDisplay) {
@@ -581,7 +708,7 @@
     if (state.chain.length === 0) return false;
     var el = state.chain[state.scopeDepth];
     var selector = state.currentSelector || (el ? buildResilientSelector(el) : '');
-    if (!selector) return false;
+    if (!selector || isUnsafeBareSelector(selector)) return false;
 
     var label = state.currentSummary || (el ? buildSummary(el) : selector);
     var matchCount = state.currentMatchCount || safeQueryMatches(selector).length;
@@ -613,8 +740,15 @@
     state.currentSelector = '';
     state.currentSummary = '';
     state.currentMatchCount = 0;
+    state.undoStack = [];
+    state.touchMoved = false;
 
+    document.removeEventListener('touchstart', onTouchStart, true);
+    document.removeEventListener('touchmove', onTouchMove, true);
+    document.removeEventListener('touchend', onTouchEnd, true);
     document.removeEventListener('click', onClick, true);
+    document.removeEventListener('submit', onBlockInteraction, true);
+    document.removeEventListener('focusin', onBlockInteraction, true);
     window.removeEventListener('scroll', updateOverlayPosition, true);
     window.removeEventListener('resize', updateOverlayPosition, true);
 
@@ -625,7 +759,7 @@
     state.overlay = null;
   }
 
-  window.__swiftfoxZapper = {
+  var api = {
     start: start,
     setScopeDepth: setScopeDepth,
     adjustScope: adjustScope,
@@ -635,4 +769,14 @@
     stop: stop,
     buildResilientSelector: buildResilientSelector
   };
-})();
+  try {
+    Object.defineProperty(window, runtimeKey, {
+      value: api,
+      writable: false,
+      configurable: false,
+      enumerable: false
+    });
+  } catch (e) {
+    window[runtimeKey] = api;
+  }
+})

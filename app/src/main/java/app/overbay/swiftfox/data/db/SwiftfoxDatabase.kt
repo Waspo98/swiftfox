@@ -19,9 +19,11 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         FilterListEntity::class,
         ZappedRuleEntity::class,
         UserscriptEntity::class,
-        UserscriptStorageEntity::class
+        UserscriptStorageEntity::class,
+        SyncedRemoteTabEntity::class,
+        ZenPinnedItemEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class SwiftfoxDatabase : RoomDatabase() {
@@ -36,8 +38,10 @@ abstract class SwiftfoxDatabase : RoomDatabase() {
     abstract fun zappedRuleDao(): ZappedRuleDao
     abstract fun userscriptDao(): UserscriptDao
     abstract fun userscriptStorageDao(): UserscriptStorageDao
+    abstract fun syncedRemoteTabDao(): SyncedRemoteTabDao
+    abstract fun zenPinnedItemDao(): ZenPinnedItemDao
 
-    suspend fun seedDefaultsIfEmpty() {
+    suspend fun seedDefaultsIfEmpty(seedInitialContent: Boolean = true) {
         if (spaceDao().getAll().isEmpty()) {
             spaceDao().upsertAll(
                 listOf(
@@ -65,12 +69,12 @@ abstract class SwiftfoxDatabase : RoomDatabase() {
                 )
             )
         }
-        if (essentialDao().count() == 0) {
+        if (seedInitialContent && essentialDao().count() == 0) {
             essentialDao().upsertAll(
                 listOf(
                     EssentialEntity(
                         id = "ess_overbay",
-                        title = "Overbay",
+                        title = "Overbay.app",
                         url = "https://login.overbay.app",
                         domain = "overbay.app",
                         sortOrder = 0
@@ -113,7 +117,7 @@ abstract class SwiftfoxDatabase : RoomDatabase() {
                 )
             )
         }
-        if (filterListDao().count() == 0) {
+        if (seedInitialContent && filterListDao().count() == 0) {
             filterListDao().upsertAll(
                 listOf(
                     FilterListEntity(
@@ -217,6 +221,48 @@ abstract class SwiftfoxDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_2_3: Migration = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `spaces` ADD COLUMN `syncGuid` TEXT")
+                db.execSQL("ALTER TABLE `spaces` ADD COLUMN `themeColorHex` TEXT")
+                db.execSQL("ALTER TABLE `spaces` ADD COLUMN `zenContainerGuid` TEXT")
+
+                db.execSQL("ALTER TABLE `essentials` ADD COLUMN `syncGuid` TEXT")
+                db.execSQL("ALTER TABLE `essentials` ADD COLUMN `zenContainerGuid` TEXT")
+
+                db.execSQL("ALTER TABLE `bookmarks` ADD COLUMN `syncGuid` TEXT")
+                db.execSQL("ALTER TABLE `bookmarks` ADD COLUMN `parentGuid` TEXT")
+                db.execSQL("ALTER TABLE `bookmarks` ADD COLUMN `updatedAt` INTEGER NOT NULL DEFAULT 0")
+
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `synced_remote_tabs` (" +
+                        "`id` TEXT NOT NULL, " +
+                        "`deviceId` TEXT NOT NULL, " +
+                        "`deviceName` TEXT NOT NULL, " +
+                        "`deviceType` TEXT NOT NULL, " +
+                        "`title` TEXT NOT NULL, " +
+                        "`url` TEXT NOT NULL, " +
+                        "`iconUrl` TEXT, " +
+                        "`lastUsedAt` INTEGER NOT NULL, " +
+                        "`position` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`id`))"
+                )
+
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `zen_pinned_items` (" +
+                        "`id` TEXT NOT NULL, " +
+                        "`spaceId` TEXT NOT NULL, " +
+                        "`zenWorkspaceUuid` TEXT NOT NULL, " +
+                        "`title` TEXT NOT NULL, " +
+                        "`url` TEXT NOT NULL, " +
+                        "`folderName` TEXT, " +
+                        "`isPinned` INTEGER NOT NULL, " +
+                        "`sortOrder` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`id`))"
+                )
+            }
+        }
+
         @Volatile
         private var instance: SwiftfoxDatabase? = null
 
@@ -226,8 +272,8 @@ abstract class SwiftfoxDatabase : RoomDatabase() {
                     context.applicationContext,
                     SwiftfoxDatabase::class.java,
                     "swiftfox.db"
-                ).addMigrations(MIGRATION_1_2)
-                    .fallbackToDestructiveMigration(dropAllTables = true)
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                    .fallbackToDestructiveMigrationOnDowngrade(dropAllTables = true)
                     .build()
                     .also { instance = it }
             }

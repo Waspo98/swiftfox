@@ -1,13 +1,19 @@
+use std::collections::HashSet;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 
-use adblock::Engine;
 use adblock::lists::{FilterSet, ParseOptions};
 use adblock::request::Request;
+use adblock::Engine;
 use jni::objects::{JByteArray, JClass, JString};
 use jni::sys::{jboolean, jbyteArray, jlong, jstring, JNI_FALSE, JNI_TRUE};
 use jni::JNIEnv;
 use serde::Serialize;
+
+const _: fn() = || {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<Engine>();
+};
 
 #[derive(Serialize)]
 struct CosmeticPayload {
@@ -15,33 +21,84 @@ struct CosmeticPayload {
     #[serde(rename = "injectedScript")]
     injected_script: String,
     generichide: bool,
+    exceptions: Vec<String>,
 }
 
 impl CosmeticPayload {
     fn empty_json() -> String {
-        r#"{"css":"","injectedScript":"","generichide":false}"#.to_string()
+        r#"{"css":"","injectedScript":"","generichide":false,"exceptions":[]}"#.to_string()
     }
+}
+
+fn is_safe_css_selector(sel: &str) -> bool {
+    let trimmed = sel.trim();
+    if trimmed.is_empty() || trimmed.len() > 2048 {
+        return false;
+    }
+    if trimmed.starts_with('@') || trimmed.starts_with("+js(") {
+        return false;
+    }
+    if trimmed.contains('{')
+        || trimmed.contains('}')
+        || trimmed.contains(';')
+        || trimmed.contains("/*")
+        || trimmed.contains("*/")
+        || trimmed.contains('\n')
+        || trimmed.contains('\r')
+    {
+        return false;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.contains("</style")
+        || lower.contains(":has-text(")
+        || lower.contains(":-abp-")
+        || lower.contains(":upward(")
+        || lower.contains(":style(")
+        || lower.contains(":xpath(")
+        || lower.contains(":matches-path(")
+        || lower.contains(":matches-css")
+        || lower.contains(":min-text-length(")
+        || lower.contains(":watch-attr(")
+        || lower.contains(":remove(")
+    {
+        return false;
+    }
+    true
+}
+
+fn format_selectors_css<'a, I>(selectors: I) -> String
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    let mut safe: Vec<&str> = selectors
+        .into_iter()
+        .map(str::trim)
+        .filter(|s| is_safe_css_selector(s))
+        .collect();
+    safe.sort_unstable();
+    safe.dedup();
+
+    let mut css = String::with_capacity(safe.len().saturating_mul(48));
+    // Emit one rule per selector so a single unsupported selector cannot invalidate siblings
+    for sel in safe {
+        css.push_str(sel);
+        css.push_str("{display:none!important}\n");
+    }
+    css
 }
 
 fn format_cosmetic_json(engine: &Engine, url: &str) -> String {
     let resources = engine.url_cosmetic_resources(url);
-    let mut css = String::new();
+    let css = format_selectors_css(resources.hide_selectors.iter().map(String::as_str));
 
-    if !resources.hide_selectors.is_empty() {
-        let mut selectors: Vec<&str> = resources.hide_selectors.iter().map(String::as_str).collect();
-        selectors.sort_unstable();
-        for chunk in selectors.chunks(400) {
-            if !chunk.is_empty() {
-                css.push_str(&chunk.join(","));
-                css.push_str("{display:none!important}\n");
-            }
-        }
-    }
+    let mut exceptions: Vec<String> = resources.exceptions.into_iter().collect();
+    exceptions.sort_unstable();
 
     let payload = CosmeticPayload {
         css,
         injected_script: resources.injected_script,
         generichide: resources.generichide,
+        exceptions,
     };
 
     serde_json::to_string(&payload).unwrap_or_else(|_| CosmeticPayload::empty_json())
@@ -176,6 +233,54 @@ pub extern "system" fn Java_app_overbay_swiftfox_features_adblock_NativeAdblockB
         };
 
         match env.new_string(&json) {
+            Ok(s) => s.into_raw(),
+            Err(_) => ptr::null_mut(),
+        }
+    }))
+    .unwrap_or(ptr::null_mut())
+}
+
+#[no_mangle]
+pub extern "system" fn Java_app_overbay_swiftfox_features_adblock_NativeAdblockBridge_nativeHiddenClassIdSelectors(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    classes_json: JString,
+    ids_json: JString,
+    exceptions_json: JString,
+) -> jstring {
+    catch_unwind(AssertUnwindSafe(|| {
+        let css = if handle == 0 {
+            String::new()
+        } else {
+            let classes_str: String = env
+                .get_string(&classes_json)
+                .map(Into::into)
+                .unwrap_or_default();
+            let ids_str: String = env
+                .get_string(&ids_json)
+                .map(Into::into)
+                .unwrap_or_default();
+            let exceptions_str: String = env
+                .get_string(&exceptions_json)
+                .map(Into::into)
+                .unwrap_or_default();
+
+            let classes: Vec<String> = serde_json::from_str(&classes_str).unwrap_or_default();
+            let ids: Vec<String> = serde_json::from_str(&ids_str).unwrap_or_default();
+            let exceptions: HashSet<String> =
+                serde_json::from_str(&exceptions_str).unwrap_or_default();
+
+            if classes.is_empty() && ids.is_empty() {
+                String::new()
+            } else {
+                let engine = unsafe { &*(handle as *const Engine) };
+                let matched = engine.hidden_class_id_selectors(&classes, &ids, &exceptions);
+                format_selectors_css(matched.iter().map(String::as_str))
+            }
+        };
+
+        match env.new_string(&css) {
             Ok(s) => s.into_raw(),
             Err(_) => ptr::null_mut(),
         }

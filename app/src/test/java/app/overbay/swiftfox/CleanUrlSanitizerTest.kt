@@ -23,10 +23,29 @@ class CleanUrlSanitizerTest {
     }
 
     @Test
+    fun preservesSpaHashRoutesAndNonYoutubeSiParam() {
+        val spaHash = "https://example.com/#/dashboard?utm_source=internal&tab=2"
+        assertEquals(spaHash, CleanUrlSanitizer.sanitize(spaHash).url)
+        assertEquals(0, CleanUrlSanitizer.sanitize(spaHash).strippedCount)
+
+        val genericSi = "https://books.example.org/search?q=fox&si=10"
+        assertEquals(genericSi, CleanUrlSanitizer.sanitize(genericSi).url)
+        assertEquals(0, CleanUrlSanitizer.sanitize(genericSi).strippedCount)
+    }
+
+    @Test
     fun leavesCleanUrlsUntouched() {
         val clean = "https://github.com/search?q=swiftfox&type=repositories"
         val result = CleanUrlSanitizer.sanitize(clean)
         assertEquals(clean, result.url)
         assertEquals(0, result.strippedCount)
+    }
+
+    @Test
+    fun stripsExactIcidAndIcidPrefixWithoutOverMatching() {
+        val url = "https://shop.example.com/item?icid=hero1&icid_home=banner&acid=keep&icidfoo=keep2"
+        val result = CleanUrlSanitizer.sanitize(url)
+        assertEquals("https://shop.example.com/item?acid=keep&icidfoo=keep2", result.url)
+        assertEquals(2, result.strippedCount)
     }
 }

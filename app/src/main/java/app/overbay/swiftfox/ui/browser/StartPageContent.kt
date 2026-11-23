@@ -70,7 +70,8 @@ fun StartPageContent(
     onSelectTab: (String) -> Unit,
     onAddEssential: (String, String) -> Unit,
     onRemoveEssential: (String) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    applyBottomNavPadding: Boolean = true
 ) {
     var showAddEssentialDialog by remember { mutableStateOf(false) }
     var essentialToRemove by remember { mutableStateOf<EssentialEntity?>(null) }
@@ -88,7 +89,7 @@ fun StartPageContent(
                 .widthIn(max = if (isUnfolded) 720.dp else 540.dp)
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
-                .navigationBarsPadding()
+                .then(if (applyBottomNavPadding) Modifier.navigationBarsPadding() else Modifier)
                 .padding(horizontal = 20.dp, vertical = 22.dp),
             verticalArrangement = Arrangement.spacedBy(20.dp)
         ) {
@@ -248,6 +249,7 @@ fun StartPageContent(
 
             // Essentials pinned grid
             if (!isPrivate) {
+                val essentials = state.activeSpaceEssentials
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text(
                         text = "Essentials",
@@ -255,14 +257,14 @@ fun StartPageContent(
                         color = MaterialTheme.colorScheme.onBackground
                     )
 
-                    val totalEssentials = state.essentials.size + 1
+                    val totalEssentials = essentials.size + 1
                     val columns = when {
                         !isUnfolded -> 4
                         totalEssentials <= 4 -> totalEssentials.coerceAtLeast(1)
                         totalEssentials <= 8 -> 4
                         else -> 5
                     }
-                    val rows = (state.essentials + null).chunked(columns)
+                    val rows = (essentials + null).chunked(columns)
 
                     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
                         rows.forEach { rowItems ->
@@ -347,8 +349,7 @@ fun StartPageContent(
                         }
                     }
 
-                    val chunkCount = if (isUnfolded) 2 else 2
-                    cards.chunked(chunkCount).forEach { pair ->
+                    cards.chunked(2).forEach { pair ->
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(12.dp)

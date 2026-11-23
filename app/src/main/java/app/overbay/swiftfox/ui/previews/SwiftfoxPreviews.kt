@@ -6,11 +6,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Devices
@@ -25,11 +23,14 @@ import app.overbay.swiftfox.data.prefs.NightSurfaceStyle
 import app.overbay.swiftfox.data.prefs.SiteMode
 import app.overbay.swiftfox.data.prefs.ThemeMode
 import app.overbay.swiftfox.features.foldable.FoldableWindowState
+import app.overbay.swiftfox.features.sync.SyncAccountState
+import app.overbay.swiftfox.features.sync.SyncStatusSnapshot
 import app.overbay.swiftfox.ui.browser.BrowserShellLayout
 import app.overbay.swiftfox.ui.browser.BrowserTabUi
 import app.overbay.swiftfox.ui.browser.BrowserUiState
 import app.overbay.swiftfox.ui.browser.TabThumbnailsSnapshot
 import app.overbay.swiftfox.ui.sheets.QuickControlsContent
+import app.overbay.swiftfox.ui.sync.SyncOverlay
 import app.overbay.swiftfox.ui.tabs.SpacesTabSwitcher
 import app.overbay.swiftfox.ui.theme.SwiftfoxTheme
 
@@ -105,7 +106,6 @@ fun FoldedStartDarkPreview() {
     ) {
         BrowserShellLayout(
             state = previewState(DevicePosture.FOLDED, startPageActive = true),
-            snackbarHostState = remember { SnackbarHostState() },
             onFocusOmnibox = {},
             onFocusSearchFresh = {},
             onGoBack = {},
@@ -148,7 +148,6 @@ fun FoldedStartDayPreview() {
     ) {
         BrowserShellLayout(
             state = previewState(DevicePosture.FOLDED, startPageActive = true),
-            snackbarHostState = remember { SnackbarHostState() },
             onFocusOmnibox = {},
             onFocusSearchFresh = {},
             onGoBack = {},
@@ -197,7 +196,6 @@ fun FoldedAmoledLargeFontPreview() {
     ) {
         BrowserShellLayout(
             state = previewState(DevicePosture.FOLDED, startPageActive = true),
-            snackbarHostState = remember { SnackbarHostState() },
             onFocusOmnibox = {},
             onFocusSearchFresh = {},
             onGoBack = {},
@@ -295,7 +293,6 @@ fun UnfoldedFoldableBrowserPreview() {
     ) {
         BrowserShellLayout(
             state = previewState(DevicePosture.UNFOLDED, startPageActive = false),
-            snackbarHostState = remember { SnackbarHostState() },
             onFocusOmnibox = {},
             onFocusSearchFresh = {},
             onGoBack = {},
@@ -341,6 +338,43 @@ fun UnfoldedFoldableBrowserPreview() {
                     }
                 }
             }
+        )
+    }
+}
+
+@Preview(name = "Firefox & Zen Sync", device = Devices.PHONE, showSystemUi = true)
+@Composable
+fun SyncOverlayPreview() {
+    SwiftfoxTheme(
+        themeMode = ThemeMode.NIGHT,
+        nightSurfaceStyle = NightSurfaceStyle.DARK,
+        accentPreset = AccentPreset.FOX_AMBER
+    ) {
+        SyncOverlay(
+            state = previewState(DevicePosture.FOLDED, startPageActive = true).copy(
+                syncStatus = SyncStatusSnapshot(
+                    accountState = SyncAccountState.Connected(
+                        uid = "uid-preview",
+                        email = "user@example.com",
+                        displayName = "Alex"
+                    ),
+                    lastSyncAtMs = System.currentTimeMillis() - 120_000L,
+                    lastSyncSummary = "Synced 48 bookmarks · 12 remote tabs · 3 Zen Spaces"
+                )
+            ),
+            onBack = {},
+            onSignIn = {},
+            onPairQr = {},
+            onSyncNow = {},
+            onSignOut = {},
+            onOpenSyncedTabs = {},
+            onToggleSyncBookmarks = {},
+            onToggleSyncHistory = {},
+            onToggleSyncTabs = {},
+            onToggleSyncZenSpaces = {},
+            onChangeSyncInterval = {},
+            onImportBookmarksHtml = {},
+            onExportBookmarksHtml = {}
         )
     }
 }

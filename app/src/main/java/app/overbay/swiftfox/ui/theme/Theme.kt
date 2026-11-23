@@ -2,6 +2,7 @@ package app.overbay.swiftfox.ui.theme
 
 import android.app.Activity
 import android.os.Build
+import android.provider.Settings
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ColorScheme
@@ -16,6 +17,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -102,28 +104,18 @@ val MonoDarkOnContainer = Color(0xFFEFECF2)
 
 @Immutable
 data class SwiftfoxExtendedColors(
-    val accentSplash: Color,
-    val onAccentSplash: Color,
     val privateContainer: Color,
     val onPrivateContainer: Color,
     val privateAccent: Color,
-    val onPrivateAccent: Color,
-    val shieldActive: Color,
-    val isDark: Boolean,
-    val isAmoled: Boolean
+    val onPrivateAccent: Color
 )
 
 val LocalSwiftfoxColors = staticCompositionLocalOf {
     SwiftfoxExtendedColors(
-        accentSplash = FoxAmberBrand,
-        onAccentSplash = Color(0xFF1F0A00),
         privateContainer = Color(0xFF2C1E4A),
         onPrivateContainer = Color(0xFFE9DDFF),
         privateAccent = Color(0xFFB594FF),
-        onPrivateAccent = Color(0xFF1F0947),
-        shieldActive = FoxAmberDarkPrimary,
-        isDark = true,
-        isAmoled = false
+        onPrivateAccent = Color(0xFF1F0947)
     )
 }
 
@@ -345,23 +337,10 @@ fun SwiftfoxTheme(
     }
 
     val extendedColors = SwiftfoxExtendedColors(
-        accentSplash = if (accentPreset == AccentPreset.FOX_AMBER && !useDynamicColor) {
-            FoxAmberBrand
-        } else {
-            colorScheme.primary
-        },
-        onAccentSplash = if (accentPreset == AccentPreset.FOX_AMBER && !useDynamicColor) {
-            Color(0xFF1F0A00)
-        } else {
-            colorScheme.onPrimary
-        },
         privateContainer = if (isDark) Color(0xFF281B45) else Color(0xFFECE2FF),
         onPrivateContainer = if (isDark) Color(0xFFEBDFFF) else Color(0xFF261057),
         privateAccent = if (isDark) Color(0xFFC1A6FF) else Color(0xFF6342B5),
-        onPrivateAccent = if (isDark) Color(0xFF1F0947) else Color.White,
-        shieldActive = colorScheme.primary,
-        isDark = isDark,
-        isAmoled = isAmoled
+        onPrivateAccent = if (isDark) Color(0xFF1F0947) else Color.White
     )
 
     val view = LocalView.current
@@ -381,5 +360,19 @@ fun SwiftfoxTheme(
             shapes = SwiftfoxShapes,
             content = content
         )
+    }
+}
+
+@Composable
+internal fun rememberReduceMotion(): Boolean {
+    val context = LocalContext.current
+    return remember(context) {
+        runCatching {
+            Settings.Global.getFloat(
+                context.contentResolver,
+                Settings.Global.ANIMATOR_DURATION_SCALE,
+                1f
+            ) == 0f
+        }.getOrDefault(false)
     }
 }

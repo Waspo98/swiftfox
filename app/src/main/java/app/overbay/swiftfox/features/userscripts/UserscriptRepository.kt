@@ -11,7 +11,11 @@ import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.ResponseBody
+import java.io.ByteArrayOutputStream
+import java.io.IOException
 import java.util.UUID
+import java.util.concurrent.TimeUnit
 
 /**
  * Manages persistence, remote/local installation, updates, and URL/phase matching for `.user.js` scripts.
@@ -25,14 +29,8 @@ class UserscriptRepository internal constructor(
     constructor(
         scriptDao: UserscriptDao,
         storageDao: UserscriptStorageDao,
-        client: OkHttpClient = OkHttpClient()
+        client: OkHttpClient = defaultHttpClient()
     ) : this(scriptDao, storageDao, client, Dispatchers.IO)
-
-    fun observeAll(): Flow<List<UserscriptEntity>> = scriptDao.observeAll()
-
-    suspend fun getAll(): List<UserscriptEntity> = scriptDao.getAll()
-
-    suspend fun getById(id: String): UserscriptEntity? = scriptDao.getById(id)
 
     suspend fun installFromUrl(url: String): Result<UserscriptEntity> {
         val trimmedUrl = url.trim()
@@ -53,7 +51,7 @@ class UserscriptRepository internal constructor(
                     if (!response.isSuccessful) {
                         throw IllegalStateException("HTTP ${response.code}: ${response.message}")
                     }
-                    response.body?.string().orEmpty()
+                    readBoundedText(response.body, MAX_USERSCRIPT_BYTES)
                 }
             }
             val derivedName = httpUrl.pathSegments
@@ -77,6 +75,9 @@ class UserscriptRepository internal constructor(
     ): Result<UserscriptEntity> {
         if (code.isBlank()) {
             return Result.failure(IllegalArgumentException("Userscript code cannot be empty."))
+        }
+        if (code.toByteArray(Charsets.UTF_8).size > MAX_USERSCRIPT_BYTES) {
+            return Result.failure(IllegalArgumentException("Userscript exceeds 2 MB size limit."))
         }
         return try {
             val meta = UserscriptParser.parse(code, fallbackName = fallbackName)
@@ -115,6 +116,9 @@ class UserscriptRepository internal constructor(
     suspend fun updateCode(id: String, newCode: String): Result<UserscriptEntity> {
         if (newCode.isBlank()) {
             return Result.failure(IllegalArgumentException("Userscript code cannot be empty."))
+        }
+        if (newCode.toByteArray(Charsets.UTF_8).size > MAX_USERSCRIPT_BYTES) {
+            return Result.failure(IllegalArgumentException("Userscript exceeds 2 MB size limit."))
         }
         val existing = scriptDao.getById(id)
             ?: return Result.failure(NoSuchElementException("Userscript not found: $id"))
@@ -180,5 +184,39 @@ class UserscriptRepository internal constructor(
                 .associate { it.storageKey to it.valueJson }
             script to storageMap
         }
+    }
+
+    private fun readBoundedText(body: ResponseBody?, maxBytes: Int): String {
+        if (body == null) return ""
+        val contentLength = body.contentLength()
+        if (contentLength > maxBytes) {
+            throw IOException("Userscript exceeds 2 MB size limit")
+        }
+        val out = ByteArrayOutputStream()
+        val buf = ByteArray(8192)
+        var total = 0
+        body.byteStream().use { input ->
+            while (true) {
+                val read = input.read(buf)
+                if (read == -1) break
+                total += read
+                if (total > maxBytes) {
+                    throw IOException("Userscript exceeds 2 MB size limit")
+                }
+                out.write(buf, 0, read)
+            }
+        }
+        return out.toString(Charsets.UTF_8.name())
+    }
+
+    private companion object {
+        const val MAX_USERSCRIPT_BYTES = 2 * 1024 * 1024
+
+        fun defaultHttpClient(): OkHttpClient = OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .writeTimeout(15, TimeUnit.SECONDS)
+            .followRedirects(true)
+            .build()
     }
 }

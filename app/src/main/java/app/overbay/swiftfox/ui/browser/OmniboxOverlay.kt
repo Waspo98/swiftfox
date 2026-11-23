@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -36,7 +37,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -65,6 +69,22 @@ fun OmniboxOverlay(
     val focusRequester = remember { FocusRequester() }
     val activeBang = remember(query) { OmniboxEngine.detectBang(query) }
 
+    // Preserve cursor selection and IME composition across recompositions; select-all on initial open
+    var fieldValue by remember {
+        mutableStateOf(
+            TextFieldValue(
+                text = query,
+                selection = if (query.isNotEmpty()) TextRange(0, query.length) else TextRange.Zero
+            )
+        )
+    }
+
+    LaunchedEffect(query) {
+        if (query != fieldValue.text) {
+            fieldValue = TextFieldValue(text = query, selection = TextRange(query.length))
+        }
+    }
+
     LaunchedEffect(Unit) {
         focusRequester.requestFocus()
     }
@@ -77,6 +97,7 @@ fun OmniboxOverlay(
             modifier = Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
+                .navigationBarsPadding()
                 .imePadding()
         ) {
             // Focused omnibox pill with Fox Amber focus ring
@@ -134,11 +155,13 @@ fun OmniboxOverlay(
                         }
 
                         BasicTextField(
-                            value = TextFieldValue(
-                                text = query,
-                                selection = TextRange(query.length)
-                            ),
-                            onValueChange = { onQueryChange(it.text) },
+                            value = fieldValue,
+                            onValueChange = { next ->
+                                fieldValue = next
+                                if (next.text != query) {
+                                    onQueryChange(next.text)
+                                }
+                            },
                             singleLine = true,
                             textStyle = MaterialTheme.typography.bodyLarge.copy(
                                 color = MaterialTheme.colorScheme.onSurface
@@ -149,10 +172,10 @@ fun OmniboxOverlay(
                                 imeAction = ImeAction.Go
                             ),
                             keyboardActions = KeyboardActions(
-                                onGo = { if (query.isNotBlank()) onSubmit(query) }
+                                onGo = { if (fieldValue.text.isNotBlank()) onSubmit(fieldValue.text) }
                             ),
                             decorationBox = { inner ->
-                                if (query.isEmpty()) {
+                                if (fieldValue.text.isEmpty()) {
                                     Text(
                                         text = "Search $searchEngineLabel or enter address",
                                         style = MaterialTheme.typography.bodyLarge,
@@ -168,9 +191,12 @@ fun OmniboxOverlay(
                                 .focusRequester(focusRequester)
                         )
 
-                        if (query.isNotEmpty()) {
+                        if (fieldValue.text.isNotEmpty()) {
                             IconButton(
-                                onClick = { onQueryChange("") },
+                                onClick = {
+                                    fieldValue = TextFieldValue("")
+                                    onQueryChange("")
+                                },
                                 modifier = Modifier.size(48.dp)
                             ) {
                                 Icon(
@@ -195,7 +221,11 @@ fun OmniboxOverlay(
                     contentType = { "bang_shortcut" }
                 ) { bang ->
                     Surface(
-                        onClick = { onQueryChange("${bang.triggers.first()} ") },
+                        onClick = {
+                            val bangPrefix = "${bang.triggers.first()} "
+                            fieldValue = TextFieldValue(bangPrefix, TextRange(bangPrefix.length))
+                            onQueryChange(bangPrefix)
+                        },
                         shape = RoundedCornerShape(16.dp),
                         color = MaterialTheme.colorScheme.surfaceContainer,
                         border = BorderStroke(

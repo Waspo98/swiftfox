@@ -1,11 +1,21 @@
-(function () {
+(function (runtimeKey, bridgeToken) {
   'use strict';
-  if (window.__swiftfoxGmRuntime) {
+  if (!runtimeKey || !bridgeToken || Object.prototype.hasOwnProperty.call(window, runtimeKey)) {
     return;
   }
 
   const pendingXhr = Object.create(null);
   let xhrSeq = 0;
+
+  function postGm(action, fields) {
+    const ch = window.SwiftfoxNativeChannel;
+    if (!ch || typeof ch.postMessage !== 'function') {
+      return false;
+    }
+    const payload = Object.assign({ channel: 'gm', token: bridgeToken, action: action }, fields);
+    ch.postMessage(JSON.stringify(payload));
+    return true;
+  }
 
   function hasOwn(obj, key) {
     return Object.prototype.hasOwnProperty.call(obj, key);
@@ -25,7 +35,7 @@
     return storage;
   }
 
-  function resolveXhr(reqId, eventName, payloadJson) {
+  function resolveXhrInternal(reqId, eventName, payloadJson) {
     const entry = pendingXhr[reqId];
     if (!entry || entry.aborted) {
       return;
@@ -52,11 +62,20 @@
     }
 
     const text = typeof payload.responseText === 'string' ? payload.responseText : '';
+    let parsedResponse = text;
+    if (entry.responseType === 'json') {
+      try {
+        parsedResponse = text ? JSON.parse(text) : null;
+      } catch (_e) {
+        parsedResponse = null;
+      }
+    }
+
     const response = {
       status: typeof payload.status === 'number' ? payload.status : 0,
       statusText: typeof payload.statusText === 'string' ? payload.statusText : '',
       responseText: text,
-      response: text,
+      response: parsedResponse,
       responseHeaders: typeof payload.responseHeaders === 'string' ? payload.responseHeaders : '',
       finalUrl: typeof payload.finalUrl === 'string' ? payload.finalUrl : '',
       readyState: typeof payload.readyState === 'number' ? payload.readyState : (isTerminal ? 4 : 0),
@@ -76,13 +95,41 @@
     }
   }
 
-  function createApi(scriptId, meta, initialStorage, grants) {
+  function resolveXhr(token, reqId, eventName, payloadJson) {
+    if (!bridgeToken || token !== bridgeToken) {
+      return;
+    }
+    resolveXhrInternal(reqId, eventName, payloadJson);
+  }
+
+  function createApi(token, scriptId, meta, initialStorage, grants) {
+    if (!bridgeToken || token !== bridgeToken) {
+      throw new Error('Unauthorized Swiftfox GM runtime access');
+    }
+
     const id = scriptId == null ? '' : String(scriptId);
     const safeMeta = meta && typeof meta === 'object' ? meta : {};
     const storage = cloneStorage(initialStorage);
     const normalizedGrants = Array.isArray(grants)
       ? grants.slice()
       : (Array.isArray(safeMeta.grants) ? safeMeta.grants.slice() : []);
+
+    const hasNoneGrant = normalizedGrants.indexOf('none') !== -1;
+    const isLegacyDefaultGrants = normalizedGrants.length === 0;
+
+    function isGranted(underscoreName, dotName) {
+      if (hasNoneGrant) {
+        return false;
+      }
+      if (isLegacyDefaultGrants) {
+        // Legacy scripts with no @grant receive basic style/storage APIs, never network XHR.
+        return underscoreName !== 'GM_xmlhttpRequest';
+      }
+      return (
+        normalizedGrants.indexOf(underscoreName) !== -1 ||
+        normalizedGrants.indexOf(dotName) !== -1
+      );
+    }
 
     const GM_info = {
       script: {
@@ -101,9 +148,9 @@
       version: '1.0'
     };
 
-    function GM_addStyle(css) {
+    function implAddStyle(css) {
       const style = document.createElement('style');
-      style.setAttribute('data-swiftfox-gm', id);
+      style.setAttribute('data-swiftfox-style', '1');
       style.textContent = css == null ? '' : String(css);
       const target = document.head || document.documentElement;
       if (target) {
@@ -123,7 +170,7 @@
       return style;
     }
 
-    function GM_getValue(key, defaultValue) {
+    function implGetValue(key, defaultValue) {
       const k = String(key);
       if (hasOwn(storage, k) && storage[k] !== undefined) {
         return storage[k];
@@ -131,37 +178,47 @@
       return defaultValue;
     }
 
-    function GM_setValue(key, value) {
+    function implSetValue(key, value) {
       const k = String(key);
       if (k === '__proto__') {
         return;
       }
-      storage[k] = value;
-      const serialized = JSON.stringify(value === undefined ? null : value);
-      const bridge = window.SwiftfoxGmBridge;
-      if (bridge && typeof bridge.onSetValue === 'function') {
-        bridge.onSetValue(id, k, serialized);
+      let serialized;
+      try {
+        serialized = JSON.stringify(value === undefined ? null : value);
+      } catch (_e) {
+        return;
       }
+      if (typeof serialized !== 'string') {
+        return;
+      }
+      storage[k] = value;
+      postGm('setValue', {
+        scriptId: id,
+        key: k,
+        valueJson: serialized
+      });
     }
 
-    function GM_deleteValue(key) {
+    function implDeleteValue(key) {
       const k = String(key);
       delete storage[k];
-      const bridge = window.SwiftfoxGmBridge;
-      if (bridge && typeof bridge.onDeleteValue === 'function') {
-        bridge.onDeleteValue(id, k);
-      }
+      postGm('deleteValue', {
+        scriptId: id,
+        key: k
+      });
     }
 
-    function GM_listValues() {
+    function implListValues() {
       return Object.keys(storage);
     }
 
-    function GM_xmlhttpRequest(details) {
+    function implXmlHttpRequest(details) {
       const opts = details && typeof details === 'object' ? details : {};
       const reqId = 'xhr_' + (++xhrSeq) + '_' + Date.now();
       const entry = {
         aborted: false,
+        responseType: typeof opts.responseType === 'string' ? opts.responseType.toLowerCase() : '',
         onload: typeof opts.onload === 'function' ? opts.onload : null,
         onerror: typeof opts.onerror === 'function' ? opts.onerror : null,
         ontimeout: typeof opts.ontimeout === 'function' ? opts.ontimeout : null,
@@ -178,22 +235,24 @@
         timeout: typeof opts.timeout === 'number' ? opts.timeout : 15000
       };
 
-      const bridge = window.SwiftfoxGmBridge;
-      if (bridge && typeof bridge.onXmlHttpRequest === 'function') {
-        bridge.onXmlHttpRequest(id, reqId, JSON.stringify(payload));
-      } else {
+      const sent = postGm('xhr', {
+        scriptId: id,
+        reqId: reqId,
+        requestJson: JSON.stringify(payload)
+      });
+      if (!sent) {
         setTimeout(function () {
-          resolveXhr(
+          resolveXhrInternal(
             reqId,
             'onerror',
             JSON.stringify({
               status: 0,
-              statusText: 'SwiftfoxGmBridge unavailable',
+              statusText: 'SwiftfoxNativeChannel unavailable',
               responseText: '',
               responseHeaders: '',
               finalUrl: payload.url,
               readyState: 4,
-              error: 'SwiftfoxGmBridge unavailable'
+              error: 'SwiftfoxNativeChannel unavailable'
             })
           );
         }, 0);
@@ -207,6 +266,9 @@
           }
           pending.aborted = true;
           delete pendingXhr[reqId];
+          try {
+            postGm('abortXhr', { reqId: reqId });
+          } catch (_e) {}
           if (typeof pending.onabort === 'function') {
             try {
               pending.onabort({
@@ -226,76 +288,118 @@
       };
     }
 
+    const canAddStyle = isGranted('GM_addStyle', 'GM.addStyle');
+    const canGetValue = isGranted('GM_getValue', 'GM.getValue');
+    const canSetValue = isGranted('GM_setValue', 'GM.setValue');
+    const canDeleteValue = isGranted('GM_deleteValue', 'GM.deleteValue');
+    const canListValues = isGranted('GM_listValues', 'GM.listValues');
+    const canXhr = isGranted('GM_xmlhttpRequest', 'GM.xmlHttpRequest');
+
     const GM = {
-      info: GM_info,
-      addStyle: function (css) {
-        return Promise.resolve(GM_addStyle(css));
-      },
-      getValue: function (key, defaultValue) {
-        return Promise.resolve(GM_getValue(key, defaultValue));
-      },
-      setValue: function (key, value) {
-        GM_setValue(key, value);
+      info: GM_info
+    };
+    if (canAddStyle) {
+      GM.addStyle = function (css) {
+        return Promise.resolve(implAddStyle(css));
+      };
+    }
+    if (canGetValue) {
+      GM.getValue = function (key, defaultValue) {
+        return Promise.resolve(implGetValue(key, defaultValue));
+      };
+    }
+    if (canSetValue) {
+      GM.setValue = function (key, value) {
+        implSetValue(key, value);
         return Promise.resolve();
-      },
-      deleteValue: function (key) {
-        GM_deleteValue(key);
+      };
+    }
+    if (canDeleteValue) {
+      GM.deleteValue = function (key) {
+        implDeleteValue(key);
         return Promise.resolve();
-      },
-      listValues: function () {
-        return Promise.resolve(GM_listValues());
-      },
-      xmlHttpRequest: function (details) {
+      };
+    }
+    if (canListValues) {
+      GM.listValues = function () {
+        return Promise.resolve(implListValues());
+      };
+    }
+    if (canXhr) {
+      GM.xmlHttpRequest = function (details) {
         const opts = details && typeof details === 'object' ? details : {};
         let handle = null;
         const promise = new Promise(function (resolve, reject) {
           const wrapped = Object.assign({}, opts, {
             onload: function (res) {
-              if (typeof opts.onload === 'function') {
-                opts.onload(res);
+              try {
+                if (typeof opts.onload === 'function') {
+                  opts.onload(res);
+                }
+              } finally {
+                resolve(res);
               }
-              resolve(res);
             },
             onerror: function (res) {
-              if (typeof opts.onerror === 'function') {
-                opts.onerror(res);
+              try {
+                if (typeof opts.onerror === 'function') {
+                  opts.onerror(res);
+                }
+              } finally {
+                reject(res);
               }
-              reject(res);
             },
             ontimeout: function (res) {
-              if (typeof opts.ontimeout === 'function') {
-                opts.ontimeout(res);
+              try {
+                if (typeof opts.ontimeout === 'function') {
+                  opts.ontimeout(res);
+                }
+              } finally {
+                reject(res);
               }
-              reject(res);
             },
             onabort: function (res) {
-              if (typeof opts.onabort === 'function') {
-                opts.onabort(res);
+              try {
+                if (typeof opts.onabort === 'function') {
+                  opts.onabort(res);
+                }
+              } finally {
+                reject(res);
               }
-              reject(res);
             }
           });
-          handle = GM_xmlhttpRequest(wrapped);
+          handle = implXmlHttpRequest(wrapped);
         });
         promise.abort = handle && typeof handle.abort === 'function' ? handle.abort : function () {};
         return promise;
-      }
-    };
+      };
+    }
 
     return {
       GM_info: GM_info,
-      GM_addStyle: GM_addStyle,
-      GM_getValue: GM_getValue,
-      GM_setValue: GM_setValue,
-      GM_deleteValue: GM_deleteValue,
-      GM_listValues: GM_listValues,
-      GM_xmlhttpRequest: GM_xmlhttpRequest,
+      unsafeWindow: window,
+      GM_addStyle: canAddStyle ? implAddStyle : undefined,
+      GM_getValue: canGetValue ? implGetValue : undefined,
+      GM_setValue: canSetValue ? implSetValue : undefined,
+      GM_deleteValue: canDeleteValue ? implDeleteValue : undefined,
+      GM_listValues: canListValues ? implListValues : undefined,
+      GM_xmlhttpRequest: canXhr ? implXmlHttpRequest : undefined,
       GM: GM
     };
   }
 
-  window.__swiftfoxGmRuntime = {
+  const runtimeApi = {
     createApi: createApi,
     resolveXhr: resolveXhr
   };
-})();
+  try {
+    Object.defineProperty(window, runtimeKey, {
+      value: runtimeApi,
+      writable: false,
+      configurable: false,
+      enumerable: false
+    });
+  } catch (e) {
+    window[runtimeKey] = runtimeApi;
+  }
+})

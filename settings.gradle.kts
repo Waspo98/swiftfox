@@ -23,6 +23,10 @@ dependencyResolutionManagement {
             }
         }
         mavenCentral()
+        maven {
+            name = "Mozilla"
+            url = uri("https://maven.mozilla.org/maven2/")
+        }
     }
 }
 

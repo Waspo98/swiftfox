@@ -213,4 +213,162 @@ class ReaderHtmlParserTest {
         assertTrue(article?.blocks?.get(0) is ReaderBlock.Heading)
         assertTrue(article?.blocks?.get(1) is ReaderBlock.Paragraph)
     }
+
+    @Test
+    fun parsesTablesWithHeadersCaptionInlineFormattingAndColspan() {
+        val html = """
+            <table>
+              <caption>Benchmark Results</caption>
+              <thead>
+                <tr><th>Engine</th><th>Score</th><th>Notes</th></tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><strong>Swiftfox</strong></td>
+                  <td><code>120Hz</code></td>
+                  <td>See <a href="https://overbay.app/bench">report</a></td>
+                </tr>
+                <tr>
+                  <td>Legacy</td>
+                  <td colspan="2"><del>Deprecated</del></td>
+                </tr>
+              </tbody>
+            </table>
+        """.trimIndent()
+
+        val blocks = ReaderHtmlParser.parse(html)
+        assertEquals(1, blocks.size)
+        val table = blocks.single() as ReaderBlock.Table
+        assertEquals("Benchmark Results", table.caption)
+        assertEquals(3, table.headers.size)
+        assertEquals("Engine", table.headers[0].single().text)
+        assertEquals("Score", table.headers[1].single().text)
+        assertEquals("Notes", table.headers[2].single().text)
+        assertEquals(2, table.rows.size)
+        assertTrue(table.rows[0][0].single().bold)
+        assertTrue(table.rows[0][1].single().code)
+        assertEquals("https://overbay.app/bench", table.rows[0][2].first { it.linkUrl != null }.linkUrl)
+        assertTrue(table.rows[1][1].single().strikethrough)
+        assertTrue(table.rows[1][2].isEmpty())
+    }
+
+    @Test
+    fun parsesFiguresImagesDefinitionListsNestedListsAndSkipsTrackingPixels() {
+        val html = """
+            <figure>
+              <img src="https://cdn.example.com/hero.jpg" alt="Fox in snow" />
+              <figcaption>Winter photo</figcaption>
+            </figure>
+            <p><img src="https://tracker.example.com/1x1.gif" width="1" height="1" /></p>
+            <dl>
+              <dt>Swiftfox</dt>
+              <dd>Foldable-first Android browser</dd>
+            </dl>
+            <ul>
+              <li><div>Parent item<ul><li>Child item</li></ul></div></li>
+            </ul>
+        """.trimIndent()
+
+        val blocks = ReaderHtmlParser.parse(html)
+        val image = blocks[0] as ReaderBlock.Image
+        assertEquals("https://cdn.example.com/hero.jpg", image.url)
+        assertEquals("Fox in snow", image.alt)
+        assertEquals("Winter photo", image.caption)
+
+        val def = blocks[1] as ReaderBlock.DefinitionItem
+        assertEquals("Swiftfox", def.term.single().text)
+        assertEquals("Foldable-first Android browser", def.definitions.single().single().text)
+
+        val parentLi = blocks[2] as ReaderBlock.BulletItem
+        assertEquals(0, parentLi.indentLevel)
+        assertEquals("Parent item", parentLi.runs.joinToString("") { it.text })
+
+        val childLi = blocks[3] as ReaderBlock.BulletItem
+        assertEquals(1, childLi.indentLevel)
+        assertEquals("Child item", childLi.runs.joinToString("") { it.text })
+        assertEquals(4, blocks.size)
+    }
+
+    @Test
+    fun sanitizesUnsafeLinkSchemesHandlesNestedSvgRawTagsCdataAndExpandedEntities() {
+        val html = """
+            <svg><svg><title>Inner SVG</title></svg><text>Outer SVG leak</text></svg>
+            <script>var a = 1;</script >
+            <p>
+              <a href="javascript:alert(1)">Bad JS</a>
+              <a href="file:///etc/passwd">Bad File</a>
+              <a href="intent://scan/#Intent">Bad Intent</a>
+              <a href="https://overbay.app/safe">Safe Link</a>
+              20&deg;C &euro;5 &frac12; &rarr; caf&eacute; &Delta;
+              <![CDATA[raw <text>]]>
+            </p>
+        """.trimIndent()
+
+        val blocks = ReaderHtmlParser.parse(html)
+        assertEquals(1, blocks.size)
+        val p = blocks.single() as ReaderBlock.Paragraph
+        val fullText = p.runs.joinToString("") { it.text }
+        assertTrue(!fullText.contains("SVG"))
+        assertTrue(fullText.contains("20\u00B0C \u20AC5 \u00BD \u2192 caf\u00E9 \u0394"))
+        assertTrue(fullText.contains("raw <text>"))
+
+        val links = p.runs.mapNotNull { it.linkUrl }.distinct()
+        assertEquals(listOf("https://overbay.app/safe"), links)
+    }
+
+    @Test
+    fun enforcesDepthCapHandlesUnquotedSelfClosingAndImageFallbacks() {
+        val deepHtml = "<div>".repeat(80) + "<p>Deep content</p>" + "</div>".repeat(80)
+        val deepBlocks = ReaderHtmlParser.parse(deepHtml)
+        assertTrue(deepBlocks.isEmpty())
+
+        val html = """
+            <figure>
+              <img src=https://cdn.example.com/unquoted.png alt=Fox/>
+              <figcaption>Unquoted photo</figcaption>
+            </figure>
+            <p><img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==" data-src="https://cdn.example.com/lazy.webp" alt="Lazy" /></p>
+            <p><img src="" srcset="https://cdn.example.com/s1.jpg 1x, https://cdn.example.com/s2.jpg 2x" alt="Srcset" /></p>
+        """.trimIndent()
+        val images = ReaderHtmlParser.parse(html).filterIsInstance<ReaderBlock.Image>()
+        assertEquals(3, images.size)
+        assertEquals("https://cdn.example.com/unquoted.png", images[0].url)
+        assertEquals("Fox", images[0].alt)
+        assertEquals("Unquoted photo", images[0].caption)
+        assertEquals("https://cdn.example.com/lazy.webp", images[1].url)
+        assertEquals("https://cdn.example.com/s1.jpg", images[2].url)
+    }
+
+    @Test
+    fun preservesGreekEntityCaseTracksRowspanAndEmitsMultipleFigureImages() {
+        val greekParagraph = ReaderHtmlParser.parse("<p>&Delta; vs &delta;</p>")
+            .single() as ReaderBlock.Paragraph
+        assertEquals("\u0394 vs \u03B4", greekParagraph.runs.joinToString("") { it.text })
+
+        val rowspanTableHtml = """
+            <table>
+              <thead><tr><th>Metric</th><th>Value</th></tr></thead>
+              <tbody>
+                <tr><td rowspan="2">Latency</td><td>12ms</td></tr>
+                <tr><td>8ms</td></tr>
+              </tbody>
+            </table>
+        """.trimIndent()
+        val table = ReaderHtmlParser.parse(rowspanTableHtml).single() as ReaderBlock.Table
+        assertEquals(2, table.rows.size)
+        assertEquals(listOf("Latency", "12ms"), table.rows[0].map { r -> r.joinToString("") { it.text } })
+        assertEquals(listOf("", "8ms"), table.rows[1].map { r -> r.joinToString("") { it.text } })
+
+        val galleryHtml = """
+            <figure>
+              <img src="https://cdn.example.com/1.jpg" alt="One" />
+              <img src="https://cdn.example.com/2.jpg" alt="Two" />
+              <figcaption>Two photos</figcaption>
+            </figure>
+        """.trimIndent()
+        val galleryImages = ReaderHtmlParser.parse(galleryHtml).filterIsInstance<ReaderBlock.Image>()
+        assertEquals(listOf("https://cdn.example.com/1.jpg", "https://cdn.example.com/2.jpg"), galleryImages.map { it.url })
+        assertEquals(null, galleryImages[0].caption)
+        assertEquals("Two photos", galleryImages[1].caption)
+    }
 }

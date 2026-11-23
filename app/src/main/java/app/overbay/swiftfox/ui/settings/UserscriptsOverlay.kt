@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
@@ -62,6 +63,7 @@ import app.overbay.swiftfox.data.db.UserscriptEntity
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
 import app.overbay.swiftfox.features.userscripts.UserscriptParser
 import app.overbay.swiftfox.features.userscripts.UserscriptUrlMatcher
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 private const val NEW_USERSCRIPT_TEMPLATE = """// ==UserScript==
 // @name         Highlight Headings
@@ -88,14 +90,16 @@ fun UserscriptsOverlay(
     onInstallFromUrl: (String) -> Unit,
     onImportLocalFile: () -> Unit,
     onSaveScriptCode: (existingId: String?, code: String) -> Unit,
-    onDeleteScript: (String) -> Unit
+    onDeleteScript: (String) -> Unit,
+    userscriptsEnabled: Boolean = true,
+    onEnableUserscripts: () -> Unit = {}
 ) {
     var showInstallUrlDialog by rememberSaveable { mutableStateOf(false) }
     var installUrlDraft by rememberSaveable { mutableStateOf("") }
 
-    var showEditorDialog by rememberSaveable { mutableStateOf(false) }
-    var editingScriptId by rememberSaveable { mutableStateOf<String?>(null) }
-    var codeDraft by rememberSaveable { mutableStateOf("") }
+    var showEditorDialog by remember { mutableStateOf(false) }
+    var editingScriptId by remember { mutableStateOf<String?>(null) }
+    var codeDraft by remember { mutableStateOf("") }
 
     var pendingDeleteId by rememberSaveable { mutableStateOf<String?>(null) }
     val pendingDeleteScript = remember(scripts, pendingDeleteId) {
@@ -132,6 +136,35 @@ fun UserscriptsOverlay(
                 .fillMaxSize()
                 .padding(top = innerPadding.calculateTopPadding())
         ) {
+            if (!userscriptsEnabled) {
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(start = 14.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = "Userscripts are turned off globally in Settings.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            modifier = Modifier.weight(1f)
+                        )
+                        TextButton(
+                            onClick = onEnableUserscripts,
+                            modifier = Modifier.heightIn(min = 48.dp)
+                        ) {
+                            Text("Enable")
+                        }
+                    }
+                }
+            }
+
             FlowRow(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -237,7 +270,8 @@ fun UserscriptsOverlay(
     }
 
     if (showInstallUrlDialog) {
-        val urlIsValid = UserscriptUrlMatcher.isHttpOrHttps(installUrlDraft)
+        val cleanUrl = installUrlDraft.trim()
+        val urlIsValid = UserscriptUrlMatcher.isHttpOrHttps(cleanUrl) && cleanUrl.toHttpUrlOrNull() != null
         AlertDialog(
             onDismissRequest = { showInstallUrlDialog = false },
             title = {
@@ -303,6 +337,7 @@ fun UserscriptsOverlay(
             modifier = Modifier
                 .fillMaxWidth()
                 .widthIn(max = 560.dp)
+                .imePadding()
                 .padding(horizontal = 16.dp),
             title = {
                 Text(
@@ -325,6 +360,13 @@ fun UserscriptsOverlay(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
+                    if (parsedPreview.unsupportedDirectives.isNotEmpty()) {
+                        Text(
+                            text = "Note: ${parsedPreview.unsupportedDirectives.joinToString(", ")} directives are not supported and will be ignored.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
                     OutlinedTextField(
                         value = codeDraft,
                         onValueChange = { codeDraft = it },

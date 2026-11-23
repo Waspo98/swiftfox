@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
@@ -59,6 +60,16 @@ class PreferencesRepository(private val context: Context) {
         val SWIPE_URL_BAR_TABS = booleanPreferencesKey("swipe_url_bar_tabs")
         val BACKGROUND_MEDIA = booleanPreferencesKey("background_media")
         val BLOCK_THIRD_PARTY_COOKIES = booleanPreferencesKey("block_third_party_cookies")
+
+        val SYNC_BOOKMARKS = booleanPreferencesKey("sync_bookmarks")
+        val SYNC_HISTORY = booleanPreferencesKey("sync_history")
+        val SYNC_TABS = booleanPreferencesKey("sync_tabs")
+        val SYNC_ZEN_SPACES = booleanPreferencesKey("sync_zen_spaces")
+        val SYNC_INTERVAL_MINUTES = intPreferencesKey("sync_interval_minutes")
+        val SYNC_LAST_TIMESTAMP_MS = longPreferencesKey("sync_last_timestamp_ms")
+        val SYNC_LOCAL_HISTORY_SEEDED = booleanPreferencesKey("sync_local_history_seeded")
+        val SYNC_ZEN_SEPARATE_ESSENTIALS = booleanPreferencesKey("sync_zen_separate_essentials")
+        val HAS_SEEDED_DEFAULTS = booleanPreferencesKey("has_seeded_defaults")
     }
 
     val settingsFlow: Flow<BrowserSettings> = context.swiftfoxDataStore.data
@@ -111,7 +122,18 @@ class PreferencesRepository(private val context: Context) {
                 pullToRefreshEnabled = prefs[Keys.PULL_TO_REFRESH] ?: true,
                 swipeUrlBarSwitchTabs = prefs[Keys.SWIPE_URL_BAR_TABS] ?: true,
                 backgroundMediaEnabled = prefs[Keys.BACKGROUND_MEDIA] ?: true,
-                blockThirdPartyCookies = prefs[Keys.BLOCK_THIRD_PARTY_COOKIES] ?: true
+                blockThirdPartyCookies = prefs[Keys.BLOCK_THIRD_PARTY_COOKIES] ?: true,
+                syncBookmarksEnabled = prefs[Keys.SYNC_BOOKMARKS] ?: true,
+                syncHistoryEnabled = prefs[Keys.SYNC_HISTORY] ?: true,
+                syncTabsEnabled = prefs[Keys.SYNC_TABS] ?: true,
+                syncZenSpacesEnabled = prefs[Keys.SYNC_ZEN_SPACES] ?: true,
+                syncPeriodicIntervalMinutes = (prefs[Keys.SYNC_INTERVAL_MINUTES] ?: 60).let {
+                    if (it in listOf(0, 30, 60, 240)) it else 60
+                },
+                syncLastTimestampMs = prefs[Keys.SYNC_LAST_TIMESTAMP_MS] ?: 0L,
+                syncLocalHistorySeeded = prefs[Keys.SYNC_LOCAL_HISTORY_SEEDED] ?: false,
+                syncZenSeparateEssentials = prefs[Keys.SYNC_ZEN_SEPARATE_ESSENTIALS],
+                hasSeededDefaults = prefs[Keys.HAS_SEEDED_DEFAULTS] ?: false
             )
         }
 
@@ -248,6 +270,48 @@ class PreferencesRepository(private val context: Context) {
 
     suspend fun setBlockThirdPartyCookies(enabled: Boolean) {
         context.swiftfoxDataStore.edit { it[Keys.BLOCK_THIRD_PARTY_COOKIES] = enabled }
+    }
+
+    suspend fun setSyncBookmarksEnabled(enabled: Boolean) {
+        context.swiftfoxDataStore.edit { it[Keys.SYNC_BOOKMARKS] = enabled }
+    }
+
+    suspend fun setSyncHistoryEnabled(enabled: Boolean) {
+        context.swiftfoxDataStore.edit { it[Keys.SYNC_HISTORY] = enabled }
+    }
+
+    suspend fun setSyncTabsEnabled(enabled: Boolean) {
+        context.swiftfoxDataStore.edit { it[Keys.SYNC_TABS] = enabled }
+    }
+
+    suspend fun setSyncZenSpacesEnabled(enabled: Boolean) {
+        context.swiftfoxDataStore.edit { it[Keys.SYNC_ZEN_SPACES] = enabled }
+    }
+
+    suspend fun setSyncPeriodicIntervalMinutes(minutes: Int) {
+        context.swiftfoxDataStore.edit { it[Keys.SYNC_INTERVAL_MINUTES] = minutes }
+    }
+
+    suspend fun setSyncLastTimestampMs(timestampMs: Long) {
+        context.swiftfoxDataStore.edit { it[Keys.SYNC_LAST_TIMESTAMP_MS] = timestampMs }
+    }
+
+    suspend fun setSyncLocalHistorySeeded(seeded: Boolean) {
+        context.swiftfoxDataStore.edit { it[Keys.SYNC_LOCAL_HISTORY_SEEDED] = seeded }
+    }
+
+    suspend fun setHasSeededDefaults(seeded: Boolean) {
+        context.swiftfoxDataStore.edit { it[Keys.HAS_SEEDED_DEFAULTS] = seeded }
+    }
+
+    suspend fun setSyncZenSeparateEssentials(separate: Boolean?) {
+        context.swiftfoxDataStore.edit {
+            if (separate == null) {
+                it.remove(Keys.SYNC_ZEN_SEPARATE_ESSENTIALS)
+            } else {
+                it[Keys.SYNC_ZEN_SEPARATE_ESSENTIALS] = separate
+            }
+        }
     }
 
     private inline fun <reified T : Enum<T>> parseEnum(raw: String?, fallback: T): T {

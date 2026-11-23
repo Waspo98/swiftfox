@@ -119,7 +119,8 @@ class DarkReaderConfigTest {
         )
         val disableScript = injector.buildApplyScript(liteState)
         assertEquals(injector.buildDisableScript(), disableScript)
-        assertTrue(disableScript.contains("window.__swiftfoxDarkReader.apply({enabled:false})"))
+        assertTrue(disableScript.contains("window[\"__swiftfoxDarkReader\"]"))
+        assertTrue(disableScript.contains("rt.apply({enabled:false})"))
         assertTrue(disableScript.contains("DarkReader.disable()"))
 
         val drState = DarkReaderConfig.resolve(
@@ -131,17 +132,24 @@ class DarkReaderConfigTest {
             null,
             isChromeDark = true
         )
-        val applyScript = injector.buildApplyScript(drState)
+        val applyScript = injector.buildApplyScript(drState, bridgeToken = "tok123", runtimeKey = "drKey1")
         assertTrue(applyScript.startsWith("(function(){"))
-        assertTrue(applyScript.contains("window.__swiftfoxDarkReader.apply("))
+        assertTrue(applyScript.contains("window[\"drKey1\"]"))
+        assertTrue(applyScript.contains("rt.apply("))
         assertTrue(applyScript.contains("\"amoled\":true"))
 
+        val fastScript = injector.buildFastApplyScript(drState, runtimeKey = "drKey1")
+        assertTrue(fastScript.contains("window[\"drKey1\"]"))
+        assertTrue(fastScript.contains("rt.apply("))
+        assertTrue(fastScript.contains("\"amoled\":true"))
+        assertTrue(fastScript.length < 400)
+
         assertEquals(
-            DarkReaderStatusEvent(active = true, skippedNativeDark = false),
+            DarkReaderStatusEvent(skippedNativeDark = false),
             injector.parseStatusJson("""{"active":true,"skippedNativeDark":false}""")
         )
         assertEquals(
-            DarkReaderStatusEvent(active = false, skippedNativeDark = true),
+            DarkReaderStatusEvent(skippedNativeDark = true),
             injector.parseStatusJson("""{"active":false,"skippedNativeDark":true}""")
         )
         assertNull(injector.parseStatusJson("not-json"))

@@ -61,10 +61,15 @@ val hasReleaseSigning = releaseKeystoreFile?.isFile == true &&
     !releaseKeyAlias.isNullOrBlank() &&
     !releaseKeyPassword.isNullOrBlank()
 
-if (gradle.startParameter.taskNames.any { it.contains("Release", ignoreCase = true) } && !hasReleaseSigning) {
+val includeX86 = providers.gradleProperty("includeX86")
+    .map { it.toBoolean() }
+    .getOrElse(false)
+
+val releasePackagingTaskRegex = Regex("""(?i)(^|:)(assemble|bundle|package|publish|sign).*Release""")
+if (gradle.startParameter.taskNames.any { releasePackagingTaskRegex.containsMatchIn(it) } && !hasReleaseSigning) {
     throw GradleException(
         "Release signing is not configured. Provide KEYSTORE_PATH/KEYSTORE_PASSWORD/KEY_ALIAS/KEY_PASSWORD " +
-            "or release.keystore.* in local.properties before running release tasks."
+            "or release.keystore.* in local.properties before running release packaging tasks."
     )
 }
 
@@ -82,19 +87,19 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {
-            abiFilters += listOf("arm64-v8a", "x86_64")
+            abiFilters += if (includeX86) listOf("arm64-v8a", "x86_64") else listOf("arm64-v8a")
         }
     }
 
     sourceSets {
         getByName("debug") {
             if (isBeta) {
-                res.srcDirs("src/beta/res")
+                res.directories.add("src/beta/res")
             }
         }
         getByName("release") {
             if (isBeta) {
-                res.srcDirs("src/beta/res")
+                res.directories.add("src/beta/res")
             }
         }
     }
@@ -153,6 +158,7 @@ kotlin {
 
 ksp {
     arg("room.generateKotlin", "true")
+    arg("room.schemaLocation", "$projectDir/schemas")
 }
 
 dependencies {
@@ -187,6 +193,7 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.mozilla.service.firefox.accounts)
     implementation(libs.mozilla.browser.storage.sync)
+    // Required at compile & runtime: PlacesBookmarksStorage/PlacesHistoryStorage implement AutocompleteProvider
     implementation(libs.mozilla.concept.toolbar)
     implementation(libs.mozilla.support.appservices)
     implementation(libs.mozilla.lib.fetch.okhttp)

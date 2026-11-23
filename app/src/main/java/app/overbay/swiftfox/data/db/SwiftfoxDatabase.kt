@@ -24,7 +24,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ZenPinnedItemEntity::class
     ],
     version = 3,
-    exportSchema = false
+    exportSchema = true
 )
 abstract class SwiftfoxDatabase : RoomDatabase() {
     abstract fun spaceDao(): SpaceDao
@@ -73,10 +73,10 @@ abstract class SwiftfoxDatabase : RoomDatabase() {
             essentialDao().upsertAll(
                 listOf(
                     EssentialEntity(
-                        id = "ess_overbay",
-                        title = "Overbay.app",
-                        url = "https://login.overbay.app",
-                        domain = "overbay.app",
+                        id = "ess_google",
+                        title = "Google",
+                        url = "https://www.google.com",
+                        domain = "google.com",
                         sortOrder = 0
                     ),
                     EssentialEntity(

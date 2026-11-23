@@ -44,7 +44,7 @@ private fun previewState(
         SpaceEntity("space_reading", "Reading", "book", null, 2)
     )
     val essentials = listOf(
-        EssentialEntity("e1", null, "Overbay", "https://login.overbay.app", "overbay.app", 0),
+        EssentialEntity("e1", null, "Google", "https://www.google.com", "google.com", 0),
         EssentialEntity("e2", null, "GitHub", "https://github.com", "github.com", 1),
         EssentialEntity("e3", null, "YouTube", "https://m.youtube.com", "youtube.com", 2),
         EssentialEntity("e4", null, "Reddit", "https://www.reddit.com", "reddit.com", 3),

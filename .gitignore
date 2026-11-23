@@ -1,7 +1,9 @@
 # Gradle & Android build outputs
 .gradle/
+.kotlin/
 build/
 app/build/
+native/adblock-jni/target/
 captures/
 .externalNativeBuild/
 .cxx/

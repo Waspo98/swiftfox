@@ -6,6 +6,8 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
+import androidx.datastore.preferences.core.floatPreferencesKey
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
@@ -25,6 +27,21 @@ class PreferencesRepository(private val context: Context) {
         val ACCENT_PRESET = stringPreferencesKey("accent_preset")
         val USE_DYNAMIC_COLOR = booleanPreferencesKey("use_dynamic_color")
         val WEB_DARK_MODE = stringPreferencesKey("web_dark_mode")
+        val WEB_DARK_ENGINE = stringPreferencesKey("web_dark_engine")
+        val DARK_READER_AMOLED = booleanPreferencesKey("dark_reader_amoled")
+        val DARK_READER_BRIGHTNESS = intPreferencesKey("dark_reader_brightness")
+        val DARK_READER_CONTRAST = intPreferencesKey("dark_reader_contrast")
+        val DARK_READER_SEPIA = intPreferencesKey("dark_reader_sepia")
+        val DARK_READER_SKIP_NATIVE = booleanPreferencesKey("dark_reader_skip_native")
+
+        val ADBLOCK_ENABLED = booleanPreferencesKey("adblock_enabled")
+        val ADBLOCK_COSMETIC = booleanPreferencesKey("adblock_cosmetic")
+        val USERSCRIPTS_ENABLED = booleanPreferencesKey("userscripts_enabled")
+
+        val READER_FONT_FAMILY = stringPreferencesKey("reader_font_family")
+        val READER_FONT_SIZE_SP = intPreferencesKey("reader_font_size_sp")
+        val READER_LINE_HEIGHT = floatPreferencesKey("reader_line_height")
+        val READER_SURFACE_MODE = stringPreferencesKey("reader_surface_mode")
 
         val FOLDED_TOOLBAR = stringPreferencesKey("folded_toolbar")
         val FOLDED_SITE_MODE = stringPreferencesKey("folded_site_mode")
@@ -59,6 +76,19 @@ class PreferencesRepository(private val context: Context) {
                 accentPreset = parseEnum(prefs[Keys.ACCENT_PRESET], AccentPreset.FOX_AMBER),
                 useDynamicColor = prefs[Keys.USE_DYNAMIC_COLOR] ?: false,
                 webDarkMode = parseEnum(prefs[Keys.WEB_DARK_MODE], WebDarkModePreference.FOLLOW_APP),
+                webDarkEngine = parseEnum(prefs[Keys.WEB_DARK_ENGINE], WebDarkEngine.DARK_READER),
+                darkReaderAmoled = prefs[Keys.DARK_READER_AMOLED] ?: false,
+                darkReaderBrightness = (prefs[Keys.DARK_READER_BRIGHTNESS] ?: 100).coerceIn(50, 150),
+                darkReaderContrast = (prefs[Keys.DARK_READER_CONTRAST] ?: 100).coerceIn(50, 150),
+                darkReaderSepia = (prefs[Keys.DARK_READER_SEPIA] ?: 0).coerceIn(0, 100),
+                darkReaderSkipNativeDark = prefs[Keys.DARK_READER_SKIP_NATIVE] ?: true,
+                adblockEnabled = prefs[Keys.ADBLOCK_ENABLED] ?: true,
+                adblockCosmeticEnabled = prefs[Keys.ADBLOCK_COSMETIC] ?: true,
+                userscriptsEnabled = prefs[Keys.USERSCRIPTS_ENABLED] ?: true,
+                readerFontFamily = parseEnum(prefs[Keys.READER_FONT_FAMILY], ReaderFontFamily.SANS),
+                readerFontSizeSp = (prefs[Keys.READER_FONT_SIZE_SP] ?: 18).coerceIn(14, 28),
+                readerLineHeight = (prefs[Keys.READER_LINE_HEIGHT] ?: 1.6f).coerceIn(1.3f, 2.0f),
+                readerSurfaceMode = parseEnum(prefs[Keys.READER_SURFACE_MODE], ReaderSurfaceMode.FOLLOW_APP),
                 foldedProfile = PostureProfile(
                     toolbarPlacement = foldedPlacement,
                     defaultSiteMode = parseEnum(prefs[Keys.FOLDED_SITE_MODE], SiteMode.MOBILE),
@@ -103,6 +133,58 @@ class PreferencesRepository(private val context: Context) {
 
     suspend fun setWebDarkMode(preference: WebDarkModePreference) {
         context.swiftfoxDataStore.edit { it[Keys.WEB_DARK_MODE] = preference.name }
+    }
+
+    suspend fun setWebDarkEngine(engine: WebDarkEngine) {
+        context.swiftfoxDataStore.edit { it[Keys.WEB_DARK_ENGINE] = engine.name }
+    }
+
+    suspend fun setDarkReaderAmoled(enabled: Boolean) {
+        context.swiftfoxDataStore.edit { it[Keys.DARK_READER_AMOLED] = enabled }
+    }
+
+    suspend fun setDarkReaderBrightness(value: Int) {
+        context.swiftfoxDataStore.edit { it[Keys.DARK_READER_BRIGHTNESS] = value.coerceIn(50, 150) }
+    }
+
+    suspend fun setDarkReaderContrast(value: Int) {
+        context.swiftfoxDataStore.edit { it[Keys.DARK_READER_CONTRAST] = value.coerceIn(50, 150) }
+    }
+
+    suspend fun setDarkReaderSepia(value: Int) {
+        context.swiftfoxDataStore.edit { it[Keys.DARK_READER_SEPIA] = value.coerceIn(0, 100) }
+    }
+
+    suspend fun setDarkReaderSkipNativeDark(enabled: Boolean) {
+        context.swiftfoxDataStore.edit { it[Keys.DARK_READER_SKIP_NATIVE] = enabled }
+    }
+
+    suspend fun setAdblockEnabled(enabled: Boolean) {
+        context.swiftfoxDataStore.edit { it[Keys.ADBLOCK_ENABLED] = enabled }
+    }
+
+    suspend fun setAdblockCosmeticEnabled(enabled: Boolean) {
+        context.swiftfoxDataStore.edit { it[Keys.ADBLOCK_COSMETIC] = enabled }
+    }
+
+    suspend fun setUserscriptsEnabled(enabled: Boolean) {
+        context.swiftfoxDataStore.edit { it[Keys.USERSCRIPTS_ENABLED] = enabled }
+    }
+
+    suspend fun setReaderFontFamily(family: ReaderFontFamily) {
+        context.swiftfoxDataStore.edit { it[Keys.READER_FONT_FAMILY] = family.name }
+    }
+
+    suspend fun setReaderFontSizeSp(sizeSp: Int) {
+        context.swiftfoxDataStore.edit { it[Keys.READER_FONT_SIZE_SP] = sizeSp.coerceIn(14, 28) }
+    }
+
+    suspend fun setReaderLineHeight(lineHeight: Float) {
+        context.swiftfoxDataStore.edit { it[Keys.READER_LINE_HEIGHT] = lineHeight.coerceIn(1.3f, 2.0f) }
+    }
+
+    suspend fun setReaderSurfaceMode(mode: ReaderSurfaceMode) {
+        context.swiftfoxDataStore.edit { it[Keys.READER_SURFACE_MODE] = mode.name }
     }
 
     suspend fun setToolbarPlacement(posture: DevicePosture, placement: ToolbarPlacement) {

@@ -12,10 +12,13 @@ import android.webkit.JavascriptInterface
 import android.webkit.URLUtil
 import android.webkit.WebSettings
 import androidx.webkit.Profile
+import androidx.webkit.ScriptHandler
 import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import app.overbay.swiftfox.data.prefs.SiteMode
+import app.overbay.swiftfox.features.darkreader.DarkReaderInjector
+import app.overbay.swiftfox.features.darkreader.ResolvedWebDarkState
 
 data class ContextMenuHit(
     val type: Int,
@@ -35,6 +38,16 @@ interface SessionHostCallbacks : WebNavigationCallbacks, WebChromeCallbacks {
     fun onFindMatchesUpdated(tabId: String, activeMatchOrdinal: Int, numberOfMatches: Int)
     fun onContextMenuLongPress(tabId: String, hit: ContextMenuHit)
     fun onScrollTopChanged(tabId: String, atTop: Boolean)
+
+    // Milestone 2 JS Bridges
+    fun onZapperSelectionChanged(tabId: String, json: String)
+    fun onZapperTemporaryZap(tabId: String, json: String)
+    fun onZapperUndoTemporaryZap(tabId: String, json: String)
+    fun onZapperPermanentRule(tabId: String, json: String)
+    fun onDarkReaderStatus(tabId: String, json: String)
+    fun onUserscriptSetValue(scriptId: String, key: String, valueJson: String)
+    fun onUserscriptDeleteValue(scriptId: String, key: String)
+    fun onUserscriptXmlHttpRequest(tabId: String, scriptId: String, reqId: String, requestJson: String)
 }
 
 class BrowserSession(
@@ -46,9 +59,14 @@ class BrowserSession(
 ) {
     val webView: SwiftfoxWebView = SwiftfoxWebView(context)
     private val defaultMobileUserAgent: String
+    private var documentStartHandler: ScriptHandler? = null
 
     var currentSiteMode: SiteMode = SiteMode.MOBILE
         private set
+
+    private var currentCustomUa: String? = null
+    private var currentJsEnabled: Boolean = true
+    private var currentCookiesEnabled: Boolean = true
 
     init {
         configureProfile()
@@ -169,21 +187,112 @@ class BrowserSession(
             },
             "SwiftfoxMediaBridge"
         )
+
+        webView.addJavascriptInterface(
+            object {
+                @JavascriptInterface
+                fun onSelectionChanged(json: String) {
+                    hostCallbacks.onZapperSelectionChanged(tabId, json)
+                }
+
+                @JavascriptInterface
+                fun onTemporaryZap(json: String) {
+                    hostCallbacks.onZapperTemporaryZap(tabId, json)
+                }
+
+                @JavascriptInterface
+                fun onUndoTemporaryZap(json: String) {
+                    hostCallbacks.onZapperUndoTemporaryZap(tabId, json)
+                }
+
+                @JavascriptInterface
+                fun onPermanentRule(json: String) {
+                    hostCallbacks.onZapperPermanentRule(tabId, json)
+                }
+            },
+            "SwiftfoxZapperBridge"
+        )
+
+        webView.addJavascriptInterface(
+            object {
+                @JavascriptInterface
+                fun onDarkReaderStatus(json: String) {
+                    hostCallbacks.onDarkReaderStatus(tabId, json)
+                }
+            },
+            "SwiftfoxDarkReaderBridge"
+        )
+
+        webView.addJavascriptInterface(
+            object {
+                @JavascriptInterface
+                fun onSetValue(scriptId: String, key: String, valueJson: String) {
+                    hostCallbacks.onUserscriptSetValue(scriptId, key, valueJson)
+                }
+
+                @JavascriptInterface
+                fun onDeleteValue(scriptId: String, key: String) {
+                    hostCallbacks.onUserscriptDeleteValue(scriptId, key)
+                }
+
+                @JavascriptInterface
+                fun onXmlHttpRequest(scriptId: String, reqId: String, requestJson: String) {
+                    hostCallbacks.onUserscriptXmlHttpRequest(tabId, scriptId, reqId, requestJson)
+                }
+            },
+            "SwiftfoxGmBridge"
+        )
     }
 
     fun applySiteMode(mode: SiteMode, reloadIfChanged: Boolean) {
-        val changed = currentSiteMode != mode
+        applySiteOverrides(
+            mode = mode,
+            customUserAgent = currentCustomUa,
+            javascriptEnabled = currentJsEnabled,
+            cookiesEnabled = currentCookiesEnabled,
+            blockThirdParty = true,
+            reloadIfChanged = reloadIfChanged
+        )
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    fun applySiteOverrides(
+        mode: SiteMode,
+        customUserAgent: String?,
+        javascriptEnabled: Boolean,
+        cookiesEnabled: Boolean,
+        blockThirdParty: Boolean,
+        reloadIfChanged: Boolean
+    ) {
+        val normalizedCustomUa = customUserAgent?.trim()?.takeIf { it.isNotEmpty() }
+        val modeChanged = currentSiteMode != mode
+        val uaChanged = currentCustomUa != normalizedCustomUa
+        val jsChanged = currentJsEnabled != javascriptEnabled
+        val cookieChanged = currentCookiesEnabled != cookiesEnabled
+
         currentSiteMode = mode
+        currentCustomUa = normalizedCustomUa
+        currentJsEnabled = javascriptEnabled
+        currentCookiesEnabled = cookiesEnabled
+
         webView.settings.apply {
-            userAgentString = if (mode == SiteMode.DESKTOP) {
-                DESKTOP_USER_AGENT
-            } else {
-                defaultMobileUserAgent
+            javaScriptEnabled = javascriptEnabled
+            userAgentString = when {
+                normalizedCustomUa != null -> normalizedCustomUa
+                mode == SiteMode.DESKTOP -> DESKTOP_USER_AGENT
+                else -> defaultMobileUserAgent
             }
             useWideViewPort = true
             loadWithOverviewMode = true
         }
-        if (changed && reloadIfChanged) {
+
+        runCatching {
+            val cm = CookieManager.getInstance()
+            cm.setAcceptCookie(cookiesEnabled)
+            cm.setAcceptThirdPartyCookies(webView, cookiesEnabled && !blockThirdParty)
+        }
+
+        if ((modeChanged || uaChanged || jsChanged || cookieChanged) && reloadIfChanged) {
             val current = webView.url.orEmpty()
             if (current.startsWith("http://") || current.startsWith("https://")) {
                 webView.reload()
@@ -199,14 +308,55 @@ class BrowserSession(
         }
     }
 
+    fun applyWebDarkMode(state: ResolvedWebDarkState, darkReaderInjector: DarkReaderInjector) {
+        if (state.useDarkReader) {
+            // Never run Chromium Algorithmic Darkening alongside Dark Reader
+            applyWebDarkening(false)
+            val currentUrl = webView.url.orEmpty()
+            if (currentUrl.startsWith("http://") || currentUrl.startsWith("https://")) {
+                evaluateJavascript(darkReaderInjector.buildApplyScript(state))
+            }
+        } else if (state.useAlgorithmicLite) {
+            evaluateJavascript(darkReaderInjector.buildDisableScript())
+            applyWebDarkening(true)
+        } else {
+            evaluateJavascript(darkReaderInjector.buildDisableScript())
+            applyWebDarkening(false)
+        }
+    }
+
     fun applyThirdPartyCookieBlocking(blockThirdParty: Boolean) {
         runCatching {
-            CookieManager.getInstance().setAcceptThirdPartyCookies(webView, !blockThirdParty)
+            CookieManager.getInstance().setAcceptThirdPartyCookies(
+                webView,
+                currentCookiesEnabled && !blockThirdParty
+            )
         }
     }
 
     fun applyBackgroundPlayback(enabled: Boolean) {
         webView.allowBackgroundPlayback = enabled
+    }
+
+    fun updateDocumentStartScript(
+        cosmeticCss: String,
+        zappedCss: String,
+        documentStartUserscriptJs: String
+    ) {
+        documentStartHandler = ScriptInjector.registerDocumentStartScript(
+            webView = webView,
+            previousHandler = documentStartHandler,
+            cosmeticCss = cosmeticCss,
+            zappedCss = zappedCss,
+            documentStartUserscriptJs = documentStartUserscriptJs
+        )
+    }
+
+    fun evaluateJavascript(script: String, onResult: ((String?) -> Unit)? = null) {
+        if (script.isBlank()) return
+        webView.evaluateJavascript(script) { result ->
+            onResult?.invoke(result)
+        }
     }
 
     fun loadUrl(url: String) {
@@ -271,6 +421,8 @@ class BrowserSession(
     }
 
     fun destroy() {
+        runCatching { documentStartHandler?.remove() }
+        documentStartHandler = null
         webView.stopLoading()
         webView.loadUrl("about:blank")
         webView.removeAllViews()

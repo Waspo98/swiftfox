@@ -56,35 +56,35 @@ colors:
   error-dark: "#FFB4AB"
 typography:
   display-small:
-    fontFamily: "Roboto, system-ui, -apple-system, sans-serif"
+    fontFamily: "Sora, Roboto, system-ui, -apple-system, sans-serif"
     fontSize: "32px"
-    fontWeight: 700
+    fontWeight: 600
     lineHeight: "38px"
-    letterSpacing: "-0.5px"
+    letterSpacing: "-0.6px"
   headline-medium:
-    fontFamily: "Roboto, system-ui, -apple-system, sans-serif"
+    fontFamily: "Sora, Roboto, system-ui, -apple-system, sans-serif"
     fontSize: "26px"
-    fontWeight: 700
+    fontWeight: 600
     lineHeight: "32px"
-    letterSpacing: "-0.3px"
+    letterSpacing: "-0.4px"
   headline-small:
-    fontFamily: "Roboto, system-ui, -apple-system, sans-serif"
+    fontFamily: "Sora, Roboto, system-ui, -apple-system, sans-serif"
     fontSize: "22px"
     fontWeight: 600
     lineHeight: "28px"
-    letterSpacing: "-0.15px"
+    letterSpacing: "-0.25px"
   title-large:
-    fontFamily: "Roboto, system-ui, -apple-system, sans-serif"
+    fontFamily: "Sora, Roboto, system-ui, -apple-system, sans-serif"
     fontSize: "19px"
     fontWeight: 600
     lineHeight: "25px"
-    letterSpacing: "0px"
+    letterSpacing: "-0.15px"
   title-medium:
-    fontFamily: "Roboto, system-ui, -apple-system, sans-serif"
+    fontFamily: "Sora, Roboto, system-ui, -apple-system, sans-serif"
     fontSize: "16px"
     fontWeight: 600
     lineHeight: "22px"
-    letterSpacing: "0.1px"
+    letterSpacing: "0px"
   title-small:
     fontFamily: "Roboto, system-ui, -apple-system, sans-serif"
     fontSize: "14px"
@@ -283,19 +283,20 @@ Swiftfox pairs three warm-shifted Material 3 neutral surface ladders with a sing
 
 ## Typography
 
-**Display Font:** Android system Sans-Serif / Roboto (`FontFamily.SansSerif`, fallback `system-ui, sans-serif`)
+**Display & Header Font:** Bundled **Sora** (`sora_bold.ttf` for the `Swiftfox` wordmark; `sora_semibold.ttf` for all app headers from `displaySmall` through `titleMedium`)
 **Body Font:** Android system Sans-Serif / Roboto (`FontFamily.SansSerif`, fallback `system-ui, sans-serif`)
 **Label Font:** Android system Sans-Serif / Roboto (`FontFamily.SansSerif`, fallback `system-ui, sans-serif`)
 
-**Character:** Crisp, familiar, zero-overhead native Android typography tuned for high-velocity scanning at 120Hz. Weight contrast and tight display tracking vs. open label tracking carry hierarchy without adding custom webfont loading latency or fighting rendered webpage typography. All frontmatter `px` values map 1:1 to Android `sp` at `1.0x` system font scale.
+**Character:** Bundled Sora (`700` Bold for the `Swiftfox` wordmark lockup at `-0.025em` tracking; `600` SemiBold across screen, sheet, and section headers) pairs wide geometric velocity with the faceted fox emblem, while native Roboto handles body copy, URLs, and dense controls at 120Hz. All frontmatter `px` values map 1:1 to Android `sp` at `1.0x` system font scale.
 
 ### Hierarchy
 
-- **Display Small** (`700` Bold, `32sp` / `38sp` line height, `-0.5sp` tracking): Start Page `Swiftfox` wordmark alongside `SwiftfoxEmblem`.
-- **Headline Medium** (`700` Bold, `26sp` / `32sp` line height, `-0.3sp` tracking): Private Space Start Page header.
-- **Headline Small** (`600` SemiBold, `22sp` / `28sp` line height, `-0.15sp` tracking): Top-level overlay screen titles such as `SpacesTabSwitcher` active Space / `Private Tabs` heading.
-- **Title Large** (`600` SemiBold, `19sp` / `25sp` line height, `0sp` tracking): Quick Controls page title header, Start Page Essential monogram glyph, and empty-state titles.
-- **Title Medium** (`600` SemiBold, `16sp` / `22sp` line height, `0.1sp` tracking): Settings section headers (`primary` colored), Start Page section titles (`Essentials`, `Open in Space`), and sidebar wordmark.
+- **Wordmark (`SwiftfoxWordmark`)** (Sora `700` Bold, `-0.025em` tracking): Brand lockup alongside the full-shaded Orange or Purple `SwiftfoxEmblem` / `SwiftfoxAppIcon`.
+- **Display Small** (Sora `600` SemiBold, `32sp` / `38sp` line height, `-0.6sp` tracking): Large display headers.
+- **Headline Medium** (Sora `600` SemiBold, `26sp` / `32sp` line height, `-0.4sp` tracking): Private Space Start Page header.
+- **Headline Small** (Sora `600` SemiBold, `22sp` / `28sp` line height, `-0.25sp` tracking): Top-level overlay screen titles such as `SpacesTabSwitcher` active Space / `Private Tabs` heading.
+- **Title Large** (Sora `600` SemiBold, `19sp` / `25sp` line height, `-0.15sp` tracking): TopAppBar titles, Quick Controls page title header, Start Page Essential monogram glyph, and empty-state titles.
+- **Title Medium** (Sora `600` SemiBold, `16sp` / `22sp` line height, `0sp` tracking): Settings section headers (`primary` colored), Start Page section titles (`Essentials`, `Open in Space`), and compact headers.
 - **Title Small** (`600` SemiBold, `14sp` / `20sp` line height, `0.1sp` tracking): Quick Control tile titles, Tab Preview card titles, Start Page jump card titles, Settings switch/radio titles, and library row titles.
 - **Body Large** (`400` Regular, `16sp` / `24sp` line height, `0sp` tracking): Focused omnibox input text, Start Page search prompt, omnibox suggestion primary lines, and Context Menu action rows.
 - **Body Medium** (`400` Regular, `14sp` / `20sp` line height, `0sp` tracking): Resting omnibox display host (bumped to `500` Medium when displaying an active host), Find-in-Page input, dialog messages, and empty-state descriptions.

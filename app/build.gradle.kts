@@ -65,8 +65,8 @@ android {
         applicationId = if (isBeta) "app.overbay.swiftfox.beta" else "app.overbay.swiftfox"
         minSdk = 31
         targetSdk = 35
-        versionCode = 1
-        versionName = if (isBeta) "0.1.0-beta" else "0.1.0"
+        versionCode = 2
+        versionName = if (isBeta) "0.2.0-beta" else "0.2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -163,6 +163,7 @@ dependencies {
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.androidx.media)
     implementation(libs.androidx.swiperefreshlayout)
+    implementation(libs.androidx.work.runtime.ktx)
 
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)

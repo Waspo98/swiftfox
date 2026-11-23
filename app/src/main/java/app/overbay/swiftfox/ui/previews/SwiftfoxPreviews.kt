@@ -111,6 +111,7 @@ fun FoldedStartDarkPreview() {
             onGoBack = {},
             onGoForward = {},
             onReloadOrStop = {},
+            onOpenReaderMode = {},
             onOpenQuickControls = {},
             onOpenTabSwitcher = {},
             onOpenSettings = {},
@@ -127,6 +128,12 @@ fun FoldedStartDarkPreview() {
             onFindQueryChange = {},
             onFindNext = {},
             onCloseFind = {},
+            onAdjustZapperScope = {},
+            onSetZapperScopeDepth = {},
+            onZapOnce = {},
+            onBlockPermanently = {},
+            onUndoTemporaryZap = {},
+            onStopZapper = {},
             webContent = {}
         )
     }
@@ -147,6 +154,7 @@ fun FoldedStartDayPreview() {
             onGoBack = {},
             onGoForward = {},
             onReloadOrStop = {},
+            onOpenReaderMode = {},
             onOpenQuickControls = {},
             onOpenTabSwitcher = {},
             onOpenSettings = {},
@@ -163,6 +171,12 @@ fun FoldedStartDayPreview() {
             onFindQueryChange = {},
             onFindNext = {},
             onCloseFind = {},
+            onAdjustZapperScope = {},
+            onSetZapperScopeDepth = {},
+            onZapOnce = {},
+            onBlockPermanently = {},
+            onUndoTemporaryZap = {},
+            onStopZapper = {},
             webContent = {}
         )
     }
@@ -189,6 +203,7 @@ fun FoldedAmoledLargeFontPreview() {
             onGoBack = {},
             onGoForward = {},
             onReloadOrStop = {},
+            onOpenReaderMode = {},
             onOpenQuickControls = {},
             onOpenTabSwitcher = {},
             onOpenSettings = {},
@@ -205,6 +220,12 @@ fun FoldedAmoledLargeFontPreview() {
             onFindQueryChange = {},
             onFindNext = {},
             onCloseFind = {},
+            onAdjustZapperScope = {},
+            onSetZapperScopeDepth = {},
+            onZapOnce = {},
+            onBlockPermanently = {},
+            onUndoTemporaryZap = {},
+            onStopZapper = {},
             webContent = {}
         )
     }
@@ -226,8 +247,11 @@ fun QuickControlsSheetPreview() {
                 onPrintPage = {},
                 onToggleSiteMode = {},
                 onToggleWebDarkMode = {},
-                onToggleHttpsOnly = {},
+                onToggleShieldAdblock = {},
                 onEnterPip = {},
+                onLaunchZapper = {},
+                onOpenReaderMode = {},
+                onOpenSiteRules = {},
                 onFindInPage = {},
                 onPinEssential = {},
                 onCycleToolbarPlacement = {},
@@ -277,6 +301,7 @@ fun UnfoldedFoldableBrowserPreview() {
             onGoBack = {},
             onGoForward = {},
             onReloadOrStop = {},
+            onOpenReaderMode = {},
             onOpenQuickControls = {},
             onOpenTabSwitcher = {},
             onOpenSettings = {},
@@ -293,6 +318,12 @@ fun UnfoldedFoldableBrowserPreview() {
             onFindQueryChange = {},
             onFindNext = {},
             onCloseFind = {},
+            onAdjustZapperScope = {},
+            onSetZapperScopeDepth = {},
+            onZapOnce = {},
+            onBlockPermanently = {},
+            onUndoTemporaryZap = {},
+            onStopZapper = {},
             webContent = {
                 Box(
                     modifier = Modifier

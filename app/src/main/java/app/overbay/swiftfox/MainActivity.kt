@@ -60,6 +60,26 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.StartActivityForResult()
     ) { _ -> }
 
+    private val userscriptFileLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@registerForActivityResult
+        val code = runCatching {
+            contentResolver.openInputStream(uri)?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }
+        }.getOrNull()
+        if (code != null) {
+            val fallbackName = uri.lastPathSegment
+                ?.substringAfterLast('/')
+                ?.removeSuffix(".user.js")
+                ?.removeSuffix(".js")
+                ?.takeIf { it.isNotBlank() }
+                ?: "Imported Userscript"
+            viewModel.installUserscriptFromCode(code, fallbackName)
+        } else {
+            viewModel.showSnackbar("Could not read selected userscript file")
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -187,6 +207,14 @@ class MainActivity : ComponentActivity() {
 
         viewModel.onHideFullscreenViewBridge = {
             exitFullscreenVideo()
+        }
+
+        viewModel.onImportUserscriptFileBridge = {
+            runCatching {
+                userscriptFileLauncher.launch(arrayOf("*/*"))
+            }.onFailure {
+                viewModel.showSnackbar("Could not open file picker")
+            }
         }
     }
 

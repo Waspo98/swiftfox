@@ -319,24 +319,24 @@
     },
     "typographyMeta": {
       "display-small": {
-        "displayName": "Display Small (32sp Bold)",
-        "purpose": "Start Page Swiftfox brand wordmark paired with SwiftfoxEmblem."
+        "displayName": "Display Small (32sp Sora SemiBold / Wordmark Bold)",
+        "purpose": "Start Page Swiftfox wordmark (Sora Bold) and large display headings (Sora SemiBold)."
       },
       "headline-medium": {
-        "displayName": "Headline Medium (26sp Bold)",
+        "displayName": "Headline Medium (26sp Sora SemiBold)",
         "purpose": "Private Space Start Page primary heading."
       },
       "headline-small": {
-        "displayName": "Headline Small (22sp SemiBold)",
+        "displayName": "Headline Small (22sp Sora SemiBold)",
         "purpose": "SpacesTabSwitcher active Space and Private Tabs screen title."
       },
       "title-large": {
-        "displayName": "Title Large (19sp SemiBold)",
-        "purpose": "Quick Controls sheet page header, Essential tile monograms, and empty-state headings."
+        "displayName": "Title Large (19sp Sora SemiBold)",
+        "purpose": "TopAppBar titles, Quick Controls sheet page header, Essential tile monograms, and empty-state headings."
       },
       "title-medium": {
-        "displayName": "Title Medium (16sp SemiBold)",
-        "purpose": "Settings section headings, Start Page section titles, and sidebar wordmark."
+        "displayName": "Title Medium (16sp Sora SemiBold)",
+        "purpose": "Settings section headings, Start Page section titles, and compact headers."
       },
       "title-small": {
         "displayName": "Title Small (14sp SemiBold)",

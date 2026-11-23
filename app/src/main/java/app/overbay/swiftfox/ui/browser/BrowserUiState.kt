@@ -4,19 +4,26 @@ import android.graphics.Bitmap
 import app.overbay.swiftfox.data.db.BookmarkEntity
 import app.overbay.swiftfox.data.db.DownloadRecordEntity
 import app.overbay.swiftfox.data.db.EssentialEntity
+import app.overbay.swiftfox.data.db.FilterListEntity
 import app.overbay.swiftfox.data.db.HistoryEntity
 import app.overbay.swiftfox.data.db.SiteOverrideEntity
 import app.overbay.swiftfox.data.db.SpaceEntity
+import app.overbay.swiftfox.data.db.UserscriptEntity
+import app.overbay.swiftfox.data.db.ZappedRuleEntity
 import app.overbay.swiftfox.data.prefs.BrowserSettings
-import app.overbay.swiftfox.data.prefs.DevicePosture
 import app.overbay.swiftfox.data.prefs.SiteMode
+import app.overbay.swiftfox.data.prefs.ThemeMode
+import app.overbay.swiftfox.data.prefs.WebDarkModePreference
 import app.overbay.swiftfox.engine.ContextMenuHit
 import app.overbay.swiftfox.engine.ExternalAppPrompt
 import app.overbay.swiftfox.engine.HttpsUpgradeErrorPrompt
 import app.overbay.swiftfox.engine.SitePermissionPrompt
+import app.overbay.swiftfox.features.adblock.AdblockEngineStatus
 import app.overbay.swiftfox.features.foldable.FoldableWindowState
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
 import app.overbay.swiftfox.features.omnibox.OmniboxSuggestion
+import app.overbay.swiftfox.features.reader.ReaderArticle
+import app.overbay.swiftfox.features.zapper.ZapperUiState
 
 enum class BrowserOverlay {
     NONE,
@@ -24,7 +31,10 @@ enum class BrowserOverlay {
     SETTINGS,
     BOOKMARKS,
     HISTORY,
-    DOWNLOADS
+    DOWNLOADS,
+    FILTER_LISTS,
+    USERSCRIPTS,
+    ZAPPED_RULES
 }
 
 data class BrowserTabUi(
@@ -41,6 +51,9 @@ data class BrowserTabUi(
     val siteModeOverride: SiteMode? = null,
     val resolvedSiteMode: SiteMode = SiteMode.MOBILE,
     val isPlayingMedia: Boolean = false,
+    val blockedCount: Int = 0,
+    val isReaderAvailable: Boolean = false,
+    val darkReaderSkippedNative: Boolean = false,
     val lastAccessedAt: Long = System.currentTimeMillis()
 ) {
     val isStartPage: Boolean
@@ -74,12 +87,21 @@ data class BrowserUiState(
     val omniboxQuery: String = "",
     val omniboxSuggestions: List<OmniboxSuggestion> = emptyList(),
     val isQuickControlsOpen: Boolean = false,
+    val isSiteRulesOpen: Boolean = false,
     val activeOverlay: BrowserOverlay = BrowserOverlay.NONE,
     val findInPage: FindInPageState = FindInPageState(),
     val bookmarks: List<BookmarkEntity> = emptyList(),
     val history: List<HistoryEntity> = emptyList(),
     val downloads: List<DownloadRecordEntity> = emptyList(),
     val siteOverrides: Map<String, SiteOverrideEntity> = emptyMap(),
+    val filterLists: List<FilterListEntity> = emptyList(),
+    val isUpdatingFilterLists: Boolean = false,
+    val adblockStatus: AdblockEngineStatus = AdblockEngineStatus(),
+    val zappedRules: List<ZappedRuleEntity> = emptyList(),
+    val zapper: ZapperUiState = ZapperUiState(),
+    val userscripts: List<UserscriptEntity> = emptyList(),
+    val readerArticle: ReaderArticle? = null,
+    val isReaderLoading: Boolean = false,
     val isWebViewScrolledToTop: Boolean = true,
     val contextMenuHit: ContextMenuHit? = null,
     val externalAppPrompt: ExternalAppPrompt? = null,
@@ -88,6 +110,7 @@ data class BrowserUiState(
     val isInPictureInPicture: Boolean = false,
     val isFullscreenVideo: Boolean = false,
     val snackbarMessage: String? = null,
+    val snackbarUndoZapper: Boolean = false,
     val recentlyClosedTab: BrowserTabUi? = null
 ) {
     val activeTab: BrowserTabUi?
@@ -124,11 +147,9 @@ data class BrowserUiState(
             val siteOver = activeSiteOverride?.webDarkModeOverride
             if (siteOver != null) return siteOver
             return when (settings.webDarkMode) {
-                app.overbay.swiftfox.data.prefs.WebDarkModePreference.OFF -> false
-                app.overbay.swiftfox.data.prefs.WebDarkModePreference.ALWAYS_ON -> true
-                app.overbay.swiftfox.data.prefs.WebDarkModePreference.FOLLOW_APP -> {
-                    settings.themeMode != app.overbay.swiftfox.data.prefs.ThemeMode.DAY
-                }
+                WebDarkModePreference.OFF -> false
+                WebDarkModePreference.ALWAYS_ON -> true
+                WebDarkModePreference.FOLLOW_APP -> settings.themeMode != ThemeMode.DAY
             }
         }
 }

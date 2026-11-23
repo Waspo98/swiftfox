@@ -23,29 +23,36 @@ import app.overbay.swiftfox.data.db.SiteOverrideEntity
 import app.overbay.swiftfox.data.db.SpaceEntity
 import app.overbay.swiftfox.data.db.SwiftfoxDatabase
 import app.overbay.swiftfox.data.db.TabEntity
+import app.overbay.swiftfox.data.db.ZappedRuleEntity
 import app.overbay.swiftfox.data.prefs.AccentPreset
-import app.overbay.swiftfox.data.prefs.BrowserSettings
 import app.overbay.swiftfox.data.prefs.DevicePosture
 import app.overbay.swiftfox.data.prefs.ExternalAppLinkPolicy
 import app.overbay.swiftfox.data.prefs.NightSurfaceStyle
+import app.overbay.swiftfox.data.prefs.ReaderFontFamily
+import app.overbay.swiftfox.data.prefs.ReaderSurfaceMode
 import app.overbay.swiftfox.data.prefs.SearchEngineId
 import app.overbay.swiftfox.data.prefs.SiteMode
 import app.overbay.swiftfox.data.prefs.ThemeMode
 import app.overbay.swiftfox.data.prefs.ToolbarPlacement
+import app.overbay.swiftfox.data.prefs.WebDarkEngine
 import app.overbay.swiftfox.data.prefs.WebDarkModePreference
 import app.overbay.swiftfox.engine.BackgroundMediaService
 import app.overbay.swiftfox.engine.BrowserSession
 import app.overbay.swiftfox.engine.ContextMenuHit
 import app.overbay.swiftfox.engine.ExternalAppPrompt
 import app.overbay.swiftfox.engine.HttpsUpgradeErrorPrompt
+import app.overbay.swiftfox.engine.ScriptInjector
 import app.overbay.swiftfox.engine.SessionHostCallbacks
 import app.overbay.swiftfox.engine.SitePermissionPrompt
+import app.overbay.swiftfox.features.darkreader.DarkReaderConfig
 import app.overbay.swiftfox.features.foldable.FoldableWindowState
 import app.overbay.swiftfox.features.foldable.SiteModeResolver
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
 import app.overbay.swiftfox.features.omnibox.OmniboxSuggestion
 import app.overbay.swiftfox.features.omnibox.SuggestionKind
 import app.overbay.swiftfox.features.sharing.CleanUrlSanitizer
+import app.overbay.swiftfox.features.userscripts.UserscriptRunAt
+import app.overbay.swiftfox.features.zapper.ZapperUiState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -55,6 +62,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.UUID
 
 class BrowserViewModel(application: Application) : AndroidViewModel(application) {
@@ -76,6 +84,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     var onShowFullscreenViewBridge: ((View, WebChromeClient.CustomViewCallback) -> Unit)? = null
     var onHideFullscreenViewBridge: (() -> Unit)? = null
     var onSystemDarkThemeProvider: (() -> Boolean)? = null
+    var onImportUserscriptFileBridge: (() -> Unit)? = null
 
     private var suggestionJob: Job? = null
     private var initialTabsLoaded = false
@@ -92,22 +101,111 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 ?: _uiState.value.settings.externalAppLinkPolicy
         }
 
+        override fun shouldBlockNetworkRequest(
+            tabId: String,
+            requestUrl: String,
+            pageUrl: String,
+            headers: Map<String, String>
+        ): Boolean {
+            val state = _uiState.value
+            val pageHost = OmniboxEngine.extractHost(pageUrl).lowercase()
+            val siteDisabled = state.siteOverrides[pageHost]?.adblockDisabled == true
+            val resourceType = app.adblockEngine.inferResourceType(requestUrl, headers)
+            val blocked = app.adblockEngine.shouldBlock(
+                requestUrl = requestUrl,
+                pageUrl = pageUrl,
+                resourceType = resourceType,
+                globalEnabled = state.settings.adblockEnabled,
+                siteDisabled = siteDisabled
+            )
+            if (blocked) {
+                _uiState.update { current ->
+                    current.copy(
+                        tabs = current.tabs.map { tab ->
+                            if (tab.id == tabId) tab.copy(blockedCount = tab.blockedCount + 1) else tab
+                        }
+                    )
+                }
+            }
+            return blocked
+        }
+
         override fun onPageStarted(
             tabId: String,
             url: String,
             canGoBack: Boolean,
             canGoForward: Boolean
         ) {
+            val currentTab = _uiState.value.tabs.firstOrNull { it.id == tabId }
+            val isSameUrl = currentTab?.url == url
             updateTab(tabId) { tab ->
                 tab.copy(
                     url = url,
                     isLoading = true,
                     progress = 12,
                     canGoBack = canGoBack,
-                    canGoForward = canGoForward
+                    canGoForward = canGoForward,
+                    blockedCount = if (isSameUrl) tab.blockedCount else 0,
+                    isReaderAvailable = false,
+                    darkReaderSkippedNative = false
                 )
             }
+            if (_uiState.value.activeTabId == tabId) {
+                if (_uiState.value.zapper.isActive) {
+                    _uiState.update { it.copy(zapper = ZapperUiState()) }
+                }
+                if (_uiState.value.readerArticle != null) {
+                    _uiState.update { it.copy(readerArticle = null) }
+                }
+            }
             applyResolvedSettingsToTab(tabId, reloadIfModeChanged = false)
+        }
+
+        override fun onInjectOnPageStarted(tabId: String, url: String) {
+            if (!url.startsWith("http://") && !url.startsWith("https://")) return
+            val session = pool.getExisting(tabId) ?: return
+            val state = _uiState.value
+            val host = OmniboxEngine.extractHost(url).lowercase()
+            val siteOverride = state.siteOverrides[host]
+            val siteAdblockDisabled = siteOverride?.adblockDisabled == true
+            val cosmetic = app.adblockEngine.cosmeticForUrl(
+                url = url,
+                globalEnabled = state.settings.adblockEnabled,
+                cosmeticEnabled = state.settings.adblockCosmeticEnabled,
+                siteDisabled = siteAdblockDisabled
+            )
+            val darkState = DarkReaderConfig.resolve(
+                settings = state.settings,
+                siteOverride = siteOverride,
+                isChromeDark = isChromeDark()
+            )
+            viewModelScope.launch(Dispatchers.IO) {
+                val zappedRules = if (host.isNotBlank()) db.zappedRuleDao().getEnabledForHost(host) else emptyList()
+                val docStartUserscripts = if (state.settings.userscriptsEnabled) {
+                    app.userscriptRepository.matchingScriptsFor(url, UserscriptRunAt.DOCUMENT_START)
+                } else {
+                    emptyList()
+                }
+                val docStartJs = if (docStartUserscripts.isNotEmpty()) {
+                    app.userscriptBridge.buildInjectionScript(docStartUserscripts, UserscriptRunAt.DOCUMENT_START)
+                } else {
+                    ""
+                }
+                val zappedCss = app.zapperController.buildCssForRules(zappedRules)
+                withContext(Dispatchers.Main) {
+                    session.updateDocumentStartScript(cosmetic.css, zappedCss, docStartJs)
+                    ScriptInjector.injectOnPageStarted(
+                        webView = session.webView,
+                        cosmetic = cosmetic,
+                        zappedRules = zappedRules,
+                        zapperController = app.zapperController,
+                        darkState = darkState,
+                        darkReaderInjector = app.darkReaderInjector,
+                        docStartUserscripts = docStartUserscripts,
+                        userscriptBridge = app.userscriptBridge
+                    )
+                }
+            }
         }
 
         override fun onPageFinished(
@@ -139,6 +237,56 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             }
         }
 
+        override fun onInjectOnPageFinished(tabId: String, url: String) {
+            if (!url.startsWith("http://") && !url.startsWith("https://")) return
+            val session = pool.getExisting(tabId) ?: return
+            val state = _uiState.value
+            val host = OmniboxEngine.extractHost(url).lowercase()
+            val siteOverride = state.siteOverrides[host]
+            val siteAdblockDisabled = siteOverride?.adblockDisabled == true
+            val cosmetic = app.adblockEngine.cosmeticForUrl(
+                url = url,
+                globalEnabled = state.settings.adblockEnabled,
+                cosmeticEnabled = state.settings.adblockCosmeticEnabled,
+                siteDisabled = siteAdblockDisabled
+            )
+            val darkState = DarkReaderConfig.resolve(
+                settings = state.settings,
+                siteOverride = siteOverride,
+                isChromeDark = isChromeDark()
+            )
+            viewModelScope.launch(Dispatchers.IO) {
+                val zappedRules = if (host.isNotBlank()) db.zappedRuleDao().getEnabledForHost(host) else emptyList()
+                val docEndUserscripts = if (state.settings.userscriptsEnabled) {
+                    app.userscriptRepository.matchingScriptsFor(url, UserscriptRunAt.DOCUMENT_END)
+                } else {
+                    emptyList()
+                }
+                val docIdleUserscripts = if (state.settings.userscriptsEnabled) {
+                    app.userscriptRepository.matchingScriptsFor(url, UserscriptRunAt.DOCUMENT_IDLE)
+                } else {
+                    emptyList()
+                }
+                withContext(Dispatchers.Main) {
+                    ScriptInjector.injectOnPageFinished(
+                        webView = session.webView,
+                        cosmetic = cosmetic,
+                        zappedRules = zappedRules,
+                        zapperController = app.zapperController,
+                        darkState = darkState,
+                        darkReaderInjector = app.darkReaderInjector,
+                        docEndUserscripts = docEndUserscripts,
+                        docIdleUserscripts = docIdleUserscripts,
+                        userscriptBridge = app.userscriptBridge
+                    )
+                    session.evaluateJavascript(app.readerExtractor.buildCheckReadableScript()) { raw ->
+                        val readable = raw?.trim().equals("true", ignoreCase = true)
+                        updateTab(tabId) { it.copy(isReaderAvailable = readable) }
+                    }
+                }
+            }
+        }
+
         override fun onVisitedHistoryUpdated(
             tabId: String,
             url: String,
@@ -165,7 +313,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
 
         override fun onFaviconReceived(tabId: String, icon: Bitmap?) {
-            // Reserved for favicon caching in M2/M3
+            // Reserved for favicon caching in M3
         }
 
         override fun onShowCustomView(view: View, callback: WebChromeClient.CustomViewCallback) {
@@ -346,6 +494,120 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 _uiState.update { it.copy(isWebViewScrolledToTop = atTop) }
             }
         }
+
+        override fun onZapperSelectionChanged(tabId: String, json: String) {
+            val event = app.zapperController.parseSelectionEvent(json) ?: return
+            viewModelScope.launch(Dispatchers.Main) {
+                if (_uiState.value.activeTabId != tabId) return@launch
+                _uiState.update { state ->
+                    state.copy(
+                        zapper = state.zapper.copy(
+                            isActive = true,
+                            selectedSelector = event.selector,
+                            selectedSummary = event.summary,
+                            scopeDepth = event.scopeDepth,
+                            maxScopeDepth = event.maxScopeDepth,
+                            matchCount = event.matchCount
+                        )
+                    )
+                }
+            }
+        }
+
+        override fun onZapperTemporaryZap(tabId: String, json: String) {
+            val event = app.zapperController.parseTemporaryZapEvent(json) ?: return
+            viewModelScope.launch(Dispatchers.Main) {
+                if (_uiState.value.activeTabId != tabId) return@launch
+                _uiState.update { state ->
+                    state.copy(
+                        zapper = state.zapper.copy(
+                            selectedSelector = null,
+                            selectedSummary = "",
+                            scopeDepth = 0,
+                            maxScopeDepth = 0,
+                            matchCount = 0,
+                            temporaryZapCount = event.temporaryZapCount,
+                            lastTemporaryZapSummary = event.summary
+                        ),
+                        snackbarMessage = "Zapped ${event.summary.ifBlank { "element" }}",
+                        snackbarUndoZapper = true,
+                        recentlyClosedTab = null
+                    )
+                }
+            }
+        }
+
+        override fun onZapperUndoTemporaryZap(tabId: String, json: String) {
+            val count = app.zapperController.parseUndoCount(json)
+            viewModelScope.launch(Dispatchers.Main) {
+                if (_uiState.value.activeTabId != tabId) return@launch
+                _uiState.update { state ->
+                    state.copy(
+                        zapper = state.zapper.copy(temporaryZapCount = count),
+                        snackbarMessage = "Restored element",
+                        snackbarUndoZapper = false
+                    )
+                }
+            }
+        }
+
+        override fun onZapperPermanentRule(tabId: String, json: String) {
+            val event = app.zapperController.parsePermanentRuleEvent(json) ?: return
+            viewModelScope.launch(Dispatchers.Main) {
+                val tab = _uiState.value.tabs.firstOrNull { it.id == tabId } ?: return@launch
+                val host = tab.displayHost.lowercase()
+                if (host.isBlank()) return@launch
+                val rule = ZappedRuleEntity(
+                    id = "zap_${UUID.randomUUID().toString().take(12)}",
+                    host = host,
+                    selector = event.selector,
+                    label = event.label,
+                    enabled = true
+                )
+                withContext(Dispatchers.IO) {
+                    db.zappedRuleDao().upsert(rule)
+                }
+                _uiState.update { state ->
+                    state.copy(
+                        zapper = state.zapper.copy(
+                            selectedSelector = null,
+                            selectedSummary = "",
+                            scopeDepth = 0,
+                            maxScopeDepth = 0,
+                            matchCount = 0
+                        ),
+                        snackbarMessage = "Blocked permanently on $host",
+                        snackbarUndoZapper = false
+                    )
+                }
+            }
+        }
+
+        override fun onDarkReaderStatus(tabId: String, json: String) {
+            val event = app.darkReaderInjector.parseStatusJson(json) ?: return
+            viewModelScope.launch(Dispatchers.Main) {
+                updateTab(tabId) { it.copy(darkReaderSkippedNative = event.skippedNativeDark) }
+            }
+        }
+
+        override fun onUserscriptSetValue(scriptId: String, key: String, valueJson: String) {
+            app.userscriptBridge.handleSetValue(scriptId, key, valueJson)
+        }
+
+        override fun onUserscriptDeleteValue(scriptId: String, key: String) {
+            app.userscriptBridge.handleDeleteValue(scriptId, key)
+        }
+
+        override fun onUserscriptXmlHttpRequest(
+            tabId: String,
+            scriptId: String,
+            reqId: String,
+            requestJson: String
+        ) {
+            app.userscriptBridge.handleXmlHttpRequest(scriptId, reqId, requestJson) { callbackJs ->
+                pool.getExisting(tabId)?.evaluateJavascript(callbackJs)
+            }
+        }
     }
 
     init {
@@ -360,6 +622,30 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 if (oldSettings != newSettings) {
                     syncAllWarmSessionsWithSettings(reloadActiveOnSiteModeChange = false)
                 }
+            }
+        }
+
+        viewModelScope.launch {
+            app.adblockEngine.status.collectLatest { status ->
+                _uiState.update { it.copy(adblockStatus = status) }
+            }
+        }
+
+        viewModelScope.launch {
+            db.filterListDao().observeAll().collectLatest { lists ->
+                _uiState.update { it.copy(filterLists = lists) }
+            }
+        }
+
+        viewModelScope.launch {
+            db.zappedRuleDao().observeAll().collectLatest { rules ->
+                _uiState.update { it.copy(zappedRules = rules) }
+            }
+        }
+
+        viewModelScope.launch {
+            db.userscriptDao().observeAll().collectLatest { scripts ->
+                _uiState.update { it.copy(userscripts = scripts) }
             }
         }
 
@@ -543,7 +829,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 } else {
                     state.activeOverlay
                 },
-                isOmniboxFocused = false
+                isOmniboxFocused = false,
+                readerArticle = if (selectImmediately) null else state.readerArticle,
+                zapper = if (selectImmediately) ZapperUiState() else state.zapper
             )
         }
 
@@ -557,6 +845,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         val previousActive = _uiState.value.activeTabId
         if (previousActive != null && previousActive != tabId) {
             captureThumbnailFor(previousActive)
+            if (_uiState.value.zapper.isActive) {
+                pool.getExisting(previousActive)?.evaluateJavascript(app.zapperController.buildStopScript())
+            }
         }
         val target = _uiState.value.tabs.firstOrNull { it.id == tabId } ?: return
         _uiState.update { state ->
@@ -566,7 +857,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 activeSpaceId = if (!target.isPrivate) target.spaceId else state.activeSpaceId,
                 activeOverlay = BrowserOverlay.NONE,
                 isOmniboxFocused = false,
-                findInPage = FindInPageState()
+                findInPage = FindInPageState(),
+                zapper = ZapperUiState(),
+                readerArticle = null
             )
         }
         applyResolvedSettingsToTab(tabId, reloadIfModeChanged = false)
@@ -612,11 +905,14 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 tabs = remaining,
                 activeTabId = nextActiveId,
                 recentlyClosedTab = if (!closing.isPrivate && !closing.isStartPage) closing else null,
+                snackbarUndoZapper = false,
                 snackbarMessage = if (!closing.isPrivate && !closing.isStartPage) {
                     "Closed ${closing.title}"
                 } else {
                     null
-                }
+                },
+                zapper = if (state.activeTabId == tabId) ZapperUiState() else state.zapper,
+                readerArticle = if (state.activeTabId == tabId) null else state.readerArticle
             )
         }
 
@@ -644,11 +940,20 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 it.copy(
                     isPrivateView = false,
                     activeSpaceId = spaceId,
-                    activeTabId = spaceTabs.maxByOrNull { t -> t.lastAccessedAt }?.id ?: spaceTabs.first().id
+                    activeTabId = spaceTabs.maxByOrNull { t -> t.lastAccessedAt }?.id ?: spaceTabs.first().id,
+                    zapper = ZapperUiState(),
+                    readerArticle = null
                 )
             }
         } else {
-            _uiState.update { it.copy(isPrivateView = false, activeSpaceId = spaceId) }
+            _uiState.update {
+                it.copy(
+                    isPrivateView = false,
+                    activeSpaceId = spaceId,
+                    zapper = ZapperUiState(),
+                    readerArticle = null
+                )
+            }
             createTab(spaceId = spaceId, isPrivate = false, selectImmediately = true)
         }
     }
@@ -659,7 +964,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             val privateTabs = _uiState.value.tabs.filter { it.isPrivate }
             if (privateTabs.isNotEmpty()) {
                 _uiState.update {
-                    it.copy(isPrivateView = true, activeTabId = privateTabs.last().id)
+                    it.copy(
+                        isPrivateView = true,
+                        activeTabId = privateTabs.last().id,
+                        zapper = ZapperUiState(),
+                        readerArticle = null
+                    )
                 }
             } else {
                 createTab(isPrivate = true, selectImmediately = true)
@@ -741,7 +1051,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 isOmniboxFocused = false,
                 omniboxQuery = "",
                 omniboxSuggestions = emptyList(),
-                activeOverlay = BrowserOverlay.NONE
+                activeOverlay = BrowserOverlay.NONE,
+                readerArticle = null,
+                zapper = ZapperUiState()
             )
         }
         updateTab(active.id) {
@@ -749,7 +1061,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 url = url,
                 title = OmniboxEngine.extractHost(url).ifBlank { url },
                 isLoading = url != OmniboxEngine.NEW_TAB_URL,
-                progress = if (url == OmniboxEngine.NEW_TAB_URL) 0 else 10
+                progress = if (url == OmniboxEngine.NEW_TAB_URL) 0 else 10,
+                blockedCount = 0,
+                isReaderAvailable = false,
+                darkReaderSkippedNative = false
             )
         }
         if (!active.isPrivate) {
@@ -795,7 +1110,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             it.copy(
                 isOmniboxFocused = true,
                 omniboxQuery = initialText,
-                isQuickControlsOpen = false
+                isQuickControlsOpen = false,
+                isSiteRulesOpen = false
             )
         }
         onOmniboxQueryChanged(initialText)
@@ -816,7 +1132,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             val results = mutableListOf<OmniboxSuggestion>()
 
             if (trimmed.isEmpty()) {
-                // Show bang hints + recent bookmarks/history when empty
                 _uiState.value.bookmarks.take(3).forEach { bm ->
                     results += OmniboxSuggestion(
                         id = "bm_${bm.id}",
@@ -841,7 +1156,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 return@launch
             }
 
-            // Detect bang prefix
             val bang = OmniboxEngine.detectBang(trimmed)
             if (bang != null) {
                 val target = if (bang.query.isNotBlank()) {
@@ -875,7 +1189,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     }
             }
 
-            // Open tabs match
             _uiState.value.tabs
                 .filter { !it.isStartPage && (it.title.contains(trimmed, true) || it.url.contains(trimmed, true)) }
                 .take(2)
@@ -890,7 +1203,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     )
                 }
 
-            // Bookmarks & history match
             db.bookmarkDao().search(trimmed, limit = 3).forEach { bm ->
                 if (results.none { it.targetUrl == bm.url }) {
                     results += OmniboxSuggestion(
@@ -914,7 +1226,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 }
             }
 
-            // Direct URL or immediate search fallback
             val resolvedDirect = OmniboxEngine.resolveInput(trimmed, _uiState.value.settings)
             if (OmniboxEngine.looksLikeUrl(trimmed)) {
                 results.add(
@@ -939,7 +1250,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
             _uiState.update { it.copy(omniboxSuggestions = results) }
 
-            // Debounced live remote search suggestions
             delay(180)
             val live = OmniboxEngine.fetchLiveSuggestions(trimmed, _uiState.value.settings)
             if (live.isNotEmpty()) {
@@ -991,6 +1301,15 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         _uiState.update { it.copy(isQuickControlsOpen = open) }
     }
 
+    fun toggleSiteRulesSheet(open: Boolean) {
+        _uiState.update {
+            it.copy(
+                isSiteRulesOpen = open,
+                isQuickControlsOpen = if (open) false else it.isQuickControlsOpen
+            )
+        }
+    }
+
     fun setOverlay(overlay: BrowserOverlay) {
         if (overlay == BrowserOverlay.TAB_SWITCHER) {
             _uiState.value.activeTabId?.let { captureThumbnailFor(it) }
@@ -999,6 +1318,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             it.copy(
                 activeOverlay = overlay,
                 isQuickControlsOpen = false,
+                isSiteRulesOpen = false,
                 isOmniboxFocused = false
             )
         }
@@ -1038,12 +1358,20 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         val currentlyEnabled = _uiState.value.activeTabWebDarkEffective
         val nextEnabled = !currentlyEnabled
 
-        if (host.isNotBlank()) {
+        if (host.isNotBlank() && active != null) {
             viewModelScope.launch {
                 val existing = db.siteOverrideDao().getByHost(host) ?: SiteOverrideEntity(host = host)
-                db.siteOverrideDao().upsert(existing.copy(webDarkModeOverride = nextEnabled))
+                val updated = existing.copy(webDarkModeOverride = nextEnabled)
+                db.siteOverrideDao().upsert(updated)
+                val darkState = DarkReaderConfig.resolve(
+                    settings = _uiState.value.settings,
+                    siteOverride = updated,
+                    isChromeDark = isChromeDark()
+                )
+                withContext(Dispatchers.Main) {
+                    pool.getExisting(active.id)?.applyWebDarkMode(darkState, app.darkReaderInjector)
+                }
             }
-            pool.getExisting(active!!.id)?.applyWebDarkening(nextEnabled)
             showSnackbar(if (nextEnabled) "Dark web view on for $host" else "Dark web view off for $host")
         } else {
             viewModelScope.launch {
@@ -1051,6 +1379,337 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 prefs.setWebDarkMode(nextPref)
             }
         }
+    }
+
+    fun toggleActiveSiteAdblock() {
+        val active = _uiState.value.activeTab
+        val host = active?.displayHost.orEmpty()
+        if (active == null || active.isStartPage || host.isBlank()) {
+            val next = !_uiState.value.settings.adblockEnabled
+            setAdblockEnabled(next)
+            showSnackbar(if (next) "Ad blocking enabled" else "Ad blocking paused")
+            return
+        }
+        val currentlyDisabled = _uiState.value.siteOverrides[host]?.adblockDisabled == true
+        setSiteAdblockDisabled(host, !currentlyDisabled)
+    }
+
+    // Per-site override mutations
+    fun setSiteAdblockDisabled(host: String, disabled: Boolean) {
+        if (host.isBlank()) return
+        viewModelScope.launch {
+            val existing = db.siteOverrideDao().getByHost(host) ?: SiteOverrideEntity(host = host)
+            db.siteOverrideDao().upsert(existing.copy(adblockDisabled = disabled))
+            withContext(Dispatchers.Main) {
+                reloadActiveTabIfHost(host)
+                showSnackbar(if (disabled) "Ad blocking paused on $host" else "Ad blocking active on $host")
+            }
+        }
+    }
+
+    fun setSiteWebDarkOverride(host: String, override: Boolean?) {
+        if (host.isBlank()) return
+        viewModelScope.launch {
+            val existing = db.siteOverrideDao().getByHost(host) ?: SiteOverrideEntity(host = host)
+            val updated = existing.copy(webDarkModeOverride = override)
+            db.siteOverrideDao().upsert(updated)
+            val active = _uiState.value.activeTab
+            if (active != null && active.displayHost.equals(host, ignoreCase = true)) {
+                val darkState = DarkReaderConfig.resolve(_uiState.value.settings, updated, isChromeDark())
+                withContext(Dispatchers.Main) {
+                    pool.getExisting(active.id)?.applyWebDarkMode(darkState, app.darkReaderInjector)
+                }
+            }
+        }
+    }
+
+    fun setSiteModeOverride(host: String, mode: SiteMode?) {
+        if (host.isBlank()) return
+        viewModelScope.launch {
+            val existing = db.siteOverrideDao().getByHost(host) ?: SiteOverrideEntity(host = host)
+            db.siteOverrideDao().upsert(existing.copy(siteModeOverride = mode?.name))
+            withContext(Dispatchers.Main) {
+                val active = _uiState.value.activeTab
+                if (active != null && active.displayHost.equals(host, ignoreCase = true)) {
+                    updateTab(active.id) { it.copy(siteModeOverride = mode) }
+                    applyResolvedSettingsToTab(active.id, reloadIfModeChanged = true)
+                }
+            }
+        }
+    }
+
+    fun setSiteJavascriptEnabled(host: String, enabled: Boolean) {
+        if (host.isBlank()) return
+        viewModelScope.launch {
+            val existing = db.siteOverrideDao().getByHost(host) ?: SiteOverrideEntity(host = host)
+            db.siteOverrideDao().upsert(existing.copy(javascriptEnabled = enabled))
+            withContext(Dispatchers.Main) {
+                val active = _uiState.value.activeTab
+                if (active != null && active.displayHost.equals(host, ignoreCase = true)) {
+                    applyResolvedSettingsToTab(active.id, reloadIfModeChanged = true)
+                }
+                showSnackbar(if (enabled) "JavaScript enabled on $host" else "JavaScript disabled on $host")
+            }
+        }
+    }
+
+    fun setSiteCookiesEnabled(host: String, enabled: Boolean) {
+        if (host.isBlank()) return
+        viewModelScope.launch {
+            val existing = db.siteOverrideDao().getByHost(host) ?: SiteOverrideEntity(host = host)
+            db.siteOverrideDao().upsert(existing.copy(cookiesEnabled = enabled))
+            withContext(Dispatchers.Main) {
+                val active = _uiState.value.activeTab
+                if (active != null && active.displayHost.equals(host, ignoreCase = true)) {
+                    applyResolvedSettingsToTab(active.id, reloadIfModeChanged = true)
+                }
+                showSnackbar(if (enabled) "Cookies enabled on $host" else "Cookies blocked on $host")
+            }
+        }
+    }
+
+    fun setSiteHttpsBypass(host: String, bypass: Boolean) {
+        if (host.isBlank()) return
+        viewModelScope.launch {
+            val existing = db.siteOverrideDao().getByHost(host) ?: SiteOverrideEntity(host = host)
+            db.siteOverrideDao().upsert(existing.copy(httpsOnlyBypass = bypass))
+        }
+    }
+
+    fun setSiteCustomUserAgent(host: String, userAgent: String?) {
+        if (host.isBlank()) return
+        val normalized = userAgent?.trim()?.takeIf { it.isNotEmpty() }
+        viewModelScope.launch {
+            val existing = db.siteOverrideDao().getByHost(host) ?: SiteOverrideEntity(host = host)
+            db.siteOverrideDao().upsert(existing.copy(customUserAgent = normalized))
+            withContext(Dispatchers.Main) {
+                val active = _uiState.value.activeTab
+                if (active != null && active.displayHost.equals(host, ignoreCase = true)) {
+                    applyResolvedSettingsToTab(active.id, reloadIfModeChanged = true)
+                }
+                showSnackbar(if (normalized != null) "Custom User-Agent applied for $host" else "Default User-Agent restored")
+            }
+        }
+    }
+
+    // Filter lists actions
+    fun updateAllFilterLists() {
+        if (_uiState.value.isUpdatingFilterLists) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isUpdatingFilterLists = true) }
+            try {
+                val updated = app.filterListRepository.updateAllEnabled()
+                showSnackbar("Synced $updated filter lists")
+            } catch (e: Throwable) {
+                showSnackbar("Filter update failed: ${e.message ?: "error"}")
+            } finally {
+                _uiState.update { it.copy(isUpdatingFilterLists = false) }
+            }
+        }
+    }
+
+    fun toggleFilterList(id: String, enabled: Boolean) {
+        viewModelScope.launch {
+            app.filterListRepository.toggleList(id, enabled)
+        }
+    }
+
+    fun addCustomFilterList(name: String, url: String) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isUpdatingFilterLists = true) }
+            try {
+                val result = app.filterListRepository.addCustomList(name, url)
+                result.onSuccess { entity ->
+                    showSnackbar("Added ${entity.name} (${entity.ruleCount} rules)")
+                }.onFailure { err ->
+                    showSnackbar("Could not add list: ${err.message ?: "error"}")
+                }
+            } finally {
+                _uiState.update { it.copy(isUpdatingFilterLists = false) }
+            }
+        }
+    }
+
+    fun deleteCustomFilterList(id: String) {
+        viewModelScope.launch {
+            app.filterListRepository.deleteCustomList(id)
+            showSnackbar("Removed filter list")
+        }
+    }
+
+    // Element Zapper actions
+    fun startElementZapper(accentHex: String = "#E86A17") {
+        val active = _uiState.value.activeTab ?: return
+        if (active.isStartPage) {
+            showSnackbar("Open a webpage to use Element Zapper")
+            return
+        }
+        val session = pool.getExisting(active.id) ?: return
+        _uiState.update {
+            it.copy(
+                isQuickControlsOpen = false,
+                isSiteRulesOpen = false,
+                activeOverlay = BrowserOverlay.NONE,
+                zapper = ZapperUiState(isActive = true)
+            )
+        }
+        session.evaluateJavascript(app.zapperController.buildStartScript(accentHex))
+    }
+
+    fun stopElementZapper() {
+        val activeId = _uiState.value.activeTabId
+        if (activeId != null) {
+            pool.getExisting(activeId)?.evaluateJavascript(app.zapperController.buildStopScript())
+        }
+        _uiState.update { it.copy(zapper = ZapperUiState()) }
+    }
+
+    fun adjustZapperScope(delta: Int) {
+        val activeId = _uiState.value.activeTabId ?: return
+        pool.getExisting(activeId)?.evaluateJavascript(app.zapperController.buildAdjustScopeScript(delta))
+    }
+
+    fun setZapperScopeDepth(depth: Int) {
+        val activeId = _uiState.value.activeTabId ?: return
+        pool.getExisting(activeId)?.evaluateJavascript(app.zapperController.buildSetScopeScript(depth))
+    }
+
+    fun zapSelectedElementOnce() {
+        val activeId = _uiState.value.activeTabId ?: return
+        pool.getExisting(activeId)?.evaluateJavascript(app.zapperController.buildZapOnceScript())
+    }
+
+    fun undoZapperTemporaryZap() {
+        val activeId = _uiState.value.activeTabId ?: return
+        pool.getExisting(activeId)?.evaluateJavascript(app.zapperController.buildUndoLastZapScript())
+    }
+
+    fun blockSelectedElementPermanently() {
+        val activeId = _uiState.value.activeTabId ?: return
+        pool.getExisting(activeId)?.evaluateJavascript(app.zapperController.buildConfirmBlockPermanentScript())
+    }
+
+    fun toggleZappedRule(id: String, enabled: Boolean) {
+        viewModelScope.launch {
+            val current = _uiState.value.zappedRules.firstOrNull { it.id == id } ?: return@launch
+            db.zappedRuleDao().upsert(current.copy(enabled = enabled))
+            refreshZappedCssForHost(current.host)
+        }
+    }
+
+    fun deleteZappedRule(id: String) {
+        viewModelScope.launch {
+            val host = _uiState.value.zappedRules.firstOrNull { it.id == id }?.host
+            db.zappedRuleDao().deleteById(id)
+            if (host != null) {
+                refreshZappedCssForHost(host)
+            }
+        }
+    }
+
+    fun clearZappedRulesForHost(host: String) {
+        viewModelScope.launch {
+            db.zappedRuleDao().deleteByHost(host)
+            refreshZappedCssForHost(host)
+            showSnackbar("Cleared zapped rules for $host")
+        }
+    }
+
+    private suspend fun refreshZappedCssForHost(host: String) {
+        val enabledRules = withContext(Dispatchers.IO) {
+            db.zappedRuleDao().getEnabledForHost(host)
+        }
+        val script = app.zapperController.buildApplyZappedCssScript(enabledRules)
+        withContext(Dispatchers.Main) {
+            _uiState.value.tabs
+                .filter { it.displayHost.equals(host, ignoreCase = true) }
+                .forEach { tab ->
+                    pool.getExisting(tab.id)?.evaluateJavascript(script)
+                }
+        }
+    }
+
+    // Userscripts actions
+    fun toggleUserscript(id: String, enabled: Boolean) {
+        viewModelScope.launch {
+            app.userscriptRepository.setEnabled(id, enabled)
+        }
+    }
+
+    fun installUserscriptFromUrl(url: String) {
+        viewModelScope.launch {
+            val result = app.userscriptRepository.installFromUrl(url)
+            result.onSuccess { script ->
+                showSnackbar("Installed userscript ${script.name}")
+            }.onFailure { err ->
+                showSnackbar("Userscript install failed: ${err.message ?: "error"}")
+            }
+        }
+    }
+
+    fun installUserscriptFromCode(code: String, fallbackName: String = "Custom Userscript") {
+        viewModelScope.launch {
+            val result = app.userscriptRepository.installFromCode(code, fallbackName)
+            result.onSuccess { script ->
+                showSnackbar("Installed userscript ${script.name}")
+            }.onFailure { err ->
+                showSnackbar("Could not install userscript: ${err.message ?: "error"}")
+            }
+        }
+    }
+
+    fun saveUserscriptCode(existingId: String?, code: String) {
+        viewModelScope.launch {
+            val result = if (existingId != null) {
+                app.userscriptRepository.updateCode(existingId, code)
+            } else {
+                app.userscriptRepository.installFromCode(code)
+            }
+            result.onSuccess { script ->
+                showSnackbar("Saved ${script.name}")
+            }.onFailure { err ->
+                showSnackbar("Save failed: ${err.message ?: "error"}")
+            }
+        }
+    }
+
+    fun deleteUserscript(id: String) {
+        viewModelScope.launch {
+            app.userscriptRepository.deleteScript(id)
+            showSnackbar("Deleted userscript")
+        }
+    }
+
+    fun triggerImportUserscriptFile() {
+        onImportUserscriptFileBridge?.invoke()
+    }
+
+    // Reader Mode actions
+    fun openReaderMode() {
+        val active = _uiState.value.activeTab ?: return
+        if (active.isStartPage) {
+            showSnackbar("Open an article to enter Reader Mode")
+            return
+        }
+        val session = pool.getExisting(active.id) ?: return
+        _uiState.update { it.copy(isQuickControlsOpen = false, isReaderLoading = true) }
+        session.evaluateJavascript(app.readerExtractor.buildExtractScript()) { rawResult ->
+            val article = app.readerExtractor.parseExtractionResult(rawResult)
+            _uiState.update { state ->
+                if (article != null) {
+                    state.copy(readerArticle = article, isReaderLoading = false)
+                } else {
+                    state.copy(
+                        isReaderLoading = false,
+                        snackbarMessage = "Reader view unavailable for this page"
+                    )
+                }
+            }
+        }
+    }
+
+    fun closeReaderMode() {
+        _uiState.update { it.copy(readerArticle = null, isReaderLoading = false) }
     }
 
     fun toggleBookmarkForActiveTab() {
@@ -1205,7 +1864,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun resetSiteOverride(host: String) {
         viewModelScope.launch {
             db.siteOverrideDao().deleteByHost(host)
-            showSnackbar("Reset permissions for $host")
+            withContext(Dispatchers.Main) {
+                val active = _uiState.value.activeTab
+                if (active != null && active.displayHost.equals(host, ignoreCase = true)) {
+                    applyResolvedSettingsToTab(active.id, reloadIfModeChanged = true)
+                }
+                showSnackbar("Reset site overrides for $host")
+            }
         }
     }
 
@@ -1222,6 +1887,21 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun setAccentPreset(preset: AccentPreset) = viewModelScope.launch { prefs.setAccentPreset(preset) }
     fun setUseDynamicColor(enabled: Boolean) = viewModelScope.launch { prefs.setUseDynamicColor(enabled) }
     fun setWebDarkMode(pref: WebDarkModePreference) = viewModelScope.launch { prefs.setWebDarkMode(pref) }
+    fun setWebDarkEngine(engine: WebDarkEngine) = viewModelScope.launch { prefs.setWebDarkEngine(engine) }
+    fun setDarkReaderAmoled(enabled: Boolean) = viewModelScope.launch { prefs.setDarkReaderAmoled(enabled) }
+    fun setDarkReaderBrightness(value: Int) = viewModelScope.launch { prefs.setDarkReaderBrightness(value) }
+    fun setDarkReaderContrast(value: Int) = viewModelScope.launch { prefs.setDarkReaderContrast(value) }
+    fun setDarkReaderSepia(value: Int) = viewModelScope.launch { prefs.setDarkReaderSepia(value) }
+    fun setDarkReaderSkipNativeDark(enabled: Boolean) = viewModelScope.launch { prefs.setDarkReaderSkipNativeDark(enabled) }
+
+    fun setAdblockEnabled(enabled: Boolean) = viewModelScope.launch { prefs.setAdblockEnabled(enabled) }
+    fun setAdblockCosmeticEnabled(enabled: Boolean) = viewModelScope.launch { prefs.setAdblockCosmeticEnabled(enabled) }
+    fun setUserscriptsEnabled(enabled: Boolean) = viewModelScope.launch { prefs.setUserscriptsEnabled(enabled) }
+
+    fun setReaderFontFamily(family: ReaderFontFamily) = viewModelScope.launch { prefs.setReaderFontFamily(family) }
+    fun setReaderFontSizeSp(sizeSp: Int) = viewModelScope.launch { prefs.setReaderFontSizeSp(sizeSp) }
+    fun setReaderLineHeight(lineHeight: Float) = viewModelScope.launch { prefs.setReaderLineHeight(lineHeight) }
+    fun setReaderSurfaceMode(mode: ReaderSurfaceMode) = viewModelScope.launch { prefs.setReaderSurfaceMode(mode) }
 
     fun setToolbarPlacement(posture: DevicePosture, placement: ToolbarPlacement) =
         viewModelScope.launch { prefs.setToolbarPlacement(posture, placement) }
@@ -1258,11 +1938,30 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun setBlockThirdPartyCookies(enabled: Boolean) = viewModelScope.launch { prefs.setBlockThirdPartyCookies(enabled) }
 
     fun showSnackbar(message: String) {
-        _uiState.update { it.copy(snackbarMessage = message) }
+        _uiState.update { it.copy(snackbarMessage = message, snackbarUndoZapper = false) }
     }
 
     fun clearSnackbar() {
-        _uiState.update { it.copy(snackbarMessage = null, recentlyClosedTab = null) }
+        _uiState.update {
+            it.copy(
+                snackbarMessage = null,
+                snackbarUndoZapper = false,
+                recentlyClosedTab = null
+            )
+        }
+    }
+
+    private fun isChromeDark(): Boolean = when (_uiState.value.settings.themeMode) {
+        ThemeMode.DAY -> false
+        ThemeMode.NIGHT -> true
+        ThemeMode.SYSTEM -> onSystemDarkThemeProvider?.invoke() ?: true
+    }
+
+    private fun reloadActiveTabIfHost(host: String) {
+        val active = _uiState.value.activeTab ?: return
+        if (active.displayHost.equals(host, ignoreCase = true)) {
+            pool.getExisting(active.id)?.reload()
+        }
     }
 
     private fun updateTab(tabId: String, transform: (BrowserTabUi) -> BrowserTabUi) {
@@ -1340,7 +2039,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         reloadIfModeChanged: Boolean
     ) {
         val state = _uiState.value
-        val siteOverrideEntity = state.siteOverrides[tab.displayHost]
+        val siteOverrideEntity = state.siteOverrides[tab.displayHost.lowercase()]
         val siteOverride = SiteModeResolver.parseOrNull(siteOverrideEntity?.siteModeOverride)
         val resolvedMode = SiteModeResolver.resolve(
             tabOverride = tab.siteModeOverride,
@@ -1350,20 +2049,21 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         if (tab.resolvedSiteMode != resolvedMode) {
             updateTab(tab.id) { it.copy(resolvedSiteMode = resolvedMode) }
         }
-        session.applySiteMode(resolvedMode, reloadIfChanged = reloadIfModeChanged)
+        session.applySiteOverrides(
+            mode = resolvedMode,
+            customUserAgent = siteOverrideEntity?.customUserAgent,
+            javascriptEnabled = siteOverrideEntity?.javascriptEnabled ?: true,
+            cookiesEnabled = siteOverrideEntity?.cookiesEnabled ?: true,
+            blockThirdParty = state.settings.blockThirdPartyCookies,
+            reloadIfChanged = reloadIfModeChanged
+        )
 
-        val isDarkChrome = when (state.settings.themeMode) {
-            ThemeMode.DAY -> false
-            ThemeMode.NIGHT -> true
-            ThemeMode.SYSTEM -> onSystemDarkThemeProvider?.invoke() ?: true
-        }
-        val webDarkEnabled = siteOverrideEntity?.webDarkModeOverride ?: when (state.settings.webDarkMode) {
-            WebDarkModePreference.OFF -> false
-            WebDarkModePreference.ALWAYS_ON -> true
-            WebDarkModePreference.FOLLOW_APP -> isDarkChrome
-        }
-        session.applyWebDarkening(webDarkEnabled)
-        session.applyThirdPartyCookieBlocking(state.settings.blockThirdPartyCookies)
+        val darkState = DarkReaderConfig.resolve(
+            settings = state.settings,
+            siteOverride = siteOverrideEntity,
+            isChromeDark = isChromeDark()
+        )
+        session.applyWebDarkMode(darkState, app.darkReaderInjector)
         session.applyBackgroundPlayback(state.settings.backgroundMediaEnabled)
     }
 }

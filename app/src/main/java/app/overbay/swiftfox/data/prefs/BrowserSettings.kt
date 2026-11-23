@@ -84,6 +84,25 @@ enum class WebDarkModePreference(val label: String) {
     ALWAYS_ON("Always dark")
 }
 
+enum class WebDarkEngine(val label: String) {
+    DARK_READER("Dark Reader"),
+    ALGORITHMIC_LITE("Fast / Lite")
+}
+
+enum class ReaderFontFamily(val label: String) {
+    SANS("Sans"),
+    SERIF("Serif"),
+    MONO("Mono")
+}
+
+enum class ReaderSurfaceMode(val label: String) {
+    FOLLOW_APP("Follow app"),
+    DAY("Day"),
+    SEPIA("Sepia"),
+    DARK("Dark"),
+    AMOLED("AMOLED")
+}
+
 data class PostureProfile(
     val toolbarPlacement: ToolbarPlacement,
     val defaultSiteMode: SiteMode,
@@ -96,6 +115,19 @@ data class BrowserSettings(
     val accentPreset: AccentPreset = AccentPreset.FOX_AMBER,
     val useDynamicColor: Boolean = false,
     val webDarkMode: WebDarkModePreference = WebDarkModePreference.FOLLOW_APP,
+    val webDarkEngine: WebDarkEngine = WebDarkEngine.DARK_READER,
+    val darkReaderAmoled: Boolean = false,
+    val darkReaderBrightness: Int = 100,
+    val darkReaderContrast: Int = 100,
+    val darkReaderSepia: Int = 0,
+    val darkReaderSkipNativeDark: Boolean = true,
+    val adblockEnabled: Boolean = true,
+    val adblockCosmeticEnabled: Boolean = true,
+    val userscriptsEnabled: Boolean = true,
+    val readerFontFamily: ReaderFontFamily = ReaderFontFamily.SANS,
+    val readerFontSizeSp: Int = 18,
+    val readerLineHeight: Float = 1.6f,
+    val readerSurfaceMode: ReaderSurfaceMode = ReaderSurfaceMode.FOLLOW_APP,
     val foldedProfile: PostureProfile = PostureProfile(
         toolbarPlacement = ToolbarPlacement.SPLIT,
         defaultSiteMode = SiteMode.MOBILE,

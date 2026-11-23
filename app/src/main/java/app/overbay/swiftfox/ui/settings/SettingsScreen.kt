@@ -23,6 +23,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.OpenInBrowser
@@ -39,6 +40,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -54,7 +56,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import app.overbay.swiftfox.BuildConfig
 import app.overbay.swiftfox.data.prefs.AccentPreset
 import app.overbay.swiftfox.data.prefs.DevicePosture
@@ -64,9 +68,16 @@ import app.overbay.swiftfox.data.prefs.SearchEngineId
 import app.overbay.swiftfox.data.prefs.SiteMode
 import app.overbay.swiftfox.data.prefs.ThemeMode
 import app.overbay.swiftfox.data.prefs.ToolbarPlacement
+import app.overbay.swiftfox.data.prefs.WebDarkEngine
 import app.overbay.swiftfox.data.prefs.WebDarkModePreference
+import app.overbay.swiftfox.ui.browser.BrowserOverlay
 import app.overbay.swiftfox.ui.browser.BrowserUiState
 import app.overbay.swiftfox.ui.browser.BrowserViewModel
+import app.overbay.swiftfox.ui.theme.BetaChannelPill
+import app.overbay.swiftfox.ui.theme.SwiftfoxAppIcon
+import app.overbay.swiftfox.ui.theme.SwiftfoxBrand
+import app.overbay.swiftfox.ui.theme.SwiftfoxWordmark
+import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -199,6 +210,8 @@ fun SettingsScreen(
                     onCheckedChange = { viewModel.setUseDynamicColor(it) }
                 )
 
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+
                 SettingGroup(label = "Web content dark mode") {
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -213,6 +226,102 @@ fun SettingsScreen(
                         }
                     }
                 }
+
+                SettingGroup(label = "Web dark engine") {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        WebDarkEngine.entries.forEach { engine ->
+                            SelectionChip(
+                                label = engine.label,
+                                selected = settings.webDarkEngine == engine,
+                                onClick = { viewModel.setWebDarkEngine(engine) }
+                            )
+                        }
+                    }
+                }
+
+                if (settings.webDarkEngine == WebDarkEngine.DARK_READER) {
+                    SettingsSwitchRow(
+                        title = "Dark Reader AMOLED (#000000)",
+                        subtitle = "Render pure black webpage backgrounds while preserving images",
+                        checked = settings.darkReaderAmoled,
+                        onCheckedChange = { viewModel.setDarkReaderAmoled(it) }
+                    )
+                    SettingsSwitchRow(
+                        title = "Skip native dark sites",
+                        subtitle = "Leave sites already advertising dark mode untouched",
+                        checked = settings.darkReaderSkipNativeDark,
+                        onCheckedChange = { viewModel.setDarkReaderSkipNativeDark(it) }
+                    )
+                    SettingsSliderRow(
+                        label = "Brightness",
+                        valueText = "${settings.darkReaderBrightness}%",
+                        value = settings.darkReaderBrightness.toFloat(),
+                        valueRange = 50f..150f,
+                        onValueChange = { viewModel.setDarkReaderBrightness(it.roundToInt()) }
+                    )
+                    SettingsSliderRow(
+                        label = "Contrast",
+                        valueText = "${settings.darkReaderContrast}%",
+                        value = settings.darkReaderContrast.toFloat(),
+                        valueRange = 50f..150f,
+                        onValueChange = { viewModel.setDarkReaderContrast(it.roundToInt()) }
+                    )
+                    SettingsSliderRow(
+                        label = "Sepia warmth",
+                        valueText = "${settings.darkReaderSepia}%",
+                        value = settings.darkReaderSepia.toFloat(),
+                        valueRange = 0f..100f,
+                        onValueChange = { viewModel.setDarkReaderSepia(it.roundToInt()) }
+                    )
+                }
+            }
+
+            // Ad Blocking & Element Zapper
+            SettingsSection(title = "Ad Blocking & Element Zapper") {
+                val engineLabel = if (state.adblockStatus.isNativeRust) "adblock-rust JNI" else "Kotlin matcher"
+                SettingsSwitchRow(
+                    title = "Native ad & tracker blocking",
+                    subtitle = "$engineLabel · ${state.adblockStatus.totalRules} active rules",
+                    checked = settings.adblockEnabled,
+                    onCheckedChange = { viewModel.setAdblockEnabled(it) }
+                )
+                SettingsSwitchRow(
+                    title = "Cosmetic element hiding",
+                    subtitle = "Hide empty ad containers, banners, and tracking widgets",
+                    checked = settings.adblockCosmeticEnabled,
+                    onCheckedChange = { viewModel.setAdblockCosmeticEnabled(it) }
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+                SettingsNavigationRow(
+                    title = "Filter lists",
+                    subtitle = "${state.filterLists.count { it.enabled }} enabled · Add custom EasyList/uBO URLs",
+                    onClick = { viewModel.setOverlay(BrowserOverlay.FILTER_LISTS) }
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+                SettingsNavigationRow(
+                    title = "Zapped element rules",
+                    subtitle = "${state.zappedRules.size} saved per-site rules",
+                    onClick = { viewModel.setOverlay(BrowserOverlay.ZAPPED_RULES) }
+                )
+            }
+
+            // Userscripts & Reader
+            SettingsSection(title = "Userscripts & Extensibility") {
+                SettingsSwitchRow(
+                    title = "Enable userscripts (.user.js)",
+                    subtitle = "Run @match scripts with GM_addStyle, storage, and GM_xmlhttpRequest",
+                    checked = settings.userscriptsEnabled,
+                    onCheckedChange = { viewModel.setUserscriptsEnabled(it) }
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+                SettingsNavigationRow(
+                    title = "Manage userscripts",
+                    subtitle = "${state.userscripts.count { it.enabled }} active · ${state.userscripts.size} installed",
+                    onClick = { viewModel.setOverlay(BrowserOverlay.USERSCRIPTS) }
+                )
             }
 
             // Foldable & Layout Profiles
@@ -423,6 +532,8 @@ fun SettingsScreen(
                                     Text(
                                         text = entry.host,
                                         style = MaterialTheme.typography.bodyMedium,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
                                         modifier = Modifier.weight(1f)
                                     )
                                     IconButton(
@@ -469,12 +580,10 @@ fun SettingsScreen(
                     Spacer(Modifier.size(8.dp))
                     Text("Set Swiftfox as default browser")
                 }
-                Text(
-                    text = "Swiftfox v${BuildConfig.VERSION_NAME} · Android WebView 120Hz Engine · System Autofill enabled",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
             }
+
+            // About Swiftfox brand card
+            AboutSwiftfoxCard()
 
             Spacer(Modifier.height(16.dp))
         }
@@ -501,6 +610,53 @@ fun SettingsScreen(
                 }
             }
         )
+    }
+}
+
+@Composable
+private fun AboutSwiftfoxCard() {
+    Surface(
+        shape = RoundedCornerShape(22.dp),
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(18.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            SwiftfoxAppIcon(
+                size = 54.dp,
+                variant = SwiftfoxBrand.appChannelVariant
+            )
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    SwiftfoxWordmark(
+                        fontSize = 22.sp,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    if (SwiftfoxBrand.isBetaBuild) {
+                        BetaChannelPill()
+                    }
+                }
+                Text(
+                    text = "Version ${BuildConfig.VERSION_NAME} · Overbay.app",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = "Android WebView 120Hz Engine · System Autofill enabled",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
     }
 }
 
@@ -552,7 +708,7 @@ private fun SelectionChip(
     FilterChip(
         selected = selected,
         onClick = onClick,
-        label = { Text(label) },
+        label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
         shape = RoundedCornerShape(18.dp),
         colors = FilterChipDefaults.filterChipColors(
             selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
@@ -577,13 +733,88 @@ private fun SettingsSwitchRow(
         horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Column(modifier = Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.titleSmall)
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
             Text(
                 text = subtitle,
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
             )
         }
         Switch(checked = checked, onCheckedChange = onCheckedChange)
+    }
+}
+
+@Composable
+private fun SettingsNavigationRow(
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(onClick = onClick)
+            .heightIn(min = 52.dp)
+            .padding(vertical = 6.dp, horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        Icon(
+            imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+@Composable
+private fun SettingsSliderRow(
+    label: String,
+    valueText: String,
+    value: Float,
+    valueRange: ClosedFloatingPointRange<Float>,
+    onValueChange: (Float) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(label, style = MaterialTheme.typography.titleSmall)
+            Text(
+                text = valueText,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
+        Slider(
+            value = value,
+            onValueChange = onValueChange,
+            valueRange = valueRange
+        )
     }
 }

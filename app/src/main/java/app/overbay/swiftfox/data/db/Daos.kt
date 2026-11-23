@@ -139,3 +139,93 @@ interface DownloadRecordDao {
     @Query("DELETE FROM downloads")
     suspend fun clearAll()
 }
+
+@Dao
+interface FilterListDao {
+    @Query("SELECT * FROM filter_lists ORDER BY isBuiltIn DESC, name ASC")
+    fun observeAll(): Flow<List<FilterListEntity>>
+
+    @Query("SELECT * FROM filter_lists ORDER BY isBuiltIn DESC, name ASC")
+    suspend fun getAll(): List<FilterListEntity>
+
+    @Query("SELECT * FROM filter_lists WHERE enabled = 1 ORDER BY isBuiltIn DESC, name ASC")
+    suspend fun getEnabled(): List<FilterListEntity>
+
+    @Query("SELECT * FROM filter_lists WHERE id = :id LIMIT 1")
+    suspend fun getById(id: String): FilterListEntity?
+
+    @Query("SELECT COUNT(*) FROM filter_lists")
+    suspend fun count(): Int
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(list: FilterListEntity)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAll(lists: List<FilterListEntity>)
+
+    @Query("DELETE FROM filter_lists WHERE id = :id")
+    suspend fun deleteById(id: String)
+}
+
+@Dao
+interface ZappedRuleDao {
+    @Query("SELECT * FROM zapped_rules ORDER BY host ASC, createdAt DESC")
+    fun observeAll(): Flow<List<ZappedRuleEntity>>
+
+    @Query("SELECT * FROM zapped_rules WHERE host = :host ORDER BY createdAt DESC")
+    fun observeByHost(host: String): Flow<List<ZappedRuleEntity>>
+
+    @Query("SELECT * FROM zapped_rules WHERE host = :host AND enabled = 1 ORDER BY createdAt ASC")
+    suspend fun getEnabledForHost(host: String): List<ZappedRuleEntity>
+
+    @Query("SELECT * FROM zapped_rules WHERE enabled = 1 ORDER BY host ASC, createdAt ASC")
+    suspend fun getAllEnabled(): List<ZappedRuleEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(rule: ZappedRuleEntity)
+
+    @Query("DELETE FROM zapped_rules WHERE id = :id")
+    suspend fun deleteById(id: String)
+
+    @Query("DELETE FROM zapped_rules WHERE host = :host")
+    suspend fun deleteByHost(host: String)
+}
+
+@Dao
+interface UserscriptDao {
+    @Query("SELECT * FROM userscripts ORDER BY installedAt DESC")
+    fun observeAll(): Flow<List<UserscriptEntity>>
+
+    @Query("SELECT * FROM userscripts ORDER BY installedAt DESC")
+    suspend fun getAll(): List<UserscriptEntity>
+
+    @Query("SELECT * FROM userscripts WHERE enabled = 1 ORDER BY installedAt ASC")
+    suspend fun getEnabled(): List<UserscriptEntity>
+
+    @Query("SELECT * FROM userscripts WHERE id = :id LIMIT 1")
+    suspend fun getById(id: String): UserscriptEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(script: UserscriptEntity)
+
+    @Query("DELETE FROM userscripts WHERE id = :id")
+    suspend fun deleteById(id: String)
+}
+
+@Dao
+interface UserscriptStorageDao {
+    @Query("SELECT * FROM userscript_storage WHERE scriptId = :scriptId")
+    suspend fun getAllForScript(scriptId: String): List<UserscriptStorageEntity>
+
+    @Query("SELECT * FROM userscript_storage WHERE scriptId = :scriptId AND storageKey = :key LIMIT 1")
+    suspend fun getValue(scriptId: String, key: String): UserscriptStorageEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(entry: UserscriptStorageEntity)
+
+    @Query("DELETE FROM userscript_storage WHERE scriptId = :scriptId AND storageKey = :key")
+    suspend fun deleteKey(scriptId: String, key: String)
+
+    @Query("DELETE FROM userscript_storage WHERE scriptId = :scriptId")
+    suspend fun deleteAllForScript(scriptId: String)
+}

@@ -15,18 +15,21 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.MenuBook
+import androidx.compose.material.icons.rounded.AutoFixHigh
 import androidx.compose.material.icons.rounded.Bookmark
 import androidx.compose.material.icons.rounded.BookmarkBorder
 import androidx.compose.material.icons.rounded.Bookmarks
+import androidx.compose.material.icons.rounded.Code
 import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.DesktopWindows
 import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.FilterList
 import androidx.compose.material.icons.rounded.FindInPage
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.LightMode
@@ -36,7 +39,9 @@ import androidx.compose.material.icons.rounded.PushPin
 import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Share
+import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.Smartphone
+import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.ViewAgenda
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalIconButton
@@ -55,6 +60,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.overbay.swiftfox.data.prefs.SiteMode
+import app.overbay.swiftfox.data.prefs.WebDarkEngine
 import app.overbay.swiftfox.ui.browser.BrowserOverlay
 import app.overbay.swiftfox.ui.browser.BrowserUiState
 
@@ -68,8 +74,11 @@ fun QuickControlsSheet(
     onPrintPage: () -> Unit,
     onToggleSiteMode: () -> Unit,
     onToggleWebDarkMode: () -> Unit,
-    onToggleHttpsOnly: () -> Unit,
+    onToggleShieldAdblock: () -> Unit,
     onEnterPip: () -> Unit,
+    onLaunchZapper: () -> Unit,
+    onOpenReaderMode: () -> Unit,
+    onOpenSiteRules: () -> Unit,
     onFindInPage: () -> Unit,
     onPinEssential: () -> Unit,
     onCycleToolbarPlacement: () -> Unit,
@@ -91,8 +100,11 @@ fun QuickControlsSheet(
             onPrintPage = onPrintPage,
             onToggleSiteMode = onToggleSiteMode,
             onToggleWebDarkMode = onToggleWebDarkMode,
-            onToggleHttpsOnly = onToggleHttpsOnly,
+            onToggleShieldAdblock = onToggleShieldAdblock,
             onEnterPip = onEnterPip,
+            onLaunchZapper = onLaunchZapper,
+            onOpenReaderMode = onOpenReaderMode,
+            onOpenSiteRules = onOpenSiteRules,
             onFindInPage = onFindInPage,
             onPinEssential = onPinEssential,
             onCycleToolbarPlacement = onCycleToolbarPlacement,
@@ -110,8 +122,11 @@ fun QuickControlsContent(
     onPrintPage: () -> Unit,
     onToggleSiteMode: () -> Unit,
     onToggleWebDarkMode: () -> Unit,
-    onToggleHttpsOnly: () -> Unit,
+    onToggleShieldAdblock: () -> Unit,
     onEnterPip: () -> Unit,
+    onLaunchZapper: () -> Unit,
+    onOpenReaderMode: () -> Unit,
+    onOpenSiteRules: () -> Unit,
     onFindInPage: () -> Unit,
     onPinEssential: () -> Unit,
     onCycleToolbarPlacement: () -> Unit,
@@ -122,7 +137,23 @@ fun QuickControlsContent(
     val isWebPage = activeTab != null && !activeTab.isStartPage
     val isDesktop = activeTab?.resolvedSiteMode == SiteMode.DESKTOP
     val isWebDark = state.activeTabWebDarkEffective
-    val isHttpsOnly = state.settings.httpsOnlyMode
+    val siteAdblockDisabled = state.activeSiteOverride?.adblockDisabled == true
+    val isShieldActive = state.settings.adblockEnabled && !siteAdblockDisabled
+
+    val darkSubtitle = when {
+        !isWebDark -> "Site native"
+        activeTab?.darkReaderSkippedNative == true -> "Native dark kept"
+        state.settings.webDarkEngine == WebDarkEngine.ALGORITHMIC_LITE -> "Lite mode on"
+        state.settings.darkReaderAmoled -> "Dark Reader AMOLED"
+        else -> "Dark Reader on"
+    }
+
+    val shieldSubtitle = when {
+        !state.settings.adblockEnabled -> "Shield off"
+        isWebPage && siteAdblockDisabled -> "Paused on site"
+        isWebPage -> "${activeTab.blockedCount} blocked"
+        else -> "${state.adblockStatus.totalRules} rules ready"
+    }
 
     Column(
         modifier = modifier
@@ -232,7 +263,7 @@ fun QuickControlsContent(
                 )
                 QuickControlTile(
                     title = "Web dark",
-                    subtitle = if (isWebDark) "Darkening on" else "Site native",
+                    subtitle = darkSubtitle,
                     icon = if (isWebDark) Icons.Rounded.DarkMode else Icons.Rounded.LightMode,
                     active = isWebDark,
                     onClick = onToggleWebDarkMode,
@@ -250,10 +281,10 @@ fun QuickControlsContent(
             ) {
                 QuickControlTile(
                     title = "Shield",
-                    subtitle = if (isHttpsOnly) "HTTPS-Only on" else "HTTPS-Only off",
-                    icon = Icons.Rounded.Security,
-                    active = isHttpsOnly,
-                    onClick = onToggleHttpsOnly,
+                    subtitle = shieldSubtitle,
+                    icon = if (isShieldActive) Icons.Rounded.Shield else Icons.Rounded.Security,
+                    active = isShieldActive,
+                    onClick = onToggleShieldAdblock,
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxHeight()
@@ -281,6 +312,21 @@ fun QuickControlsContent(
         ) {
             if (isWebPage) {
                 QuickActionPill(
+                    label = "Zap element",
+                    icon = Icons.Rounded.AutoFixHigh,
+                    onClick = onLaunchZapper
+                )
+                QuickActionPill(
+                    label = "Reader mode",
+                    icon = Icons.AutoMirrored.Rounded.MenuBook,
+                    onClick = onOpenReaderMode
+                )
+                QuickActionPill(
+                    label = "Site rules",
+                    icon = Icons.Rounded.Tune,
+                    onClick = onOpenSiteRules
+                )
+                QuickActionPill(
                     label = "Find in page",
                     icon = Icons.Rounded.FindInPage,
                     onClick = onFindInPage
@@ -295,6 +341,16 @@ fun QuickControlsContent(
                 label = "Bar: ${state.activeProfile.toolbarPlacement.label}",
                 icon = Icons.Rounded.ViewAgenda,
                 onClick = onCycleToolbarPlacement
+            )
+            QuickActionPill(
+                label = "Filter lists",
+                icon = Icons.Rounded.FilterList,
+                onClick = { onOpenOverlay(BrowserOverlay.FILTER_LISTS) }
+            )
+            QuickActionPill(
+                label = "Userscripts",
+                icon = Icons.Rounded.Code,
+                onClick = { onOpenOverlay(BrowserOverlay.USERSCRIPTS) }
             )
             QuickActionPill(
                 label = "Bookmarks",

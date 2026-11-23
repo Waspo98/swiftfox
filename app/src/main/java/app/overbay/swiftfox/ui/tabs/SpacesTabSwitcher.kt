@@ -38,7 +38,6 @@ import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DesktopWindows
 import androidx.compose.material.icons.rounded.Lock
-import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material3.AlertDialog
@@ -67,8 +66,10 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import app.overbay.swiftfox.data.db.EssentialEntity
 import app.overbay.swiftfox.data.db.SpaceEntity
 import app.overbay.swiftfox.data.prefs.SiteMode
@@ -76,7 +77,9 @@ import app.overbay.swiftfox.ui.browser.BrowserTabUi
 import app.overbay.swiftfox.ui.browser.BrowserUiState
 import app.overbay.swiftfox.ui.browser.TabThumbnailsSnapshot
 import app.overbay.swiftfox.ui.theme.LocalSwiftfoxColors
+import app.overbay.swiftfox.ui.theme.SwiftfoxBrandLockup
 import app.overbay.swiftfox.ui.theme.SwiftfoxEmblem
+import app.overbay.swiftfox.ui.theme.SwiftfoxEmblemVariant
 import app.overbay.swiftfox.ui.theme.spaceIconFor
 
 @Composable
@@ -250,15 +253,14 @@ fun SpacesTabSwitcher(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Icon(
-                            imageVector = if (state.isPrivateView) Icons.Rounded.Shield else Icons.Rounded.Public,
-                            contentDescription = null,
-                            tint = if (state.isPrivateView) foxColors.privateAccent else MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(40.dp)
+                        SwiftfoxEmblem(
+                            size = 42.dp,
+                            variant = if (state.isPrivateView) SwiftfoxEmblemVariant.PURPLE else SwiftfoxEmblemVariant.ORANGE
                         )
                         Text(
                             text = if (state.isPrivateView) "No open private tabs" else "No tabs in this Space",
-                            style = MaterialTheme.typography.titleMedium
+                            style = MaterialTheme.typography.titleMedium,
+                            textAlign = TextAlign.Center
                         )
                         Text(
                             text = if (state.isPrivateView) {
@@ -267,7 +269,8 @@ fun SpacesTabSwitcher(
                                 "Tap New tab below to start browsing."
                             },
                             style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center
                         )
                     }
                 }
@@ -346,32 +349,55 @@ fun UnfoldedSpacesSidebar(
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             // Header with brand & collapse toggle
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = if (expanded) Arrangement.SpaceBetween else Arrangement.Center
-            ) {
-                if (expanded) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+            val sidebarEmblemVariant = if (state.isPrivateView) {
+                SwiftfoxEmblemVariant.PURPLE
+            } else {
+                SwiftfoxEmblemVariant.ORANGE
+            }
+            if (expanded) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    SwiftfoxBrandLockup(
+                        emblemSize = 26.dp,
+                        wordmarkSize = 18.sp,
+                        variant = sidebarEmblemVariant,
+                        wordmarkColor = if (state.isPrivateView) foxColors.privateAccent else MaterialTheme.colorScheme.primary,
+                        showBetaBadge = false,
+                        spacing = 8.dp,
+                        modifier = Modifier.weight(1f)
+                    )
+                    IconButton(
+                        onClick = onToggleExpanded,
+                        modifier = Modifier.size(48.dp)
                     ) {
-                        SwiftfoxEmblem(size = 26.dp)
-                        Text(
-                            text = "Swiftfox",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.primary
+                        Icon(
+                            imageVector = Icons.Rounded.ChevronLeft,
+                            contentDescription = "Collapse Spaces sidebar"
                         )
                     }
                 }
-                IconButton(
-                    onClick = onToggleExpanded,
-                    modifier = Modifier.size(48.dp)
+            } else {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Icon(
-                        imageVector = if (expanded) Icons.Rounded.ChevronLeft else Icons.Rounded.ChevronRight,
-                        contentDescription = if (expanded) "Collapse Spaces sidebar" else "Expand Spaces sidebar"
+                    SwiftfoxEmblem(
+                        size = 26.dp,
+                        variant = sidebarEmblemVariant
                     )
+                    IconButton(
+                        onClick = onToggleExpanded,
+                        modifier = Modifier.size(48.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.ChevronRight,
+                            contentDescription = "Expand Spaces sidebar"
+                        )
+                    }
                 }
             }
 
@@ -800,7 +826,10 @@ private fun TabPreviewCard(
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         if (tab.isStartPage) {
-                            SwiftfoxEmblem(size = 32.dp)
+                            SwiftfoxEmblem(
+                                size = 34.dp,
+                                variant = if (tab.isPrivate) SwiftfoxEmblemVariant.PURPLE else SwiftfoxEmblemVariant.ORANGE
+                            )
                         } else {
                             Box(
                                 modifier = Modifier

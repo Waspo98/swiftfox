@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- Notification icon scaled from 46x41 fox silhouette into 24x24 safe bounds -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M2.5,3.5 L8.3,7.6 L15.7,7.6 L21.5,3.5 L19.8,13.4 L12,20.5 L4.2,13.4 Z M7.0,13.0 L12,18.4 L17.0,13.0 L12,15.1 Z" />
+</vector>

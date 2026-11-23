@@ -40,6 +40,8 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.ArrowForward
+import androidx.compose.material.icons.automirrored.rounded.MenuBook
+import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ContentCopy
@@ -49,7 +51,6 @@ import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.LockOpen
-import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Security
@@ -58,6 +59,7 @@ import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -99,14 +101,20 @@ import app.overbay.swiftfox.engine.ExternalAppPrompt
 import app.overbay.swiftfox.engine.HttpsUpgradeErrorPrompt
 import app.overbay.swiftfox.engine.SitePermissionPrompt
 import app.overbay.swiftfox.features.omnibox.OmniboxSuggestion
+import app.overbay.swiftfox.ui.reader.ReaderModeOverlay
 import app.overbay.swiftfox.ui.settings.BookmarksOverlay
 import app.overbay.swiftfox.ui.settings.DownloadsOverlay
+import app.overbay.swiftfox.ui.settings.FilterListsOverlay
 import app.overbay.swiftfox.ui.settings.HistoryOverlay
 import app.overbay.swiftfox.ui.settings.SettingsScreen
+import app.overbay.swiftfox.ui.settings.UserscriptsOverlay
 import app.overbay.swiftfox.ui.sheets.QuickControlsSheet
+import app.overbay.swiftfox.ui.sheets.SiteRulesSheet
 import app.overbay.swiftfox.ui.tabs.SpacesTabSwitcher
 import app.overbay.swiftfox.ui.tabs.UnfoldedSpacesSidebar
 import app.overbay.swiftfox.ui.theme.LocalSwiftfoxColors
+import app.overbay.swiftfox.ui.zapper.ZappedRulesOverlay
+import app.overbay.swiftfox.ui.zapper.ZapperHudOverlay
 
 @Composable
 fun BrowserScreen(
@@ -125,14 +133,19 @@ fun BrowserScreen(
 
     LaunchedEffect(state.snackbarMessage) {
         val msg = state.snackbarMessage ?: return@LaunchedEffect
-        val actionLabel = if (state.recentlyClosedTab != null) "Undo" else null
+        val canUndo = state.recentlyClosedTab != null || state.snackbarUndoZapper
+        val actionLabel = if (canUndo) "Undo" else null
         val result = snackbarHostState.showSnackbar(
             message = msg,
             actionLabel = actionLabel,
             duration = SnackbarDuration.Short
         )
-        if (result == SnackbarResult.ActionPerformed && state.recentlyClosedTab != null) {
-            viewModel.undoCloseTab()
+        if (result == SnackbarResult.ActionPerformed) {
+            when {
+                state.snackbarUndoZapper -> viewModel.undoZapperTemporaryZap()
+                state.recentlyClosedTab != null -> viewModel.undoCloseTab()
+                else -> viewModel.clearSnackbar()
+            }
         } else {
             viewModel.clearSnackbar()
         }
@@ -140,6 +153,9 @@ fun BrowserScreen(
 
     // Predictive & System Back handling
     val shouldHandleBack = state.isFullscreenVideo ||
+        state.zapper.isActive ||
+        state.readerArticle != null ||
+        state.isSiteRulesOpen ||
         state.isOmniboxFocused ||
         state.isQuickControlsOpen ||
         state.activeOverlay != BrowserOverlay.NONE ||
@@ -149,6 +165,9 @@ fun BrowserScreen(
     BackHandler(enabled = shouldHandleBack) {
         when {
             state.isFullscreenVideo -> onExitFullscreenVideo()
+            state.zapper.isActive -> viewModel.stopElementZapper()
+            state.readerArticle != null -> viewModel.closeReaderMode()
+            state.isSiteRulesOpen -> viewModel.toggleSiteRulesSheet(false)
             state.isOmniboxFocused -> viewModel.dismissOmnibox()
             state.isQuickControlsOpen -> viewModel.toggleQuickControls(false)
             state.activeOverlay != BrowserOverlay.NONE -> viewModel.setOverlay(BrowserOverlay.NONE)
@@ -165,6 +184,9 @@ fun BrowserScreen(
     }
 
     val primaryArgb = MaterialTheme.colorScheme.primary.toArgb()
+    val primaryAccentHex = remember(primaryArgb) {
+        String.format("#%06X", 0xFFFFFF and primaryArgb)
+    }
     val surfaceArgb = MaterialTheme.colorScheme.surfaceContainerHigh.toArgb()
 
     val reduceMotion = remember(context) {
@@ -186,6 +208,7 @@ fun BrowserScreen(
             onGoBack = { viewModel.goBack() },
             onGoForward = { viewModel.goForward() },
             onReloadOrStop = { viewModel.reloadOrStop() },
+            onOpenReaderMode = { viewModel.openReaderMode() },
             onOpenQuickControls = { viewModel.toggleQuickControls(true) },
             onOpenTabSwitcher = { viewModel.setOverlay(BrowserOverlay.TAB_SWITCHER) },
             onOpenSettings = { viewModel.setOverlay(BrowserOverlay.SETTINGS) },
@@ -202,6 +225,12 @@ fun BrowserScreen(
             onFindQueryChange = { viewModel.updateFindInPageQuery(it) },
             onFindNext = { viewModel.findNextMatch(it) },
             onCloseFind = { viewModel.closeFindInPage() },
+            onAdjustZapperScope = { viewModel.adjustZapperScope(it) },
+            onSetZapperScopeDepth = { viewModel.setZapperScopeDepth(it) },
+            onZapOnce = { viewModel.zapSelectedElementOnce() },
+            onBlockPermanently = { viewModel.blockSelectedElementPermanently() },
+            onUndoTemporaryZap = { viewModel.undoZapperTemporaryZap() },
+            onStopZapper = { viewModel.stopElementZapper() },
             webContent = {
                 if (activeSession != null) {
                     AndroidView(
@@ -221,7 +250,9 @@ fun BrowserScreen(
                             }
                         },
                         update = { swipeLayout ->
-                            swipeLayout.isEnabled = state.settings.pullToRefreshEnabled
+                            swipeLayout.isEnabled = state.settings.pullToRefreshEnabled &&
+                                !state.zapper.isActive &&
+                                state.readerArticle == null
                             swipeLayout.setColorSchemeColors(primaryArgb)
                             swipeLayout.setProgressBackgroundColorSchemeColor(surfaceArgb)
 
@@ -309,7 +340,56 @@ fun BrowserScreen(
                     onBack = { viewModel.setOverlay(BrowserOverlay.NONE) }
                 )
             }
+            BrowserOverlay.FILTER_LISTS -> {
+                FilterListsOverlay(
+                    filterLists = state.filterLists,
+                    adblockStatus = state.adblockStatus,
+                    isUpdating = state.isUpdatingFilterLists,
+                    onBack = { viewModel.setOverlay(BrowserOverlay.NONE) },
+                    onUpdateAll = { viewModel.updateAllFilterLists() },
+                    onToggleList = { id, enabled -> viewModel.toggleFilterList(id, enabled) },
+                    onAddCustomList = { name, url -> viewModel.addCustomFilterList(name, url) },
+                    onDeleteList = { id -> viewModel.deleteCustomFilterList(id) }
+                )
+            }
+            BrowserOverlay.USERSCRIPTS -> {
+                UserscriptsOverlay(
+                    scripts = state.userscripts,
+                    onBack = { viewModel.setOverlay(BrowserOverlay.NONE) },
+                    onToggleScript = { id, enabled -> viewModel.toggleUserscript(id, enabled) },
+                    onInstallFromUrl = { url -> viewModel.installUserscriptFromUrl(url) },
+                    onImportLocalFile = { viewModel.triggerImportUserscriptFile() },
+                    onSaveScriptCode = { existingId, code -> viewModel.saveUserscriptCode(existingId, code) },
+                    onDeleteScript = { id -> viewModel.deleteUserscript(id) }
+                )
+            }
+            BrowserOverlay.ZAPPED_RULES -> {
+                ZappedRulesOverlay(
+                    rules = state.zappedRules,
+                    onBack = { viewModel.setOverlay(BrowserOverlay.NONE) },
+                    onToggleRule = { id, enabled -> viewModel.toggleZappedRule(id, enabled) },
+                    onDeleteRule = { id -> viewModel.deleteZappedRule(id) },
+                    onClearHost = { host -> viewModel.clearZappedRulesForHost(host) }
+                )
+            }
             BrowserOverlay.NONE -> Unit
+        }
+
+        // Native Reader Mode Overlay
+        state.readerArticle?.let { article ->
+            ReaderModeOverlay(
+                article = article,
+                settings = state.settings,
+                onClose = { viewModel.closeReaderMode() },
+                onOpenLink = { linkUrl ->
+                    viewModel.closeReaderMode()
+                    viewModel.navigateActiveTab(linkUrl)
+                },
+                onSurfaceModeChange = { viewModel.setReaderSurfaceMode(it) },
+                onFontFamilyChange = { viewModel.setReaderFontFamily(it) },
+                onFontSizeChange = { viewModel.setReaderFontSizeSp(it) },
+                onLineHeightChange = { viewModel.setReaderLineHeight(it) }
+            )
         }
 
         // Focused Omnibox overlay
@@ -355,15 +435,14 @@ fun BrowserScreen(
                 },
                 onToggleSiteMode = { viewModel.toggleActiveTabSiteMode() },
                 onToggleWebDarkMode = { viewModel.toggleActiveSiteWebDarkMode() },
-                onToggleHttpsOnly = {
-                    val next = !state.settings.httpsOnlyMode
-                    viewModel.setHttpsOnlyMode(next)
-                    viewModel.showSnackbar(if (next) "HTTPS-Only enabled" else "HTTPS-Only paused")
-                },
+                onToggleShieldAdblock = { viewModel.toggleActiveSiteAdblock() },
                 onEnterPip = {
                     viewModel.toggleQuickControls(false)
                     onEnterPip()
                 },
+                onLaunchZapper = { viewModel.startElementZapper(primaryAccentHex) },
+                onOpenReaderMode = { viewModel.openReaderMode() },
+                onOpenSiteRules = { viewModel.toggleSiteRulesSheet(true) },
                 onFindInPage = { viewModel.openFindInPage() },
                 onPinEssential = {
                     viewModel.pinCurrentTabToEssentials()
@@ -371,6 +450,31 @@ fun BrowserScreen(
                 },
                 onCycleToolbarPlacement = { viewModel.cycleCurrentPostureToolbarPlacement() },
                 onOpenOverlay = { viewModel.setOverlay(it) }
+            )
+        }
+
+        // Per-Site Rules & Overrides Sheet
+        if (state.isSiteRulesOpen && activeTab != null && !activeTab.isStartPage && activeTab.displayHost.isNotBlank()) {
+            val host = activeTab.displayHost.lowercase()
+            val rulesForHost = state.zappedRules.filter { it.host.equals(host, ignoreCase = true) }
+            SiteRulesSheet(
+                host = host,
+                override = state.siteOverrides[host],
+                zappedRulesForHost = rulesForHost,
+                onDismiss = { viewModel.toggleSiteRulesSheet(false) },
+                onSetAdblockDisabled = { viewModel.setSiteAdblockDisabled(host, it) },
+                onSetWebDarkOverride = { viewModel.setSiteWebDarkOverride(host, it) },
+                onSetSiteModeOverride = { viewModel.setSiteModeOverride(host, it) },
+                onSetJavascriptEnabled = { viewModel.setSiteJavascriptEnabled(host, it) },
+                onSetCookiesEnabled = { viewModel.setSiteCookiesEnabled(host, it) },
+                onSetHttpsBypass = { viewModel.setSiteHttpsBypass(host, it) },
+                onSetCustomUserAgent = { viewModel.setSiteCustomUserAgent(host, it) },
+                onDeleteZappedRule = { viewModel.deleteZappedRule(it) },
+                onLaunchZapper = { viewModel.startElementZapper(primaryAccentHex) },
+                onResetAll = {
+                    viewModel.resetSiteOverride(host)
+                    viewModel.toggleSiteRulesSheet(false)
+                }
             )
         }
 
@@ -449,6 +553,7 @@ fun BrowserShellLayout(
     onGoBack: () -> Unit,
     onGoForward: () -> Unit,
     onReloadOrStop: () -> Unit,
+    onOpenReaderMode: () -> Unit,
     onOpenQuickControls: () -> Unit,
     onOpenTabSwitcher: () -> Unit,
     onOpenSettings: () -> Unit,
@@ -465,6 +570,12 @@ fun BrowserShellLayout(
     onFindQueryChange: (String) -> Unit,
     onFindNext: (Boolean) -> Unit,
     onCloseFind: () -> Unit,
+    onAdjustZapperScope: (Int) -> Unit,
+    onSetZapperScopeDepth: (Int) -> Unit,
+    onZapOnce: () -> Unit,
+    onBlockPermanently: () -> Unit,
+    onUndoTemporaryZap: () -> Unit,
+    onStopZapper: () -> Unit,
     webContent: @Composable () -> Unit
 ) {
     val context = LocalContext.current
@@ -527,6 +638,7 @@ fun BrowserShellLayout(
                                 onGoBack = onGoBack,
                                 onGoForward = onGoForward,
                                 onReloadOrStop = onReloadOrStop,
+                                onOpenReaderMode = onOpenReaderMode,
                                 onOpenQuickControls = onOpenQuickControls,
                                 onOpenTabSwitcher = onOpenTabSwitcher,
                                 onSwitchAdjacentTab = onSwitchAdjacentTab
@@ -542,6 +654,7 @@ fun BrowserShellLayout(
                                 onGoBack = onGoBack,
                                 onGoForward = onGoForward,
                                 onReloadOrStop = onReloadOrStop,
+                                onOpenReaderMode = onOpenReaderMode,
                                 onOpenQuickControls = onOpenQuickControls,
                                 onOpenTabSwitcher = onOpenTabSwitcher,
                                 onSwitchAdjacentTab = onSwitchAdjacentTab
@@ -632,6 +745,42 @@ fun BrowserShellLayout(
                     } else {
                         Modifier
                     }
+
+                    if (state.isReaderLoading) {
+                        Surface(
+                            shape = RoundedCornerShape(24.dp),
+                            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                            tonalElevation = 4.dp,
+                            modifier = Modifier
+                                .align(Alignment.Center)
+                                .padding(20.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.5.dp)
+                                Text("Preparing Reader Mode", style = MaterialTheme.typography.labelLarge)
+                            }
+                        }
+                    }
+
+                    if (state.zapper.isActive && !hideChrome) {
+                        ZapperHudOverlay(
+                            state = state.zapper,
+                            onAdjustScope = onAdjustZapperScope,
+                            onSetScopeDepth = onSetZapperScopeDepth,
+                            onZapOnce = onZapOnce,
+                            onBlockPermanently = onBlockPermanently,
+                            onUndoTemporaryZap = onUndoTemporaryZap,
+                            onDone = onStopZapper,
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .padding(horizontal = 12.dp, vertical = 12.dp)
+                        )
+                    }
+
                     SnackbarHost(
                         hostState = snackbarHostState,
                         modifier = Modifier
@@ -664,6 +813,7 @@ fun BrowserShellLayout(
                                 onGoBack = onGoBack,
                                 onGoForward = onGoForward,
                                 onReloadOrStop = onReloadOrStop,
+                                onOpenReaderMode = onOpenReaderMode,
                                 onOpenQuickControls = onOpenQuickControls,
                                 onOpenTabSwitcher = onOpenTabSwitcher,
                                 onSwitchAdjacentTab = onSwitchAdjacentTab
@@ -701,6 +851,7 @@ private fun FullOmniboxToolbar(
     onGoBack: () -> Unit,
     onGoForward: () -> Unit,
     onReloadOrStop: () -> Unit,
+    onOpenReaderMode: () -> Unit,
     onOpenQuickControls: () -> Unit,
     onOpenTabSwitcher: () -> Unit,
     onSwitchAdjacentTab: (Int) -> Unit
@@ -866,6 +1017,20 @@ private fun FullOmniboxToolbar(
                                 tint = MaterialTheme.colorScheme.primary,
                                 modifier = Modifier.size(16.dp)
                             )
+                        }
+
+                        if (activeTab != null && !activeTab.isStartPage && activeTab.isReaderAvailable) {
+                            IconButton(
+                                onClick = onOpenReaderMode,
+                                modifier = Modifier.size(48.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Rounded.MenuBook,
+                                    contentDescription = "Reader mode",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
                         }
 
                         if (activeTab != null && !activeTab.isStartPage) {

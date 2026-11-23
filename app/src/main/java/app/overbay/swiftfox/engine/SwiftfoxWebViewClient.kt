@@ -7,10 +7,12 @@ import android.net.http.SslError
 import android.webkit.SslErrorHandler
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import app.overbay.swiftfox.data.prefs.ExternalAppLinkPolicy
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
+import java.io.ByteArrayInputStream
 
 data class ExternalAppPrompt(
     val url: String,
@@ -29,8 +31,16 @@ interface WebNavigationCallbacks {
     fun getHttpsOnlyEnabled(): Boolean
     fun isHttpsBypassedForHost(host: String): Boolean
     fun getExternalAppPolicy(host: String): ExternalAppLinkPolicy
+    fun shouldBlockNetworkRequest(
+        tabId: String,
+        requestUrl: String,
+        pageUrl: String,
+        headers: Map<String, String>
+    ): Boolean
     fun onPageStarted(tabId: String, url: String, canGoBack: Boolean, canGoForward: Boolean)
+    fun onInjectOnPageStarted(tabId: String, url: String)
     fun onPageFinished(tabId: String, url: String, title: String, canGoBack: Boolean, canGoForward: Boolean)
+    fun onInjectOnPageFinished(tabId: String, url: String)
     fun onVisitedHistoryUpdated(tabId: String, url: String, canGoBack: Boolean, canGoForward: Boolean)
     fun onExternalAppPrompt(prompt: ExternalAppPrompt)
     fun onLaunchExternalIntent(intent: Intent): Boolean
@@ -43,6 +53,9 @@ class SwiftfoxWebViewClient(
 ) : WebViewClient() {
 
     private val upgradedFromHttp = mutableMapOf<String, String>()
+
+    @Volatile
+    private var currentMainFrameUrl: String = ""
 
     override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
         val uri = request.url ?: return false
@@ -70,6 +83,30 @@ class SwiftfoxWebViewClient(
         }
 
         return handleNonHttpUri(view, uri, url)
+    }
+
+    override fun shouldInterceptRequest(
+        view: WebView,
+        request: WebResourceRequest
+    ): WebResourceResponse? {
+        val url = request.url?.toString().orEmpty()
+        if (url.isEmpty()) return null
+
+        val scheme = request.url?.scheme?.lowercase().orEmpty()
+        if (scheme != "http" && scheme != "https") return null
+
+        if (request.isForMainFrame) {
+            currentMainFrameUrl = url
+            return null
+        }
+
+        val pageUrl = currentMainFrameUrl.ifBlank { url }
+        val headers = request.requestHeaders ?: emptyMap()
+        if (callbacks.shouldBlockNetworkRequest(tabId, url, pageUrl, headers)) {
+            return WebResourceResponse("text/plain", "utf-8", ByteArrayInputStream(ByteArray(0)))
+        }
+
+        return null
     }
 
     private fun handleNonHttpUri(view: WebView, uri: Uri, url: String): Boolean {
@@ -134,15 +171,21 @@ class SwiftfoxWebViewClient(
     override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
         super.onPageStarted(view, url, favicon)
         if (!url.isNullOrBlank()) {
+            currentMainFrameUrl = url
             callbacks.onPageStarted(tabId, url, view.canGoBack(), view.canGoForward())
+            callbacks.onInjectOnPageStarted(tabId, url)
         }
     }
 
     override fun onPageFinished(view: WebView, url: String?) {
         super.onPageFinished(view, url)
         val safeUrl = url.orEmpty()
+        if (safeUrl.isNotBlank()) {
+            currentMainFrameUrl = safeUrl
+        }
         upgradedFromHttp.remove(safeUrl)
         injectRuntimeHelpers(view)
+        callbacks.onInjectOnPageFinished(tabId, safeUrl)
         callbacks.onPageFinished(
             tabId = tabId,
             url = safeUrl,
@@ -155,6 +198,7 @@ class SwiftfoxWebViewClient(
     override fun doUpdateVisitedHistory(view: WebView, url: String?, isReload: Boolean) {
         super.doUpdateVisitedHistory(view, url, isReload)
         if (!url.isNullOrBlank()) {
+            currentMainFrameUrl = url
             callbacks.onVisitedHistoryUpdated(tabId, url, view.canGoBack(), view.canGoForward())
         }
     }

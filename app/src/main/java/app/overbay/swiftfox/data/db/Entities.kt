@@ -65,7 +65,10 @@ data class SiteOverrideEntity(
     val allowNotifications: Boolean? = null,
     val allowProtectedMedia: Boolean? = null,
     val javascriptEnabled: Boolean = true,
-    val webDarkModeOverride: Boolean? = null
+    val webDarkModeOverride: Boolean? = null,
+    val adblockDisabled: Boolean = false,
+    val cookiesEnabled: Boolean = true,
+    val customUserAgent: String? = null
 )
 
 @Entity(tableName = "downloads")
@@ -77,4 +80,56 @@ data class DownloadRecordEntity(
     val systemDownloadId: Long = -1L,
     val status: String = "Downloading",
     val createdAt: Long = System.currentTimeMillis()
+)
+
+@Entity(tableName = "filter_lists")
+data class FilterListEntity(
+    @PrimaryKey val id: String,
+    val name: String,
+    val url: String,
+    val enabled: Boolean = true,
+    val isBuiltIn: Boolean = false,
+    val ruleCount: Int = 0,
+    val lastUpdatedAt: Long = 0L,
+    val etag: String? = null,
+    val lastError: String? = null
+)
+
+@Entity(tableName = "zapped_rules")
+data class ZappedRuleEntity(
+    @PrimaryKey val id: String,
+    val host: String,
+    val selector: String,
+    val label: String = "",
+    val enabled: Boolean = true,
+    val createdAt: Long = System.currentTimeMillis()
+)
+
+@Entity(tableName = "userscripts")
+data class UserscriptEntity(
+    @PrimaryKey val id: String,
+    val name: String,
+    val namespace: String = "",
+    val version: String = "1.0",
+    val description: String = "",
+    val sourceUrl: String? = null,
+    val code: String,
+    val matchesJson: String = "[]",
+    val excludesJson: String = "[]",
+    val runAt: String = "document-end",
+    val grantsJson: String = "[]",
+    val enabled: Boolean = true,
+    val installedAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis()
+)
+
+@Entity(
+    tableName = "userscript_storage",
+    primaryKeys = ["scriptId", "storageKey"]
+)
+data class UserscriptStorageEntity(
+    val scriptId: String,
+    val storageKey: String,
+    val valueJson: String,
+    val updatedAt: Long = System.currentTimeMillis()
 )

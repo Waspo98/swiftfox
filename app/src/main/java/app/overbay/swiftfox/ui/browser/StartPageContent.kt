@@ -29,7 +29,6 @@ import androidx.compose.material.icons.rounded.Bookmark
 import androidx.compose.material.icons.rounded.DesktopWindows
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Search
-import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.Tab
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
@@ -49,12 +48,17 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import app.overbay.swiftfox.data.db.EssentialEntity
+import app.overbay.swiftfox.data.prefs.AccentPreset
 import app.overbay.swiftfox.data.prefs.DevicePosture
 import app.overbay.swiftfox.data.prefs.SiteMode
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
 import app.overbay.swiftfox.ui.theme.LocalSwiftfoxColors
+import app.overbay.swiftfox.ui.theme.SwiftfoxBrand
+import app.overbay.swiftfox.ui.theme.SwiftfoxBrandLockup
 import app.overbay.swiftfox.ui.theme.SwiftfoxEmblem
+import app.overbay.swiftfox.ui.theme.SwiftfoxEmblemVariant
 import app.overbay.swiftfox.ui.theme.spaceIconFor
 
 @Composable
@@ -98,16 +102,15 @@ fun StartPageContent(
             ) {
                 if (isPrivate) {
                     Surface(
-                        shape = CircleShape,
+                        shape = RoundedCornerShape(20.dp),
                         color = foxColors.privateContainer,
-                        modifier = Modifier.size(56.dp)
+                        border = BorderStroke(1.dp, foxColors.privateAccent.copy(alpha = 0.35f)),
+                        modifier = Modifier.size(60.dp)
                     ) {
                         Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                                imageVector = Icons.Rounded.Shield,
-                                contentDescription = "Private Mode",
-                                tint = foxColors.privateAccent,
-                                modifier = Modifier.size(30.dp)
+                            SwiftfoxEmblem(
+                                size = 38.dp,
+                                variant = SwiftfoxEmblemVariant.PURPLE
                             )
                         }
                     }
@@ -123,17 +126,21 @@ fun StartPageContent(
                         textAlign = TextAlign.Center
                     )
                 } else {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    val wordmarkColor = if (
+                        state.settings.accentPreset == AccentPreset.FOX_AMBER &&
+                        !state.settings.useDynamicColor
                     ) {
-                        SwiftfoxEmblem(size = 38.dp)
-                        Text(
-                            text = "Swiftfox",
-                            style = MaterialTheme.typography.displaySmall,
-                            color = MaterialTheme.colorScheme.primary
-                        )
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onBackground
                     }
+                    SwiftfoxBrandLockup(
+                        emblemSize = 40.dp,
+                        wordmarkSize = 32.sp,
+                        variant = SwiftfoxEmblemVariant.ORANGE,
+                        wordmarkColor = wordmarkColor,
+                        showBetaBadge = SwiftfoxBrand.isBetaBuild
+                    )
                 }
             }
 

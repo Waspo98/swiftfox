@@ -5,8 +5,6 @@ import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -42,7 +40,6 @@ import androidx.compose.ui.unit.dp
 import app.overbay.swiftfox.features.zapper.ZapperUiState
 import kotlin.math.roundToInt
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ZapperHudOverlay(
     state: ZapperUiState,
@@ -134,9 +131,15 @@ private fun IdleZapperHudContent(
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )
-            if (state.temporaryZapCount > 0 && !state.lastTemporaryZapSummary.isNullOrBlank()) {
+            val statusText = state.lastStatusMessage
+                ?: if (state.temporaryZapCount > 0 && !state.lastTemporaryZapSummary.isNullOrBlank()) {
+                    "Hid ${state.lastTemporaryZapSummary}"
+                } else {
+                    null
+                }
+            if (!statusText.isNullOrBlank()) {
                 Text(
-                    text = "Hid ${state.lastTemporaryZapSummary}",
+                    text = statusText,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -166,7 +169,6 @@ private fun IdleZapperHudContent(
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SelectedZapperHudContent(
     state: ZapperUiState,
@@ -338,11 +340,11 @@ private fun SelectedZapperHudContent(
             }
         }
 
-        // Action pills
-        FlowRow(
+        // Action pills — compact single-row layout so HUD never crowds the viewport
+        Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            verticalAlignment = Alignment.CenterVertically
         ) {
             ZapperActionPill(
                 label = "Zap once",
@@ -350,25 +352,32 @@ private fun SelectedZapperHudContent(
                 containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
                 contentColor = MaterialTheme.colorScheme.onSurface,
                 iconTint = MaterialTheme.colorScheme.primary,
-                onClick = onZapOnce
+                onClick = onZapOnce,
+                modifier = Modifier.weight(1f)
             )
             ZapperActionPill(
-                label = "Block permanently",
+                label = "Block",
                 icon = Icons.Rounded.Block,
                 containerColor = MaterialTheme.colorScheme.primary,
                 contentColor = MaterialTheme.colorScheme.onPrimary,
                 iconTint = MaterialTheme.colorScheme.onPrimary,
-                onClick = onBlockPermanently
+                onClick = onBlockPermanently,
+                modifier = Modifier.weight(1f)
             )
             if (state.temporaryZapCount > 0) {
-                ZapperActionPill(
-                    label = "Undo (${state.temporaryZapCount})",
-                    icon = Icons.AutoMirrored.Rounded.Undo,
-                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    contentColor = MaterialTheme.colorScheme.onSurface,
-                    iconTint = MaterialTheme.colorScheme.primary,
-                    onClick = onUndoTemporaryZap
-                )
+                FilledTonalIconButton(
+                    onClick = onUndoTemporaryZap,
+                    colors = IconButtonDefaults.filledTonalIconButtonColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        contentColor = MaterialTheme.colorScheme.primary
+                    ),
+                    modifier = Modifier.size(48.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Rounded.Undo,
+                        contentDescription = "Undo temporary zap (${state.temporaryZapCount})"
+                    )
+                }
             }
         }
     }
@@ -394,9 +403,9 @@ private fun ZapperActionPill(
         modifier = modifier.heightIn(min = 48.dp)
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
+            horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally)
         ) {
             if (icon != null) {
                 Icon(

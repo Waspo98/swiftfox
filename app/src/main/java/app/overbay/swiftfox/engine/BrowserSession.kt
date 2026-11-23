@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.MutableContextWrapper
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -132,6 +133,15 @@ class BrowserSession(
     @Volatile
     var isDestroyed: Boolean = false
         private set
+
+    @Volatile
+    var webDarkDirty: Boolean = false
+
+    @Volatile
+    var isPausedForBackground: Boolean = false
+        private set
+
+    private var lastSurfaceBgColor: Int? = null
 
     var currentSiteMode: SiteMode = SiteMode.MOBILE
         private set
@@ -313,7 +323,7 @@ class BrowserSession(
                     if (isDestroyed || !isMainFrame) return@addWebMessageListener
                     val raw = message.data ?: return@addWebMessageListener
                     val obj = runCatching { JSONObject(raw) }.getOrNull() ?: return@addWebMessageListener
-                    handleNativeChannelMessage(obj, sourceOrigin?.toString().orEmpty())
+                    handleNativeChannelMessage(obj, sourceOrigin.toString())
                 }
             }
         }
@@ -563,8 +573,36 @@ class BrowserSession(
         }
     }
 
+    fun applySurfaceBackground(isChromeDark: Boolean, isAmoled: Boolean) {
+        if (isDestroyed) return
+        val bgColor = when {
+            !isChromeDark -> Color.WHITE
+            isAmoled -> Color.BLACK
+            else -> 0xFF18161B.toInt()
+        }
+        if (lastSurfaceBgColor == bgColor) return
+        lastSurfaceBgColor = bgColor
+        runCatching { webView.setBackgroundColor(bgColor) }
+    }
+
+    fun pauseIfBackground() {
+        if (isDestroyed || isPausedForBackground) return
+        if (webView.allowBackgroundPlayback && webView.isMediaCurrentlyPlaying) return
+        isPausedForBackground = true
+        runCatching { webView.onPause() }
+    }
+
+    fun resumeIfActive() {
+        if (isDestroyed) return
+        if (isPausedForBackground) {
+            isPausedForBackground = false
+            runCatching { webView.onResume() }
+        }
+    }
+
     fun applyWebDarkMode(state: ResolvedWebDarkState, darkReaderInjector: DarkReaderInjector) {
         if (isDestroyed) return
+        webDarkDirty = false
         val curTokens = tokens
         if (state.useDarkReader) {
             // Never run Chromium Algorithmic Darkening alongside Dark Reader
@@ -608,7 +646,8 @@ class BrowserSession(
         cosmeticCss: String,
         zappedCss: String,
         gmShimInitJs: String,
-        documentStartUserscriptSnippets: List<String>
+        documentStartUserscriptSnippets: List<String>,
+        prepaintDarkCss: String = ""
     ) {
         if (isDestroyed) return
         val newHandlers = ScriptInjector.registerDocumentStartScripts(
@@ -618,7 +657,8 @@ class BrowserSession(
             cosmeticCss = cosmeticCss,
             zappedCss = zappedCss,
             gmShimInitJs = gmShimInitJs,
-            documentStartUserscriptSnippets = documentStartUserscriptSnippets
+            documentStartUserscriptSnippets = documentStartUserscriptSnippets,
+            prepaintDarkCss = prepaintDarkCss
         )
         documentStartHandlers.clear()
         documentStartHandlers.addAll(newHandlers)
@@ -699,6 +739,7 @@ class BrowserSession(
             val bitmap = Bitmap.createBitmap(targetWidth, scaledH, Bitmap.Config.RGB_565)
             val canvas = Canvas(bitmap)
             canvas.scale(scale, scale)
+            canvas.translate(-webView.scrollX.toFloat(), -webView.scrollY.toFloat())
             webView.draw(canvas)
             bitmap
         }.getOrNull()

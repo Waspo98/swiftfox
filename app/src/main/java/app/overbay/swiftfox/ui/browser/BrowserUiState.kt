@@ -61,6 +61,7 @@ data class BrowserTabUi(
     val blockedCount: Int = 0,
     val isReaderAvailable: Boolean = false,
     val darkReaderSkippedNative: Boolean = false,
+    val sessionRevision: Int = 0,
     val lastAccessedAt: Long = System.currentTimeMillis()
 ) {
     val isStartPage: Boolean

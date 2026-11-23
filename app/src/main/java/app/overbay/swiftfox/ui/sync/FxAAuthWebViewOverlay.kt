@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.graphics.Bitmap
 import android.view.ViewGroup
 import android.webkit.CookieManager
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
@@ -121,6 +122,14 @@ fun FxAAuthWebViewOverlay(
                         currentOnRedirectCaptured(target)
                     }
                 }
+
+                override fun onRenderProcessGone(
+                    view: WebView?,
+                    detail: RenderProcessGoneDetail?
+                ): Boolean {
+                    onCancel()
+                    return true
+                }
             }
         }
     }
@@ -181,7 +190,9 @@ fun FxAAuthWebViewOverlay(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(2.5.dp),
-                        color = MaterialTheme.colorScheme.primary
+                        color = MaterialTheme.colorScheme.primary,
+                        gapSize = 0.dp,
+                        drawStopIndicator = {}
                     )
                 }
             }

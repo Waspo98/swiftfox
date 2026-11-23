@@ -9,6 +9,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -72,6 +73,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -328,23 +330,16 @@ fun ReaderModeOverlay(
     }
 
     val colorSpec = remember(reduceMotion) {
-        if (reduceMotion) snap<Color>() else tween<Color>(durationMillis = 200)
+        if (reduceMotion) snap<Color>() else tween<Color>(durationMillis = 180)
     }
-    val animatedBackground by animateColorAsState(
+    // Defer animated background reads to the Draw phase so theme transitions never
+    // recompose the entire article LazyColumn on every animation frame.
+    val animatedBackgroundState = animateColorAsState(
         targetValue = targetPalette.background,
         animationSpec = colorSpec,
         label = "reader_background"
     )
-    val animatedInk by animateColorAsState(
-        targetValue = targetPalette.onBackground,
-        animationSpec = colorSpec,
-        label = "reader_ink"
-    )
-    val palette = if (reduceMotion) {
-        targetPalette
-    } else {
-        targetPalette.copy(background = animatedBackground, onBackground = animatedInk)
-    }
+    val palette = targetPalette
 
     val fontFamily = remember(settings.readerFontFamily) {
         when (settings.readerFontFamily) {
@@ -363,7 +358,10 @@ fun ReaderModeOverlay(
     }
 
     Scaffold(
-        containerColor = palette.background,
+        modifier = Modifier.drawBehind {
+            drawRect(animatedBackgroundState.value)
+        },
+        containerColor = Color.Transparent,
         contentColor = palette.onBackground,
         topBar = {
             TopAppBar(
@@ -405,7 +403,7 @@ fun ReaderModeOverlay(
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = palette.background,
+                    containerColor = Color.Transparent,
                     navigationIconContentColor = palette.onBackground,
                     titleContentColor = palette.onSurfaceVariant,
                     actionIconContentColor = palette.onBackground
@@ -1165,6 +1163,7 @@ private fun ReaderAppearanceSheet(
                                             .size(12.dp)
                                             .clip(CircleShape)
                                             .background(surfaceSwatchColor(mode))
+                                            .border(1.dp, MaterialTheme.colorScheme.outline, CircleShape)
                                     )
                                 }
                             },

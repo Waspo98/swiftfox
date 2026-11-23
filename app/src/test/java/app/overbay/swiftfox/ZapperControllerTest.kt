@@ -213,7 +213,18 @@ class ZapperControllerTest {
         assertNull(controller.sanitizeSelector("section"))
         assertNull(controller.sanitizeSelector("div.ad/*comment*/"))
         assertNull(controller.sanitizeSelector("div.ad*/"))
+        assertNull(controller.sanitizeSelector("iframe"))
+        assertNull(controller.sanitizeSelector("button"))
+        assertNull(controller.sanitizeSelector("img"))
         assertNotNull(controller.sanitizeSelector("div.cookie-banner"))
+        assertNotNull(controller.sanitizeSelector("""iframe[src*="player.instaread.co"]"""))
+        assertNotNull(controller.sanitizeSelector("instaread-player"))
+
+        val withViewport = controller.parseSelectionEvent(
+            """{"selector":"iframe[src*=\"player.instaread.co\"]","summary":"iframe (player.instaread.co)","scopeDepth":0,"maxScopeDepth":4,"matchCount":1,"viewportCenterY":1.4}"""
+        )
+        assertNotNull(withViewport)
+        assertEquals(1.0f, withViewport!!.viewportCenterY, 0.001f)
 
         val applyScript = controller.buildApplyZappedCssScript(
             listOf(

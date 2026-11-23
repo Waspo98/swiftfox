@@ -1,6 +1,9 @@
 package app.overbay.swiftfox
 
 import android.app.Application
+import android.content.ComponentCallbacks2
+import android.os.Looper
+import android.webkit.WebView
 import app.overbay.swiftfox.data.db.SwiftfoxDatabase
 import app.overbay.swiftfox.data.prefs.PreferencesRepository
 import app.overbay.swiftfox.engine.TabSessionPool
@@ -73,7 +76,7 @@ class SwiftfoxApp : Application() {
     lateinit var mozillaSyncCoordinator: MozillaSyncCoordinator
         private set
 
-    val tabSessionPool = TabSessionPool(maxWarmSessions = 8)
+    val tabSessionPool = TabSessionPool(maxWarmSessions = 5)
 
     override fun onCreate() {
         super.onCreate()
@@ -115,7 +118,6 @@ class SwiftfoxApp : Application() {
         SyncWorkerBridge.onRunSync = {
             mozillaSyncCoordinator.syncNow(SyncReason.User)
         }
-        mozillaSyncCoordinator.initialize()
 
         FilterListWorkerBridge.onRunUpdate = {
             try {
@@ -126,10 +128,21 @@ class SwiftfoxApp : Application() {
                 kotlin.Result.failure(t)
             }
         }
-        FilterListUpdateWorker.schedulePeriodic(this)
 
-        appScope.launch(Dispatchers.Main) {
+        // Defer WebView/ProfileStore initialization until Main Looper is idle after first frame
+        // so Chromium never blocks cold launch.
+        Looper.getMainLooper().queue.addIdleHandler {
+            if (BuildConfig.DEBUG) {
+                runCatching { WebView.setWebContentsDebuggingEnabled(true) }
+            }
             tabSessionPool.clearPrivateProfileData()
+            false
+        }
+
+        // Run Mozilla Sync/JNA init and WorkManager scheduling off the main thread.
+        appScope.launch {
+            FilterListUpdateWorker.schedulePeriodic(this@SwiftfoxApp)
+            mozillaSyncCoordinator.initialize()
         }
 
         appScope.launch {
@@ -142,6 +155,14 @@ class SwiftfoxApp : Application() {
             val enabledLists = allLists.filter { it.enabled }
             adblockEngine.initialize(enabledLists, hasAnyConfiguredLists = allLists.isNotEmpty())
             filterListRepository.syncIfNeverUpdated()
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) {
+            tabSessionPool.hibernateBackgroundSessions()
         }
     }
 }

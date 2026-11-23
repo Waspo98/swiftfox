@@ -178,6 +178,11 @@ object ScriptInjector {
         """.trimIndent()
     }
 
+    fun buildPrepaintDarkCss(amoled: Boolean): String {
+        val bg = if (amoled) "#000000" else "#18161b"
+        return "html{background-color:$bg;color-scheme:dark;}"
+    }
+
     fun registerDocumentStartScripts(
         webView: WebView,
         previousHandlers: List<ScriptHandler>,
@@ -185,7 +190,8 @@ object ScriptInjector {
         cosmeticCss: String,
         zappedCss: String,
         gmShimInitJs: String,
-        documentStartUserscriptSnippets: List<String>
+        documentStartUserscriptSnippets: List<String>,
+        prepaintDarkCss: String = ""
     ): List<ScriptHandler> {
         previousHandlers.forEach { runCatching { it.remove() } }
         if (origin.isBlank() || !WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
@@ -211,6 +217,9 @@ object ScriptInjector {
         }
 
         val cssBlock = buildString {
+            if (prepaintDarkCss.isNotBlank()) {
+                append(buildCssStyleScript("swiftfox-prepaint-dark", prepaintDarkCss)).append('\n')
+            }
             if (cosmeticCss.isNotBlank()) {
                 append(buildCssStyleScript("swiftfox-cosmetic", cosmeticCss)).append('\n')
             }

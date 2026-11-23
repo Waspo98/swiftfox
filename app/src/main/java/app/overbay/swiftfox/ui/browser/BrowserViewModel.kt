@@ -264,7 +264,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 siteOverride = siteOverride,
                 isChromeDark = isChromeDark()
             )
-            val tokens = session.tokens
+            val tokens = session.rotateTokensForOrigin(expectedOrigin)
+            val prepaintDarkCss = if (darkState.useDarkReader) {
+                ScriptInjector.buildPrepaintDarkCss(darkState.amoled)
+            } else {
+                ""
+            }
             viewModelScope.launch(Dispatchers.IO) {
                 val cosmetic = app.adblockEngine.cosmeticForUrl(
                     url = url,
@@ -313,7 +318,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                         cosmeticCss = cosmetic.css,
                         zappedCss = zappedCss,
                         gmShimInitJs = gmShimInitJs,
-                        documentStartUserscriptSnippets = docStartSnippets
+                        documentStartUserscriptSnippets = docStartSnippets,
+                        prepaintDarkCss = prepaintDarkCss
                     )
                     ScriptInjector.injectOnPageStarted(
                         webView = session.webView,
@@ -459,16 +465,18 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             val tab = _uiState.value.tabs.firstOrNull { it.id == tabId } ?: return
             val isHttp = url.startsWith("http://", ignoreCase = true) ||
                 url.startsWith("https://", ignoreCase = true)
-            if (!tab.isPrivate && !tab.isStartPage && isHttp && lastRecordedHistoryUrlByTab[tabId] != url) {
-                val initialTitle = if (urlChanged && tab.isLoading) {
-                    OmniboxEngine.extractHost(url).ifBlank { url }
-                } else {
-                    tab.title.ifBlank { OmniboxEngine.extractHost(url).ifBlank { url } }
-                }
+            // Only record SPA route transitions here (when page isn't actively loading);
+            // full document navigations record cleanly in onPageFinished once redirects settle and title is known.
+            if (!tab.isPrivate && !tab.isStartPage && isHttp && !tab.isLoading && urlChanged &&
+                lastRecordedHistoryUrlByTab[tabId] != url
+            ) {
+                val safeTitle = tab.title
+                    .takeUnless { it.isBlank() || it.equals("New Tab", ignoreCase = true) }
+                    ?: OmniboxEngine.extractHost(url).ifBlank { url }
                 lastRecordedHistoryUrlByTab[tabId] = url
-                lastRecordedHistoryTitleByTab[tabId] = initialTitle
+                lastRecordedHistoryTitleByTab[tabId] = safeTitle
                 persistTab(tab)
-                recordHistory(url, initialTitle)
+                recordHistory(url, safeTitle)
             }
             // Client-side SPA route transition: refresh Reader availability and route-matched userscripts
             if (urlChanged && isHttp && !tab.isLoading) {
@@ -614,6 +622,41 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             _uiState.update { it.copy(httpsErrorPrompt = prompt) }
         }
 
+        override fun onRenderProcessGone(tabId: String, didCrash: Boolean) {
+            viewModelScope.launch(Dispatchers.Main) {
+                pool.evictCrashedSession(tabId)
+                val wasActive = _uiState.value.activeTabId == tabId
+                _uiState.update { state ->
+                    state.copy(
+                        tabs = state.tabs.map { tab ->
+                            if (tab.id == tabId) {
+                                tab.copy(
+                                    isLoading = false,
+                                    progress = 0,
+                                    isPlayingMedia = false,
+                                    isPlayingVideo = false,
+                                    sessionRevision = tab.sessionRevision + 1
+                                )
+                            } else {
+                                tab
+                            }
+                        },
+                        zapper = if (wasActive) ZapperUiState() else state.zapper,
+                        findInPage = if (wasActive) FindInPageState() else state.findInPage
+                    )
+                }
+                if (activeMediaTabId == tabId) {
+                    activeMediaTabId = null
+                    BackgroundMediaService.stop(app)
+                }
+                if (wasActive) {
+                    showSnackbar(
+                        if (didCrash) "Recovered tab after renderer reset" else "Reloaded tab to free memory"
+                    )
+                }
+            }
+        }
+
         override fun onDownloadRequested(
             tabId: String,
             url: String,
@@ -754,7 +797,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                             selectedSummary = event.summary,
                             scopeDepth = event.scopeDepth,
                             maxScopeDepth = event.maxScopeDepth,
-                            matchCount = event.matchCount
+                            matchCount = event.matchCount,
+                            selectedViewportCenterY = event.viewportCenterY
                         )
                     )
                 }
@@ -775,12 +819,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                             maxScopeDepth = 0,
                             matchCount = 0,
                             temporaryZapCount = event.temporaryZapCount,
-                            lastTemporaryZapSummary = event.summary
-                        ),
-                        snackbarMessage = "Zapped ${event.summary.ifBlank { "element" }}",
-                        snackbarId = snackbarCounter.incrementAndGet(),
-                        snackbarUndoZapper = true,
-                        recentlyClosedTab = null
+                            lastTemporaryZapSummary = event.summary,
+                            lastStatusMessage = "Hid ${event.summary.ifBlank { "element" }}"
+                        )
                     )
                 }
             }
@@ -793,10 +834,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 if (!stateSnapshot.zapper.isActive || stateSnapshot.activeTabId != tabId) return@launch
                 _uiState.update { state ->
                     state.copy(
-                        zapper = state.zapper.copy(temporaryZapCount = count),
-                        snackbarMessage = "Restored element",
-                        snackbarId = snackbarCounter.incrementAndGet(),
-                        snackbarUndoZapper = false
+                        zapper = state.zapper.copy(
+                            temporaryZapCount = count,
+                            lastTemporaryZapSummary = if (count == 0) null else state.zapper.lastTemporaryZapSummary,
+                            lastStatusMessage = "Restored element"
+                        )
                     )
                 }
             }
@@ -810,6 +852,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 val tab = stateSnapshot.tabs.firstOrNull { it.id == tabId } ?: return@launch
                 val host = OmniboxEngine.normalizeHost(tab.displayHost)
                 if (host.isBlank()) return@launch
+                val blockedLabel = event.label.ifBlank { event.selector }
                 if (tab.isPrivate) {
                     val existing = stateSnapshot.privateZappedRules[host].orEmpty()
                     val rule = ZappedRuleEntity(
@@ -828,10 +871,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                                 selectedSummary = "",
                                 scopeDepth = 0,
                                 maxScopeDepth = 0,
-                                matchCount = 0
+                                matchCount = 0,
+                                lastStatusMessage = "Blocked $blockedLabel (Private)"
                             ),
-                            snackbarMessage = "Blocked for this Private session on $host",
-                            snackbarId = snackbarCounter.incrementAndGet(),
+                            snackbarMessage = null,
                             snackbarUndoZapper = false
                         )
                     }
@@ -865,10 +908,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                             selectedSummary = "",
                             scopeDepth = 0,
                             maxScopeDepth = 0,
-                            matchCount = 0
+                            matchCount = 0,
+                            lastStatusMessage = "Blocked $blockedLabel"
                         ),
-                        snackbarMessage = "Blocked permanently on $host",
-                        snackbarId = snackbarCounter.incrementAndGet(),
+                        snackbarMessage = null,
                         snackbarUndoZapper = false
                     )
                 }
@@ -1326,6 +1369,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             context = context,
             callbacks = sessionCallbacks
         )
+        session.applySurfaceBackground(isChromeDark(), isAmoledSurface())
+        if (_uiState.value.activeTabId == tab.id) {
+            pool.setActiveTab(tab.id)
+        }
         applySettingsToSession(tab, session, reloadIfModeChanged = false)
         pendingProgrammaticHttpsUpgrades.remove(tab.id)?.let { (upgraded, originalHttp) ->
             session.webViewClient.registerProgrammaticHttpsUpgrade(upgraded, originalHttp)
@@ -1349,6 +1396,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             readerExtractJob?.cancel()
             readerExtractJob = null
             _uiState.value.activeTabId?.let { prevId ->
+                captureThumbnailFor(prevId)
                 pool.getExisting(prevId)?.clearFindMatches()
             }
         }
@@ -1392,6 +1440,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         if (!isPrivate) {
             persistTab(tab)
         }
+        if (selectImmediately) {
+            pool.setActiveTab(tab.id)
+        }
         return tab
     }
 
@@ -1433,6 +1484,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         if (!target.isPrivate) {
             _uiState.value.tabs.firstOrNull { it.id == tabId }?.let { persistTab(it) }
         }
+        pool.setActiveTab(tabId)
         applyResolvedSettingsToTab(tabId, reloadIfModeChanged = true)
     }
 
@@ -3297,6 +3349,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         ThemeMode.SYSTEM -> onSystemDarkThemeProvider?.invoke() ?: _uiState.value.isSystemDark
     }
 
+    private fun isAmoledSurface(): Boolean =
+        isChromeDark() && _uiState.value.settings.nightSurfaceStyle == NightSurfaceStyle.AMOLED
+
     private fun reloadActiveTabIfHost(host: String) {
         val active = _uiState.value.activeTab ?: return
         if (OmniboxEngine.normalizeHost(active.displayHost) == OmniboxEngine.normalizeHost(host)) {
@@ -3358,7 +3413,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
         viewModelScope.launch {
             val existing = db.historyDao().findByUrl(url)
-            val resolvedTitle = title.ifBlank { OmniboxEngine.extractHost(url) }
+            val resolvedTitle = title
+                .trim()
+                .takeUnless { it.isEmpty() || it.equals("New Tab", ignoreCase = true) }
+                ?: OmniboxEngine.extractHost(url).ifBlank { url }
             db.historyDao().upsert(
                 HistoryEntity(
                     url = url,
@@ -3524,14 +3582,26 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         updateBgMedia: Boolean = true
     ) {
         val state = _uiState.value
+        val activeId = state.activeTabId
+        val chromeDark = isChromeDark()
+        val amoled = isAmoledSurface()
+        if (updateWebDark) {
+            // Avoid broadcasting Dark Reader JS to every background WebView simultaneously;
+            // apply immediately to the active tab and refresh background tabs lazily on switch.
+            pool.markAllBackgroundWebDarkDirty(activeId)
+        }
         state.tabs.forEach { tab ->
             val session = pool.getExisting(tab.id) ?: return@forEach
+            val isActive = tab.id == activeId
+            if (updateWebDark) {
+                session.applySurfaceBackground(chromeDark, amoled)
+            }
             applySettingsToSession(
                 tab = tab,
                 session = session,
-                reloadIfModeChanged = reloadActiveOnSiteModeChange && tab.id == state.activeTabId,
+                reloadIfModeChanged = reloadActiveOnSiteModeChange && isActive,
                 updateSiteOverrides = updateSiteOverrides,
-                updateWebDark = updateWebDark,
+                updateWebDark = updateWebDark && isActive,
                 updateBgMedia = updateBgMedia
             )
         }
@@ -3570,11 +3640,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             )
         }
 
-        if (updateWebDark) {
+        if (updateWebDark || session.webDarkDirty) {
+            val chromeDark = isChromeDark()
+            session.applySurfaceBackground(chromeDark, isAmoledSurface())
             val darkState = DarkReaderConfig.resolve(
                 settings = state.settings,
                 siteOverride = siteOverrideEntity,
-                isChromeDark = isChromeDark()
+                isChromeDark = chromeDark
             )
             session.applyWebDarkMode(darkState, app.darkReaderInjector)
         }

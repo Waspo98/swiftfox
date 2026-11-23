@@ -18,8 +18,10 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.input.TextFieldLineLimits
+import androidx.compose.foundation.text.input.rememberTextFieldState
+import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Bolt
@@ -41,6 +43,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -49,12 +52,12 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
 import app.overbay.swiftfox.features.omnibox.OmniboxSuggestion
 import app.overbay.swiftfox.features.omnibox.SuggestionKind
+import kotlinx.coroutines.flow.distinctUntilChanged
 
 @Composable
 fun OmniboxOverlay(
@@ -67,21 +70,34 @@ fun OmniboxOverlay(
     onDismiss: () -> Unit
 ) {
     val focusRequester = remember { FocusRequester() }
-    val activeBang = remember(query) { OmniboxEngine.detectBang(query) }
 
-    // Preserve cursor selection and IME composition across recompositions; select-all on initial open
-    var fieldValue by remember {
-        mutableStateOf(
-            TextFieldValue(
-                text = query,
-                selection = if (query.isNotEmpty()) TextRange(0, query.length) else TextRange.Zero
-            )
-        )
+    // TextFieldState owns the IME buffer synchronously so fast typing bursts never race with
+    // parent recompositions or drop characters; select-all on initial open when prefilled.
+    val textFieldState = rememberTextFieldState(
+        initialText = query,
+        initialSelection = if (query.isNotEmpty()) TextRange(0, query.length) else TextRange.Zero
+    )
+    val currentText = textFieldState.text.toString()
+    val activeBang = remember(currentText) { OmniboxEngine.detectBang(currentText) }
+    var lastSyncedExternalQuery by remember { mutableStateOf(query) }
+
+    LaunchedEffect(textFieldState) {
+        snapshotFlow { textFieldState.text.toString() }
+            .distinctUntilChanged()
+            .collect { typed ->
+                if (typed != lastSyncedExternalQuery) {
+                    lastSyncedExternalQuery = typed
+                    onQueryChange(typed)
+                }
+            }
     }
 
     LaunchedEffect(query) {
-        if (query != fieldValue.text) {
-            fieldValue = TextFieldValue(text = query, selection = TextRange(query.length))
+        if (query != lastSyncedExternalQuery) {
+            lastSyncedExternalQuery = query
+            if (textFieldState.text.toString() != query) {
+                textFieldState.setTextAndPlaceCursorAtEnd(query)
+            }
         }
     }
 
@@ -155,14 +171,8 @@ fun OmniboxOverlay(
                         }
 
                         BasicTextField(
-                            value = fieldValue,
-                            onValueChange = { next ->
-                                fieldValue = next
-                                if (next.text != query) {
-                                    onQueryChange(next.text)
-                                }
-                            },
-                            singleLine = true,
+                            state = textFieldState,
+                            lineLimits = TextFieldLineLimits.SingleLine,
                             textStyle = MaterialTheme.typography.bodyLarge.copy(
                                 color = MaterialTheme.colorScheme.onSurface
                             ),
@@ -171,11 +181,12 @@ fun OmniboxOverlay(
                                 keyboardType = KeyboardType.Uri,
                                 imeAction = ImeAction.Go
                             ),
-                            keyboardActions = KeyboardActions(
-                                onGo = { if (fieldValue.text.isNotBlank()) onSubmit(fieldValue.text) }
-                            ),
-                            decorationBox = { inner ->
-                                if (fieldValue.text.isEmpty()) {
+                            onKeyboardAction = {
+                                val text = textFieldState.text.toString()
+                                if (text.isNotBlank()) onSubmit(text)
+                            },
+                            decorator = { inner ->
+                                if (currentText.isEmpty()) {
                                     Text(
                                         text = "Search $searchEngineLabel or enter address",
                                         style = MaterialTheme.typography.bodyLarge,
@@ -191,10 +202,11 @@ fun OmniboxOverlay(
                                 .focusRequester(focusRequester)
                         )
 
-                        if (fieldValue.text.isNotEmpty()) {
+                        if (currentText.isNotEmpty()) {
                             IconButton(
                                 onClick = {
-                                    fieldValue = TextFieldValue("")
+                                    textFieldState.setTextAndPlaceCursorAtEnd("")
+                                    lastSyncedExternalQuery = ""
                                     onQueryChange("")
                                 },
                                 modifier = Modifier.size(48.dp)
@@ -223,7 +235,8 @@ fun OmniboxOverlay(
                     Surface(
                         onClick = {
                             val bangPrefix = "${bang.triggers.first()} "
-                            fieldValue = TextFieldValue(bangPrefix, TextRange(bangPrefix.length))
+                            textFieldState.setTextAndPlaceCursorAtEnd(bangPrefix)
+                            lastSyncedExternalQuery = bangPrefix
                             onQueryChange(bangPrefix)
                         },
                         shape = RoundedCornerShape(16.dp),

@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -18,10 +19,9 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
@@ -49,6 +49,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -95,10 +96,12 @@ fun SettingsScreen(
     var showAllSiteOverrides by remember { mutableStateOf(false) }
     var customTemplateDraft by remember { mutableStateOf(settings.customSearchUrlTemplate) }
     var lastCommittedTemplate by remember { mutableStateOf(settings.customSearchUrlTemplate) }
-    if (settings.customSearchUrlTemplate != lastCommittedTemplate) {
-        lastCommittedTemplate = settings.customSearchUrlTemplate
-        if (customTemplateDraft.trim() != settings.customSearchUrlTemplate) {
-            customTemplateDraft = settings.customSearchUrlTemplate
+    LaunchedEffect(settings.customSearchUrlTemplate) {
+        if (settings.customSearchUrlTemplate != lastCommittedTemplate) {
+            lastCommittedTemplate = settings.customSearchUrlTemplate
+            if (customTemplateDraft.trim() != settings.customSearchUrlTemplate) {
+                customTemplateDraft = settings.customSearchUrlTemplate
+            }
         }
     }
 
@@ -118,16 +121,16 @@ fun SettingsScreen(
             )
         }
     ) { innerPadding ->
-        Column(
+        LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-                .imePadding()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp, vertical = 8.dp),
+                .imePadding(),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(20.dp)
         ) {
             // Account, Sync & Interop
+            item(key = "account_sync", contentType = "settings_section") {
             SettingsSection(title = "Account & Sync") {
                 val syncSubtitle = when (val acct = state.syncStatus.accountState) {
                     is SyncAccountState.Connected -> {
@@ -157,8 +160,10 @@ fun SettingsScreen(
                     onClick = { viewModel.setOverlay(BrowserOverlay.BOOKMARKS) }
                 )
             }
+            }
 
             // Appearance & Theme
+            item(key = "appearance_theme", contentType = "settings_section") {
             SettingsSection(title = "Appearance & Theme") {
                 SettingGroup(label = "Theme mode") {
                     FlowRow(
@@ -315,8 +320,10 @@ fun SettingsScreen(
                     )
                 }
             }
+            }
 
             // Ad Blocking & Element Zapper
+            item(key = "adblock_zapper", contentType = "settings_section") {
             SettingsSection(title = "Ad Blocking & Element Zapper") {
                 val engineLabel = if (state.adblockStatus.isNativeRust) "adblock-rust JNI" else "Kotlin matcher"
                 SettingsSwitchRow(
@@ -344,8 +351,10 @@ fun SettingsScreen(
                     onClick = { viewModel.setOverlay(BrowserOverlay.ZAPPED_RULES) }
                 )
             }
+            }
 
             // Userscripts & Reader
+            item(key = "userscripts", contentType = "settings_section") {
             SettingsSection(title = "Userscripts & Extensibility") {
                 SettingsSwitchRow(
                     title = "Enable userscripts (.user.js)",
@@ -360,8 +369,10 @@ fun SettingsScreen(
                     onClick = { viewModel.setOverlay(BrowserOverlay.USERSCRIPTS) }
                 )
             }
+            }
 
             // Foldable & Layout Profiles
+            item(key = "foldable_profiles", contentType = "settings_section") {
             SettingsSection(title = "Foldable & Layout Profiles") {
                 Surface(
                     shape = RoundedCornerShape(14.dp),
@@ -444,8 +455,10 @@ fun SettingsScreen(
                     onCheckedChange = { viewModel.setUnfoldedSpacesSidebar(it) }
                 )
             }
+            }
 
             // Search & Gestures
+            item(key = "search_gestures", contentType = "settings_section") {
             SettingsSection(title = "Search & Gestures") {
                 SettingGroup(label = "Default search engine") {
                     FlowRow(
@@ -525,8 +538,10 @@ fun SettingsScreen(
                     onCheckedChange = { viewModel.setPullToRefreshEnabled(it) }
                 )
             }
+            }
 
             // Privacy, Links & Media
+            item(key = "privacy_media", contentType = "settings_section") {
             SettingsSection(title = "Privacy, Links & Media") {
                 SettingsSwitchRow(
                     title = "HTTPS-Only mode",
@@ -671,8 +686,10 @@ fun SettingsScreen(
                     Text("Clear history, cookies & cache")
                 }
             }
+            }
 
             // System Integration
+            item(key = "system_integration", contentType = "settings_section") {
             SettingsSection(title = "System Integration") {
                 Button(
                     onClick = onOpenDefaultBrowserSettings,
@@ -686,11 +703,12 @@ fun SettingsScreen(
                     Text("Set Swiftfox as default browser")
                 }
             }
+            }
 
             // About Swiftfox brand card
-            AboutSwiftfoxCard()
-
-            Spacer(Modifier.height(16.dp))
+            item(key = "about_swiftfox", contentType = "about_card") {
+                AboutSwiftfoxCard()
+            }
         }
     }
 

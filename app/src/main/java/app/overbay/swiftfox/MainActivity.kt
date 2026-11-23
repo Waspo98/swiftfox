@@ -1,6 +1,7 @@
 package app.overbay.swiftfox
 
 import android.app.PictureInPictureParams
+import android.app.UiModeManager
 import android.app.role.RoleManager
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -24,6 +25,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
@@ -33,11 +35,13 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import app.overbay.swiftfox.data.prefs.ThemeMode
 import app.overbay.swiftfox.features.foldable.PostureObserver
 import app.overbay.swiftfox.ui.browser.BrowserScreen
 import app.overbay.swiftfox.ui.browser.BrowserViewModel
 import app.overbay.swiftfox.ui.theme.SwiftfoxTheme
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
@@ -52,6 +56,8 @@ class MainActivity : ComponentActivity() {
     private var pendingRuntimePermissionCallback: ((Map<String, Boolean>) -> Unit)? = null
     private var fullscreenCustomView: View? = null
     private var fullscreenCallback: WebChromeClient.CustomViewCallback? = null
+    private val configChangeTicks = MutableStateFlow(0)
+    private var lastAppliedNightMode: Int? = null
 
     private val fileChooserLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -165,6 +171,10 @@ class MainActivity : ComponentActivity() {
             val state by viewModel.uiState.collectAsStateWithLifecycle()
             val thumbnails by viewModel.thumbnails.collectAsStateWithLifecycle()
 
+            LaunchedEffect(state.settings.themeMode) {
+                applyApplicationNightMode(state.settings.themeMode)
+            }
+
             SwiftfoxTheme(
                 themeMode = state.settings.themeMode,
                 nightSurfaceStyle = state.settings.nightSurfaceStyle,
@@ -204,6 +214,21 @@ class MainActivity : ComponentActivity() {
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         viewModel.updateSystemDarkTheme(isNightConfiguration(newConfig))
+        configChangeTicks.value = configChangeTicks.value + 1
+    }
+
+    private fun applyApplicationNightMode(themeMode: ThemeMode) {
+        val targetMode = when (themeMode) {
+            ThemeMode.SYSTEM -> UiModeManager.MODE_NIGHT_AUTO
+            ThemeMode.DAY -> UiModeManager.MODE_NIGHT_NO
+            ThemeMode.NIGHT -> UiModeManager.MODE_NIGHT_YES
+        }
+        if (lastAppliedNightMode == targetMode) return
+        lastAppliedNightMode = targetMode
+        runCatching {
+            val uiModeManager = getSystemService(UiModeManager::class.java)
+            uiModeManager?.setApplicationNightMode(targetMode)
+        }
     }
 
     override fun onDestroy() {
@@ -285,7 +310,7 @@ class MainActivity : ComponentActivity() {
     private fun observeFoldablePosture() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
-                PostureObserver.observe(this@MainActivity).collect { windowState ->
+                PostureObserver.observe(this@MainActivity, configChangeTicks).collect { windowState ->
                     viewModel.onFoldableWindowStateChanged(windowState)
                 }
             }

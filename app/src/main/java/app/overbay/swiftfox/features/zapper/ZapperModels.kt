@@ -9,8 +9,10 @@ data class ZapperUiState(
     val scopeDepth: Int = 0,
     val maxScopeDepth: Int = 0,
     val matchCount: Int = 0,
+    val selectedViewportCenterY: Float = 0.3f,
     val temporaryZapCount: Int = 0,
-    val lastTemporaryZapSummary: String? = null
+    val lastTemporaryZapSummary: String? = null,
+    val lastStatusMessage: String? = null
 )
 
 @Serializable
@@ -19,7 +21,8 @@ data class ZapperSelectionEvent(
     val summary: String = "",
     val scopeDepth: Int = 0,
     val maxScopeDepth: Int = 0,
-    val matchCount: Int = 0
+    val matchCount: Int = 0,
+    val viewportCenterY: Float = 0.3f
 )
 
 @Serializable

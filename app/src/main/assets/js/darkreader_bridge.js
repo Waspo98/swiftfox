@@ -140,10 +140,27 @@
     };
   }
 
+  var PREPAINT_STYLE_ID = 'swiftfox-prepaint-dark';
+
+  function clearPrepaintStyle() {
+    try {
+      var el = document.getElementById(PREPAINT_STYLE_ID);
+      if (el && el.parentNode) {
+        el.parentNode.removeChild(el);
+      }
+    } catch (e) {}
+  }
+
   function enableDarkReader(config) {
     var brightness = typeof config.brightness === 'number' ? config.brightness : 100;
     var contrast = typeof config.contrast === 'number' ? config.contrast : 100;
     var sepia = typeof config.sepia === 'number' ? config.sepia : 0;
+    // Dark Reader 4.9's incremental fast-path only refreshes its internal color cache
+    // without rewriting injected stylesheets when background/brightness/contrast/sepia change.
+    // Disable first whenever updating an already-active instance so AMOLED & sliders apply live.
+    if (isDarkReaderActive()) {
+      DarkReader.disable();
+    }
     DarkReader.enable({
       mode: 1,
       brightness: brightness,
@@ -152,6 +169,7 @@
       darkSchemeBackgroundColor: config.amoled ? '#000000' : '#18161b',
       darkSchemeTextColor: config.amoled ? '#f3eef7' : '#ece7f0'
     });
+    clearPrepaintStyle();
   }
 
   function notifyStatus(skippedNativeDark) {
@@ -228,6 +246,7 @@
         nativeDarkCache = null;
         appliedSignature = null;
         DarkReader.disable();
+        clearPrepaintStyle();
         notifyStatus(false);
         return;
       }
@@ -245,6 +264,7 @@
           if (hasExplicitDarkColorScheme(getMetaColorSchemeContent())) {
             appliedSignature = null;
             DarkReader.disable();
+            clearPrepaintStyle();
             notifyStatus(true);
           }
           return;
@@ -255,6 +275,7 @@
         if (evaluateNativeDark(false)) {
           appliedSignature = null;
           DarkReader.disable();
+          clearPrepaintStyle();
           notifyStatus(true);
           return;
         }
@@ -262,6 +283,7 @@
 
       var nextSignature = buildConfigSignature(config);
       if (isDarkReaderActive() && appliedSignature === nextSignature) {
+        clearPrepaintStyle();
         notifyStatus(false);
         return;
       }

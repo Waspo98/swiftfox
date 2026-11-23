@@ -10,13 +10,70 @@ import androidx.webkit.ProfileStore
 import androidx.webkit.WebViewFeature
 
 class TabSessionPool(
-    private val maxWarmSessions: Int = 8
+    private val maxWarmSessions: Int = 5
 ) {
     private val lock = Any()
     private val warmSessions = LinkedHashMap<String, BrowserSession>(maxWarmSessions, 0.75f, true)
     private val hibernatedBundles = mutableMapOf<String, Bundle>()
     private val thumbnails = mutableMapOf<String, Bitmap>()
     private var currentHostContext: Context? = null
+    @Volatile
+    private var currentActiveTabId: String? = null
+
+    fun setActiveTab(tabId: String?) {
+        currentActiveTabId = tabId
+        val snapshot = synchronized(lock) { warmSessions.entries.toList() }
+        snapshot.forEach { (id, session) ->
+            if (id == tabId) {
+                session.resumeIfActive()
+            } else {
+                session.pauseIfBackground()
+            }
+        }
+    }
+
+    fun markAllBackgroundWebDarkDirty(activeTabId: String?) {
+        val snapshot = synchronized(lock) { warmSessions.entries.toList() }
+        snapshot.forEach { (id, session) ->
+            if (id != activeTabId) {
+                session.webDarkDirty = true
+            }
+        }
+    }
+
+    fun hibernateBackgroundSessions(keepTabId: String? = currentActiveTabId) {
+        val evicted = mutableListOf<BrowserSession>()
+        synchronized(lock) {
+            val keysToEvict = warmSessions.entries
+                .filter { (id, session) ->
+                    id != keepTabId && !session.webView.isMediaCurrentlyPlaying
+                }
+                .map { it.key }
+            for (key in keysToEvict) {
+                val session = warmSessions.remove(key) ?: continue
+                session.captureThumbnail()?.let { thumbnails[key] = it }
+                val bundle = Bundle()
+                session.saveState(bundle)
+                hibernatedBundles[key] = bundle
+                evicted += session
+            }
+        }
+        evicted.forEach { session ->
+            (session.webView.parent as? ViewGroup)?.removeView(session.webView)
+            session.destroy()
+        }
+    }
+
+    fun evictCrashedSession(tabId: String) {
+        val session = synchronized(lock) {
+            hibernatedBundles.remove(tabId)
+            warmSessions.remove(tabId)
+        }
+        if (session != null) {
+            (session.webView.parent as? ViewGroup)?.removeView(session.webView)
+            session.destroy()
+        }
+    }
 
     fun rebindActivityContext(context: Context) {
         val snapshot = synchronized(lock) {

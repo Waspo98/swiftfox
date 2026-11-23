@@ -4,13 +4,17 @@ import android.content.Context
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -37,8 +41,10 @@ import androidx.compose.foundation.layout.windowInsetsTopHeight
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.input.TextFieldLineLimits
+import androidx.compose.foundation.text.input.rememberTextFieldState
+import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.ArrowForward
@@ -80,7 +86,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -200,7 +210,7 @@ fun BrowserScreen(
 
     val activeTab = state.activeTab
     val activeSession: BrowserSession? = if (activeTab != null && !activeTab.isStartPage) {
-        remember(activeTab.id) { viewModel.ensureSession(activeTab, context) }
+        remember(activeTab.id, activeTab.sessionRevision) { viewModel.ensureSession(activeTab, context) }
     } else {
         null
     }
@@ -262,8 +272,8 @@ fun BrowserScreen(
             onUndoTemporaryZap = { viewModel.undoZapperTemporaryZap() },
             onStopZapper = { viewModel.stopElementZapper() },
             webContent = {
-                if (activeSession != null) {
-                    key(activeSession.tabId) {
+                if (activeSession != null && activeTab != null) {
+                    key(activeSession.tabId, activeTab.sessionRevision) {
                         AndroidView(
                             modifier = Modifier.fillMaxSize(),
                             factory = { ctx ->
@@ -326,6 +336,11 @@ fun BrowserScreen(
                                             ViewGroup.LayoutParams.MATCH_PARENT
                                         )
                                     )
+                                    // Resume & invalidate after re-attaching a warm WebView so Chromium's
+                                    // compositor immediately repaints instead of staying blank until scroll.
+                                    activeSession.resumeIfActive()
+                                    targetWebView.requestLayout()
+                                    targetWebView.invalidate()
                                 }
                             },
                             onRelease = { swipeLayout ->
@@ -337,8 +352,23 @@ fun BrowserScreen(
             }
         )
 
-        // Fullscreen overlays
-        when (state.activeOverlay) {
+        // Fullscreen overlays with smooth GPU-backed transitions
+        AnimatedContent(
+            targetState = state.activeOverlay,
+            transitionSpec = {
+                if (reduceMotion) {
+                    EnterTransition.None togetherWith ExitTransition.None
+                } else if (targetState == BrowserOverlay.NONE) {
+                    EnterTransition.None togetherWith (fadeOut(tween(130)) + slideOutVertically(tween(150)) { it / 28 })
+                } else if (initialState == BrowserOverlay.NONE) {
+                    (fadeIn(tween(160)) + slideInVertically(tween(180)) { it / 28 }) togetherWith ExitTransition.None
+                } else {
+                    fadeIn(tween(150)) togetherWith fadeOut(tween(120))
+                }
+            },
+            label = "browser_overlay_transition"
+        ) { overlay ->
+            when (overlay) {
             BrowserOverlay.TAB_SWITCHER -> {
                 SpacesTabSwitcher(
                     state = state,
@@ -464,6 +494,7 @@ fun BrowserScreen(
                 )
             }
             BrowserOverlay.NONE -> Unit
+            }
         }
 
         // QR Code Pairing Overlay (CameraX + ZXing)
@@ -485,37 +516,43 @@ fun BrowserScreen(
         }
 
         // Native Reader Mode Overlay
-        state.readerArticle?.let { article ->
-            val tabIsPrivate = activeTab?.isPrivate == true
-            ReaderModeOverlay(
-                article = article,
-                settings = state.settings,
-                onClose = { viewModel.closeReaderMode() },
-                onOpenLink = { linkUrl ->
-                    if (linkUrl.startsWith("http://", ignoreCase = true) ||
-                        linkUrl.startsWith("https://", ignoreCase = true)
-                    ) {
-                        viewModel.closeReaderMode()
-                        viewModel.navigateActiveTab(linkUrl)
+        AnimatedVisibility(
+            visible = state.readerArticle != null,
+            enter = if (reduceMotion) EnterTransition.None else (fadeIn(tween(180)) + slideInVertically(tween(200)) { it / 24 }),
+            exit = if (reduceMotion) ExitTransition.None else (fadeOut(tween(140)) + slideOutVertically(tween(160)) { it / 24 })
+        ) {
+            state.readerArticle?.let { article ->
+                val tabIsPrivate = activeTab?.isPrivate == true
+                ReaderModeOverlay(
+                    article = article,
+                    settings = state.settings,
+                    onClose = { viewModel.closeReaderMode() },
+                    onOpenLink = { linkUrl ->
+                        if (linkUrl.startsWith("http://", ignoreCase = true) ||
+                            linkUrl.startsWith("https://", ignoreCase = true)
+                        ) {
+                            viewModel.closeReaderMode()
+                            viewModel.navigateActiveTab(linkUrl)
+                        }
+                    },
+                    onSurfaceModeChange = { viewModel.setReaderSurfaceMode(it) },
+                    onFontFamilyChange = { viewModel.setReaderFontFamily(it) },
+                    onFontSizeChange = { viewModel.setReaderFontSizeSp(it) },
+                    onLineHeightChange = { viewModel.setReaderLineHeight(it) },
+                    pageUrl = article.url.ifBlank { activeTab?.url.orEmpty() },
+                    isPrivate = tabIsPrivate,
+                    siteAdblockDisabled = state.activeSiteOverride?.adblockDisabled == true,
+                    isHostHttpsBypassed = { rawHost ->
+                        val norm = OmniboxEngine.normalizeHost(rawHost)
+                        val ov = if (tabIsPrivate) {
+                            state.privateSiteOverrides[norm] ?: state.siteOverrides[norm]
+                        } else {
+                            state.siteOverrides[norm]
+                        }
+                        ov?.httpsOnlyBypass == true
                     }
-                },
-                onSurfaceModeChange = { viewModel.setReaderSurfaceMode(it) },
-                onFontFamilyChange = { viewModel.setReaderFontFamily(it) },
-                onFontSizeChange = { viewModel.setReaderFontSizeSp(it) },
-                onLineHeightChange = { viewModel.setReaderLineHeight(it) },
-                pageUrl = article.url.ifBlank { activeTab?.url.orEmpty() },
-                isPrivate = tabIsPrivate,
-                siteAdblockDisabled = state.activeSiteOverride?.adblockDisabled == true,
-                isHostHttpsBypassed = { rawHost ->
-                    val norm = OmniboxEngine.normalizeHost(rawHost)
-                    val ov = if (tabIsPrivate) {
-                        state.privateSiteOverrides[norm] ?: state.siteOverrides[norm]
-                    } else {
-                        state.siteOverrides[norm]
-                    }
-                    ov?.httpsOnlyBypass == true
-                }
-            )
+                )
+            }
         }
 
         // Focused Omnibox overlay
@@ -858,15 +895,13 @@ fun BrowserShellLayout(
                     }
 
                     // Loading progress indicator in Side Rail mode (no top/bottom bar)
-                    if (!hideChrome && placement == ToolbarPlacement.SIDE_RAIL && activeTab?.isLoading == true) {
-                        LinearProgressIndicator(
-                            progress = { (activeTab.progress / 100f).coerceIn(0.08f, 1f) },
-                            color = MaterialTheme.colorScheme.primary,
-                            trackColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                            modifier = Modifier
-                                .align(Alignment.TopCenter)
-                                .fillMaxWidth()
-                                .height(2.5.dp)
+                    if (!hideChrome && placement == ToolbarPlacement.SIDE_RAIL) {
+                        ToolbarProgressSlot(
+                            isLoading = activeTab?.isLoading == true,
+                            progress = activeTab?.progress ?: 0,
+                            dividerAlignment = Alignment.TopCenter,
+                            showIdleDivider = false,
+                            modifier = Modifier.align(Alignment.TopCenter)
                         )
                     }
 
@@ -924,6 +959,8 @@ fun BrowserShellLayout(
                     }
 
                     if (state.zapper.isActive && !hideChrome) {
+                        val dockTop = state.zapper.selectedSelector != null &&
+                            state.zapper.selectedViewportCenterY > 0.55f
                         ZapperHudOverlay(
                             state = state.zapper,
                             onAdjustScope = onAdjustZapperScope,
@@ -933,7 +970,7 @@ fun BrowserShellLayout(
                             onUndoTemporaryZap = onUndoTemporaryZap,
                             onDone = onStopZapper,
                             applyNavigationBarPadding = false,
-                            modifier = Modifier.align(Alignment.BottomCenter)
+                            modifier = Modifier.align(if (dockTop) Alignment.TopCenter else Alignment.BottomCenter)
                         )
                     }
                 }
@@ -1242,24 +1279,41 @@ private fun FullOmniboxToolbar(
 private fun ToolbarProgressSlot(
     isLoading: Boolean,
     progress: Int,
-    dividerAlignment: Alignment
+    dividerAlignment: Alignment,
+    modifier: Modifier = Modifier,
+    showIdleDivider: Boolean = true
 ) {
+    val reduceMotion = rememberReduceMotion()
+    val targetFraction = if (isLoading) (progress / 100f).coerceIn(0.08f, 1f) else 1f
+    val animatedFraction = animateFloatAsState(
+        targetValue = targetFraction,
+        animationSpec = tween(durationMillis = if (reduceMotion) 0 else 160),
+        label = "page_load_progress"
+    )
     Box(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .height(2.5.dp)
     ) {
-        if (isLoading) {
-            LinearProgressIndicator(
-                progress = { (progress / 100f).coerceIn(0.08f, 1f) },
-                color = MaterialTheme.colorScheme.primary,
-                trackColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                modifier = Modifier.fillMaxSize()
-            )
-        } else {
+        if (showIdleDivider) {
             HorizontalDivider(
                 color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
                 modifier = Modifier.align(dividerAlignment)
+            )
+        }
+        AnimatedVisibility(
+            visible = isLoading,
+            enter = if (reduceMotion) EnterTransition.None else fadeIn(tween(80)),
+            exit = if (reduceMotion) ExitTransition.None else fadeOut(tween(200)),
+            modifier = Modifier.fillMaxSize()
+        ) {
+            LinearProgressIndicator(
+                progress = { animatedFraction.value },
+                color = MaterialTheme.colorScheme.primary,
+                trackColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                gapSize = 0.dp,
+                drawStopIndicator = {},
+                modifier = Modifier.fillMaxSize()
             )
         }
     }
@@ -1532,6 +1586,27 @@ private fun FindInPageBar(
     onClose: () -> Unit
 ) {
     val focusRequester = remember { FocusRequester() }
+    val textFieldState = rememberTextFieldState(initialText = state.query)
+    val currentText = textFieldState.text.toString()
+    var lastSyncedQuery by remember { mutableStateOf(state.query) }
+    LaunchedEffect(textFieldState) {
+        snapshotFlow { textFieldState.text.toString() }
+            .distinctUntilChanged()
+            .collect { typed ->
+                if (typed != lastSyncedQuery) {
+                    lastSyncedQuery = typed
+                    onQueryChange(typed)
+                }
+            }
+    }
+    LaunchedEffect(state.query) {
+        if (state.query != lastSyncedQuery) {
+            lastSyncedQuery = state.query
+            if (textFieldState.text.toString() != state.query) {
+                textFieldState.setTextAndPlaceCursorAtEnd(state.query)
+            }
+        }
+    }
     LaunchedEffect(Unit) {
         focusRequester.requestFocus()
     }
@@ -1549,17 +1624,16 @@ private fun FindInPageBar(
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             BasicTextField(
-                value = state.query,
-                onValueChange = onQueryChange,
-                singleLine = true,
+                state = textFieldState,
+                lineLimits = TextFieldLineLimits.SingleLine,
                 textStyle = MaterialTheme.typography.bodyMedium.copy(
                     color = MaterialTheme.colorScheme.onSurface
                 ),
                 cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                keyboardActions = KeyboardActions(onSearch = { onFindNext(true) }),
-                decorationBox = { inner ->
-                    if (state.query.isEmpty()) {
+                onKeyboardAction = { onFindNext(true) },
+                decorator = { inner ->
+                    if (currentText.isEmpty()) {
                         Text(
                             text = "Find in page",
                             style = MaterialTheme.typography.bodyMedium,
@@ -1574,7 +1648,7 @@ private fun FindInPageBar(
                     .focusRequester(focusRequester)
             )
 
-            if (state.query.isNotEmpty()) {
+            if (currentText.isNotEmpty()) {
                 val displayIdx = if (state.totalMatches == 0) 0 else state.activeMatchOrdinal + 1
                 Text(
                     text = "$displayIdx / ${state.totalMatches}",

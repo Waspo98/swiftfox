@@ -7,6 +7,7 @@ import android.graphics.Bitmap
 import android.net.Uri
 import android.net.http.SslError
 import android.os.Bundle
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.SslErrorHandler
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
@@ -53,6 +54,7 @@ interface WebNavigationCallbacks {
     fun onExternalAppPrompt(prompt: ExternalAppPrompt)
     fun onLaunchExternalIntent(intent: Intent): Boolean
     fun onHttpsOnlyFailure(prompt: HttpsUpgradeErrorPrompt)
+    fun onRenderProcessGone(tabId: String, didCrash: Boolean)
 }
 
 class SwiftfoxWebViewClient(
@@ -157,10 +159,81 @@ class SwiftfoxWebViewClient(
         val pageUrl = lastRequestedMainFrameUrl.ifBlank { committedMainFrameUrl }.ifBlank { url }
         val headers = request.requestHeaders ?: emptyMap()
         if (callbacks.shouldBlockNetworkRequest(tabId, url, pageUrl, headers)) {
-            return WebResourceResponse("text/plain", "utf-8", ByteArrayInputStream(ByteArray(0)))
+            return buildBlockedSubresourceResponse(url, headers)
         }
 
         return null
+    }
+
+    private fun buildBlockedSubresourceResponse(
+        url: String,
+        headers: Map<String, String>
+    ): WebResourceResponse {
+        val accept = headers.entries.firstOrNull { it.key.equals("accept", ignoreCase = true) }?.value
+            ?.lowercase(Locale.ROOT).orEmpty()
+        val dest = headers.entries.firstOrNull { it.key.equals("sec-fetch-dest", ignoreCase = true) }?.value
+            ?.lowercase(Locale.ROOT).orEmpty()
+        val path = url.substringBefore('?').substringBefore('#').lowercase(Locale.ROOT)
+        val corsHeaders = mapOf(
+            "Access-Control-Allow-Origin" to "*",
+            "Cache-Control" to "no-store"
+        )
+
+        return when {
+            dest == "image" || accept.startsWith("image/") ||
+                path.endsWith(".png") || path.endsWith(".jpg") || path.endsWith(".jpeg") ||
+                path.endsWith(".gif") || path.endsWith(".webp") || path.endsWith(".svg") ||
+                path.endsWith(".ico") -> {
+                WebResourceResponse(
+                    "image/png",
+                    null,
+                    200,
+                    "OK",
+                    corsHeaders,
+                    ByteArrayInputStream(TRANSPARENT_1X1_PNG)
+                )
+            }
+            dest == "script" || path.endsWith(".js") || path.endsWith(".mjs") -> {
+                WebResourceResponse(
+                    "application/javascript",
+                    "utf-8",
+                    200,
+                    "OK",
+                    corsHeaders,
+                    ByteArrayInputStream(EMPTY_JS_BYTES)
+                )
+            }
+            dest == "style" || accept.contains("text/css") || path.endsWith(".css") -> {
+                WebResourceResponse(
+                    "text/css",
+                    "utf-8",
+                    200,
+                    "OK",
+                    corsHeaders,
+                    ByteArrayInputStream(ByteArray(0))
+                )
+            }
+            dest == "iframe" || dest == "frame" || dest == "document" || accept.contains("text/html") -> {
+                WebResourceResponse(
+                    "text/html",
+                    "utf-8",
+                    200,
+                    "OK",
+                    corsHeaders,
+                    ByteArrayInputStream(TRANSPARENT_EMPTY_HTML_BYTES)
+                )
+            }
+            else -> {
+                WebResourceResponse(
+                    "text/plain",
+                    "utf-8",
+                    200,
+                    "OK",
+                    corsHeaders,
+                    ByteArrayInputStream(ByteArray(0))
+                )
+            }
+        }
     }
 
     private fun handleHttpExternalAppLink(
@@ -434,6 +507,11 @@ class SwiftfoxWebViewClient(
         )
     }
 
+    override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+        callbacks.onRenderProcessGone(tabId, detail.didCrash())
+        return true
+    }
+
     override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {
         handler.cancel()
         val failedUrl = error.url.orEmpty()
@@ -502,5 +580,24 @@ class SwiftfoxWebViewClient(
             })();
         """.trimIndent()
         view.evaluateJavascript(js, null)
+    }
+
+    companion object {
+        // Minimal 1x1 transparent PNG so blocked ad/tracker images never render broken-image boxes
+        private val TRANSPARENT_1X1_PNG = byteArrayOf(
+            0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+            0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+            0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+            0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4.toByte(),
+            0x89.toByte(), 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41,
+            0x54, 0x78, 0x9C.toByte(), 0x63, 0x00, 0x01, 0x00, 0x00,
+            0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4.toByte(), 0x00,
+            0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE.toByte(),
+            0x42, 0x60, 0x82.toByte()
+        )
+        private val EMPTY_JS_BYTES = "/* blocked */".toByteArray(Charsets.UTF_8)
+        private val TRANSPARENT_EMPTY_HTML_BYTES =
+            "<!doctype html><html><head><style>html,body{margin:0;padding:0;background:transparent!important;}</style></head><body></body></html>"
+                .toByteArray(Charsets.UTF_8)
     }
 }

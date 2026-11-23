@@ -125,15 +125,16 @@ class ReaderExtractor(private val context: Context?) {
         val readingTimeMinutes = (payload.readingTimeMinutes ?: (wordCount / 220f).roundToInt())
             .coerceAtLeast(1)
 
-        val resolvedSiteName = payload.siteName?.trim()?.takeIf { it.isNotEmpty() }
-        val resolvedTitle = payload.title?.trim()?.takeIf { it.isNotEmpty() }
+        val resolvedSiteName = payload.siteName?.replace(WHITESPACE_REGEX, " ")?.trim()?.takeIf { it.isNotEmpty() }
+        val resolvedTitle = payload.title?.replace(WHITESPACE_REGEX, " ")?.trim()?.takeIf { it.isNotEmpty() }
             ?: resolvedSiteName
             ?: "Article"
+        val resolvedByline = payload.byline?.replace(WHITESPACE_REGEX, " ")?.trim()?.takeIf { it.isNotEmpty() }
 
         return ReaderArticle(
             url = payload.url?.trim().orEmpty(),
             title = resolvedTitle,
-            byline = payload.byline?.trim()?.takeIf { it.isNotEmpty() },
+            byline = resolvedByline,
             siteName = resolvedSiteName,
             blocks = blocks,
             wordCount = wordCount,

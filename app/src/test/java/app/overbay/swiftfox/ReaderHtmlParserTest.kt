@@ -212,6 +212,13 @@ class ReaderHtmlParserTest {
         assertEquals(2, article?.blocks?.size)
         assertTrue(article?.blocks?.get(0) is ReaderBlock.Heading)
         assertTrue(article?.blocks?.get(1) is ReaderBlock.Paragraph)
+
+        val messyMetaPayload = """{"title":"  Cubs\n\tWin  ","byline":"Tab Bamford\n\t\t\t • 8 hours ago","siteName":" Bleacher \n Nation ","htmlContent":"<p>Body paragraph here.</p>","url":"https://www.bleachernation.com/post"}"""
+        val normalized = extractor.parseExtractionResult(messyMetaPayload)
+        assertNotNull(normalized)
+        assertEquals("Cubs Win", normalized?.title)
+        assertEquals("Tab Bamford • 8 hours ago", normalized?.byline)
+        assertEquals("Bleacher Nation", normalized?.siteName)
     }
 
     @Test

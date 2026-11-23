@@ -62,6 +62,7 @@ class FilterListUpdateWorker(
                 .build()
 
             val request = PeriodicWorkRequestBuilder<FilterListUpdateWorker>(24, TimeUnit.HOURS)
+                .setInitialDelay(12, TimeUnit.HOURS)
                 .setConstraints(constraints)
                 .build()
 

@@ -87,12 +87,14 @@ class ZapperController(private val context: Context? = null) {
                         return true;
                     }
                     if (!style) {
-                        var target = document.head || document.documentElement;
+                        var target = document.documentElement || document.head || document.body;
                         if (!target) return false;
                         style = document.createElement('style');
                         style.id = id;
                         style.type = 'text/css';
                         target.appendChild(style);
+                    } else if (document.documentElement && style.parentNode !== document.documentElement) {
+                        document.documentElement.appendChild(style);
                     }
                     style.textContent = css;
                     return true;
@@ -123,7 +125,8 @@ class ZapperController(private val context: Context? = null) {
                 selector = cleanSelector,
                 scopeDepth = event.scopeDepth.coerceIn(0, maxDepth),
                 maxScopeDepth = maxDepth,
-                matchCount = event.matchCount.coerceAtLeast(0)
+                matchCount = event.matchCount.coerceAtLeast(0),
+                viewportCenterY = event.viewportCenterY.coerceIn(0f, 1f)
             )
         }.getOrNull()
     }
@@ -273,7 +276,8 @@ class ZapperController(private val context: Context? = null) {
         private val UNSAFE_BARE_SELECTORS = setOf(
             "html", "body", "head", "div", "span", "p", "a",
             "main", "section", "article", "ul", "ol", "li",
-            "table", "tr", "td", "form", ":root", "*"
+            "table", "tr", "td", "form", "iframe", "img", "svg",
+            "button", "input", ":root", "*"
         )
     }
 }

@@ -236,6 +236,10 @@ class BrowserSession(
             }
         }
 
+        // Dark Reader is the single web darkening engine; keep Chromium algorithmic darkening off
+        // so Android WebView never double-darkens or overrides Appearance & Theme settings.
+        disableAlgorithmicDarkening()
+
         runCatching {
             val cm = cookieManagerForProfile()
             // Do not blindly call cm.setAcceptCookie(true) here because CookieManager.setAcceptCookie
@@ -582,11 +586,11 @@ class BrowserSession(
         return false
     }
 
-    fun applyWebDarkening(enabled: Boolean) {
+    private fun disableAlgorithmicDarkening() {
         if (isDestroyed) return
         if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
             runCatching {
-                WebSettingsCompat.setAlgorithmicDarkeningAllowed(webView.settings, enabled)
+                WebSettingsCompat.setAlgorithmicDarkeningAllowed(webView.settings, false)
             }
         }
     }
@@ -594,10 +598,10 @@ class BrowserSession(
     val surfaceBackgroundColor: Int
         get() = lastSurfaceBgColor ?: Color.WHITE
 
-    fun applySurfaceBackground(isChromeDark: Boolean, isAmoled: Boolean) {
+    fun applySurfaceBackground(isDarkSurface: Boolean, isAmoled: Boolean) {
         if (isDestroyed) return
         val bgColor = when {
-            !isChromeDark -> Color.WHITE
+            !isDarkSurface -> Color.WHITE
             isAmoled -> Color.BLACK
             else -> 0xFF181818.toInt()
         }
@@ -625,9 +629,7 @@ class BrowserSession(
         if (isDestroyed) return
         webDarkDirty = false
         val curTokens = tokens
-        if (state.useDarkReader) {
-            // Never run Chromium Algorithmic Darkening alongside Dark Reader
-            applyWebDarkening(false)
+        if (state.enabled) {
             val currentUrl = webView.url.orEmpty()
             val originAtCall = ScriptInjector.extractOrigin(currentUrl)
             if (originAtCall != null) {
@@ -648,12 +650,8 @@ class BrowserSession(
                     }
                 }
             }
-        } else if (state.useAlgorithmicLite) {
-            evaluateJavascript(darkReaderInjector.buildDisableScript(curTokens.darkReaderKey))
-            applyWebDarkening(true)
         } else {
             evaluateJavascript(darkReaderInjector.buildDisableScript(curTokens.darkReaderKey))
-            applyWebDarkening(false)
         }
     }
 

@@ -7,6 +7,7 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import app.overbay.swiftfox.data.db.FilterListEntity
+import app.overbay.swiftfox.data.db.SiteOverrideEntity
 import app.overbay.swiftfox.data.db.SwiftfoxDatabase
 import app.overbay.swiftfox.data.db.SyncedRemoteTabEntity
 import app.overbay.swiftfox.data.db.UserscriptEntity
@@ -16,6 +17,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -614,6 +616,64 @@ class SwiftfoxMigrationAndSmokeTest {
         } finally {
             migrated.close()
             context.deleteDatabase(dbName)
+        }
+    }
+
+    @Test
+    fun clearAllWebDarkModeOverridesAndPrunePreservesOtherSiteRules() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = Room.inMemoryDatabaseBuilder(context, SwiftfoxDatabase::class.java).build()
+        try {
+            val dao = db.siteOverrideDao()
+            dao.upsert(SiteOverrideEntity(host = "dark-only.example", webDarkModeOverride = true))
+            dao.upsert(
+                SiteOverrideEntity(
+                    host = "blank-ua.example",
+                    webDarkModeOverride = false,
+                    customUserAgent = "   "
+                )
+            )
+            dao.upsert(
+                SiteOverrideEntity(
+                    host = "adblock-and-dark.example",
+                    webDarkModeOverride = true,
+                    adblockDisabled = true
+                )
+            )
+            dao.upsert(
+                SiteOverrideEntity(
+                    host = "js-off.example",
+                    javascriptEnabled = false
+                )
+            )
+            dao.upsert(
+                SiteOverrideEntity(
+                    host = "ua-and-dark.example",
+                    webDarkModeOverride = false,
+                    customUserAgent = "CustomUA/1.0"
+                )
+            )
+
+            dao.clearAllWebDarkModeOverridesAndPrune()
+
+            assertNull(dao.getByHost("dark-only.example"))
+            assertNull(dao.getByHost("blank-ua.example"))
+
+            val adblockRow = dao.getByHost("adblock-and-dark.example")
+            assertNotNull(adblockRow)
+            assertNull(adblockRow!!.webDarkModeOverride)
+            assertTrue(adblockRow.adblockDisabled)
+
+            val jsRow = dao.getByHost("js-off.example")
+            assertNotNull(jsRow)
+            assertEquals(false, jsRow!!.javascriptEnabled)
+
+            val uaRow = dao.getByHost("ua-and-dark.example")
+            assertNotNull(uaRow)
+            assertNull(uaRow!!.webDarkModeOverride)
+            assertEquals("CustomUA/1.0", uaRow.customUserAgent)
+        } finally {
+            db.close()
         }
     }
 }

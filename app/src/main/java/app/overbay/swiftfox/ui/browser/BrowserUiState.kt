@@ -14,8 +14,6 @@ import app.overbay.swiftfox.data.db.ZappedRuleEntity
 import app.overbay.swiftfox.data.db.ZenPinnedItemEntity
 import app.overbay.swiftfox.data.prefs.BrowserSettings
 import app.overbay.swiftfox.data.prefs.SiteMode
-import app.overbay.swiftfox.data.prefs.ThemeMode
-import app.overbay.swiftfox.data.prefs.WebDarkModePreference
 import app.overbay.swiftfox.engine.ContextMenuHit
 import app.overbay.swiftfox.engine.ExternalAppPrompt
 import app.overbay.swiftfox.engine.HttpsUpgradeErrorPrompt
@@ -292,21 +290,6 @@ data class BrowserUiState(
                 privateSiteOverrides[host] ?: siteOverrides[host]
             } else {
                 siteOverrides[host]
-            }
-        }
-
-    val activeTabWebDarkEffective: Boolean
-        get() {
-            val siteOver = activeSiteOverride?.webDarkModeOverride
-            if (siteOver != null) return siteOver
-            return when (settings.webDarkMode) {
-                WebDarkModePreference.OFF -> false
-                WebDarkModePreference.ALWAYS_ON -> true
-                WebDarkModePreference.FOLLOW_APP -> when (settings.themeMode) {
-                    ThemeMode.DAY -> false
-                    ThemeMode.NIGHT -> true
-                    ThemeMode.SYSTEM -> isSystemDark
-                }
             }
         }
 

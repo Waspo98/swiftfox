@@ -82,7 +82,6 @@ import app.overbay.swiftfox.data.prefs.SearchEngineId
 import app.overbay.swiftfox.data.prefs.SiteMode
 import app.overbay.swiftfox.data.prefs.ThemeMode
 import app.overbay.swiftfox.data.prefs.ToolbarPlacement
-import app.overbay.swiftfox.data.prefs.WebDarkEngine
 import app.overbay.swiftfox.data.prefs.WebDarkModePreference
 import app.overbay.swiftfox.ui.browser.BrowserOverlay
 import app.overbay.swiftfox.ui.browser.BrowserUiState
@@ -214,105 +213,80 @@ internal fun LazyListScope.appearanceSettingsItems(
                 enter = if (reduceMotion) EnterTransition.None else fadeIn() + expandVertically(),
                 exit = if (reduceMotion) ExitTransition.None else fadeOut() + shrinkVertically()
             ) {
-                Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
 
-                    SettingGroup(
-                        label = "Darkening engine",
-                        supportingText = when (settings.webDarkEngine) {
-                            WebDarkEngine.DARK_READER ->
-                                "Smart CSS theming with AMOLED black, contrast tuning, and native-dark detection"
-                            WebDarkEngine.ALGORITHMIC_LITE ->
-                                "Lightweight built-in darkening with minimal CPU and battery impact"
+                    SettingsSwitchRow(
+                        title = "Pure black pages (AMOLED)",
+                        subtitle = "Force true black (#000000) backgrounds and crisp white text, including native dark sites",
+                        checked = settings.darkReaderAmoled,
+                        onCheckedChange = { viewModel.setDarkReaderAmoled(it) }
+                    )
+                    SettingsSwitchRow(
+                        title = "Keep native dark sites",
+                        subtitle = if (settings.darkReaderAmoled) {
+                            "Overridden while Pure black pages (AMOLED) is active"
+                        } else {
+                            "Leave websites that already support dark mode untouched"
+                        },
+                        checked = settings.darkReaderSkipNativeDark,
+                        enabled = !settings.darkReaderAmoled,
+                        onCheckedChange = { viewModel.setDarkReaderSkipNativeDark(it) }
+                    )
+
+                    val hasCustomAdjustments = brightnessDraft.roundToInt() != 100 ||
+                        contrastDraft.roundToInt() != 100 ||
+                        sepiaDraft.roundToInt() != 0
+                    DarkReaderPreviewCard(
+                        amoled = settings.darkReaderAmoled,
+                        brightness = brightnessDraft.roundToInt(),
+                        contrast = contrastDraft.roundToInt(),
+                        sepia = sepiaDraft.roundToInt(),
+                        showReset = hasCustomAdjustments,
+                        onReset = {
+                            brightnessDraft = 100f
+                            contrastDraft = 100f
+                            sepiaDraft = 0f
+                            viewModel.resetDarkReaderAdjustments()
                         }
-                    ) {
-                        SwiftfoxSegmentedControl(
-                            options = WebDarkEngine.entries,
-                            selected = settings.webDarkEngine,
-                            onSelect = { viewModel.setWebDarkEngine(it) },
-                            labelFor = { it.label }
-                        )
-                    }
+                    )
 
-                    AnimatedVisibility(
-                        visible = settings.webDarkEngine == WebDarkEngine.DARK_READER,
-                        enter = if (reduceMotion) EnterTransition.None else fadeIn() + expandVertically(),
-                        exit = if (reduceMotion) ExitTransition.None else fadeOut() + shrinkVertically()
-                    ) {
-                        Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                            SettingsSwitchRow(
-                                title = "Pure black pages (AMOLED)",
-                                subtitle = "Force true black (#000000) backgrounds and crisp white text, including native dark sites",
-                                checked = settings.darkReaderAmoled,
-                                onCheckedChange = { viewModel.setDarkReaderAmoled(it) }
-                            )
-                            SettingsSwitchRow(
-                                title = "Keep native dark sites",
-                                subtitle = if (settings.darkReaderAmoled) {
-                                    "Overridden while Pure black pages (AMOLED) is active"
-                                } else {
-                                    "Leave websites that already support dark mode untouched"
-                                },
-                                checked = settings.darkReaderSkipNativeDark,
-                                enabled = !settings.darkReaderAmoled,
-                                onCheckedChange = { viewModel.setDarkReaderSkipNativeDark(it) }
-                            )
-
-                            val hasCustomAdjustments = brightnessDraft.roundToInt() != 100 ||
-                                contrastDraft.roundToInt() != 100 ||
-                                sepiaDraft.roundToInt() != 0
-                            DarkReaderPreviewCard(
-                                amoled = settings.darkReaderAmoled,
-                                brightness = brightnessDraft.roundToInt(),
-                                contrast = contrastDraft.roundToInt(),
-                                sepia = sepiaDraft.roundToInt(),
-                                showReset = hasCustomAdjustments,
-                                onReset = {
-                                    brightnessDraft = 100f
-                                    contrastDraft = 100f
-                                    sepiaDraft = 0f
-                                    viewModel.resetDarkReaderAdjustments()
-                                }
-                            )
-
-                            SettingsSliderRow(
-                                label = "Brightness",
-                                value = brightnessDraft,
-                                valueRange = 50f..150f,
-                                onValueChange = { brightnessDraft = it },
-                                onValueChangeFinished = {
-                                    val next = brightnessDraft.roundToInt()
-                                    if (next != settings.darkReaderBrightness) {
-                                        viewModel.setDarkReaderBrightness(next)
-                                    }
-                                }
-                            )
-                            SettingsSliderRow(
-                                label = "Contrast",
-                                value = contrastDraft,
-                                valueRange = 50f..150f,
-                                onValueChange = { contrastDraft = it },
-                                onValueChangeFinished = {
-                                    val next = contrastDraft.roundToInt()
-                                    if (next != settings.darkReaderContrast) {
-                                        viewModel.setDarkReaderContrast(next)
-                                    }
-                                }
-                            )
-                            SettingsSliderRow(
-                                label = "Sepia warmth",
-                                value = sepiaDraft,
-                                valueRange = 0f..100f,
-                                onValueChange = { sepiaDraft = it },
-                                onValueChangeFinished = {
-                                    val next = sepiaDraft.roundToInt()
-                                    if (next != settings.darkReaderSepia) {
-                                        viewModel.setDarkReaderSepia(next)
-                                    }
-                                }
-                            )
+                    SettingsSliderRow(
+                        label = "Brightness",
+                        value = brightnessDraft,
+                        valueRange = 50f..150f,
+                        onValueChange = { brightnessDraft = it },
+                        onValueChangeFinished = {
+                            val next = brightnessDraft.roundToInt()
+                            if (next != settings.darkReaderBrightness) {
+                                viewModel.setDarkReaderBrightness(next)
+                            }
                         }
-                    }
+                    )
+                    SettingsSliderRow(
+                        label = "Contrast",
+                        value = contrastDraft,
+                        valueRange = 50f..150f,
+                        onValueChange = { contrastDraft = it },
+                        onValueChangeFinished = {
+                            val next = contrastDraft.roundToInt()
+                            if (next != settings.darkReaderContrast) {
+                                viewModel.setDarkReaderContrast(next)
+                            }
+                        }
+                    )
+                    SettingsSliderRow(
+                        label = "Sepia warmth",
+                        value = sepiaDraft,
+                        valueRange = 0f..100f,
+                        onValueChange = { sepiaDraft = it },
+                        onValueChangeFinished = {
+                            val next = sepiaDraft.roundToInt()
+                            if (next != settings.darkReaderSepia) {
+                                viewModel.setDarkReaderSepia(next)
+                            }
+                        }
+                    )
                 }
             }
         }

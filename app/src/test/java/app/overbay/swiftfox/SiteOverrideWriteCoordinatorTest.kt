@@ -1,5 +1,6 @@
 package app.overbay.swiftfox
 
+import app.overbay.swiftfox.data.db.SiteOverrideEntity
 import app.overbay.swiftfox.engine.BackgroundMediaService
 import app.overbay.swiftfox.ui.browser.SiteOverrideWriteCoordinator
 import kotlinx.coroutines.CancellationException
@@ -172,5 +173,28 @@ class SiteOverrideWriteCoordinatorTest {
             BackgroundMediaService.MediaCommand.PAUSE,
             BackgroundMediaService.resolveToggleCommand(isPlaying = true, pendingPlayConfirmation = true)
         )
+    }
+
+    @Test
+    fun siteOverrideIsDefaultDetectsEveryOverrideFieldAndBlankUserAgent() {
+        val base = SiteOverrideEntity(host = "example.com")
+        assertTrue(base.isDefault())
+        assertTrue(base.copy(host = "www.example.com", customUserAgent = "").isDefault())
+        assertTrue(base.copy(customUserAgent = "   ").isDefault())
+
+        assertFalse(base.copy(siteModeOverride = "DESKTOP").isDefault())
+        assertFalse(base.copy(httpsOnlyBypass = true).isDefault())
+        assertFalse(base.copy(externalAppPolicyOverride = "NATIVE_APP").isDefault())
+        assertFalse(base.copy(allowCamera = true).isDefault())
+        assertFalse(base.copy(allowMic = false).isDefault())
+        assertFalse(base.copy(allowLocation = true).isDefault())
+        assertFalse(base.copy(allowNotifications = false).isDefault())
+        assertFalse(base.copy(allowProtectedMedia = true).isDefault())
+        assertFalse(base.copy(javascriptEnabled = false).isDefault())
+        assertFalse(base.copy(webDarkModeOverride = true).isDefault())
+        assertFalse(base.copy(webDarkModeOverride = false).isDefault())
+        assertFalse(base.copy(adblockDisabled = true).isDefault())
+        assertFalse(base.copy(cookiesEnabled = false).isDefault())
+        assertFalse(base.copy(customUserAgent = "CustomUA/1.0").isDefault())
     }
 }

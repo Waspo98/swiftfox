@@ -141,11 +141,6 @@ enum class WebDarkModePreference(val label: String) {
     ALWAYS_ON("Always dark")
 }
 
-enum class WebDarkEngine(val label: String) {
-    DARK_READER("Dark Reader"),
-    ALGORITHMIC_LITE("Fast / Lite")
-}
-
 enum class ReaderFontFamily(val label: String) {
     SANS("Sans"),
     SERIF("Serif"),
@@ -172,7 +167,6 @@ data class BrowserSettings(
     val accentPreset: AccentPreset = AccentPreset.FOX_AMBER,
     val useDynamicColor: Boolean = false,
     val webDarkMode: WebDarkModePreference = WebDarkModePreference.FOLLOW_APP,
-    val webDarkEngine: WebDarkEngine = WebDarkEngine.DARK_READER,
     val darkReaderAmoled: Boolean = false,
     val darkReaderBrightness: Int = 100,
     val darkReaderContrast: Int = 100,
@@ -214,7 +208,8 @@ data class BrowserSettings(
     val syncLastTimestampMs: Long = 0L,
     val syncLocalHistorySeeded: Boolean = false,
     val syncZenSeparateEssentials: Boolean? = null,
-    val hasSeededDefaults: Boolean = false
+    val hasSeededDefaults: Boolean = false,
+    val hasClearedLegacyWebDarkOverrides: Boolean = false
 ) {
     fun profileFor(posture: DevicePosture): PostureProfile = when (posture) {
         DevicePosture.FOLDED -> foldedProfile

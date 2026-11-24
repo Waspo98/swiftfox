@@ -38,7 +38,6 @@ import app.overbay.swiftfox.data.prefs.SearchEngineId
 import app.overbay.swiftfox.data.prefs.SiteMode
 import app.overbay.swiftfox.data.prefs.ThemeMode
 import app.overbay.swiftfox.data.prefs.ToolbarPlacement
-import app.overbay.swiftfox.data.prefs.WebDarkEngine
 import app.overbay.swiftfox.data.prefs.WebDarkModePreference
 import app.overbay.swiftfox.engine.BackgroundMediaService
 import app.overbay.swiftfox.engine.BrowserSession
@@ -47,7 +46,6 @@ import app.overbay.swiftfox.engine.ExternalAppPrompt
 import app.overbay.swiftfox.engine.GlobalPrepaintDarkConfig
 import app.overbay.swiftfox.engine.HttpsUpgradeErrorPrompt
 import app.overbay.swiftfox.engine.NetworkErrorDiagnostics
-import app.overbay.swiftfox.engine.PrepaintDarkMode
 import app.overbay.swiftfox.engine.ScriptInjector
 import app.overbay.swiftfox.engine.SessionHostCallbacks
 import app.overbay.swiftfox.engine.SitePermissionPrompt
@@ -335,7 +333,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             session.webDarkDirty = false
             val (isDarkSurface, isAmoledSurface) = resolveWebSurfaceDarkColors(darkState)
             session.applySurfaceBackground(isDarkSurface, isAmoledSurface)
-            session.applyWebDarkening(darkState.useAlgorithmicLite)
             ScriptInjector.injectDarkReaderOnPageStarted(
                 webView = session.webView,
                 expectedOrigin = expectedOrigin,
@@ -1310,9 +1307,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     oldSettings.profileFor(posture).defaultSiteMode != newSettings.profileFor(posture).defaultSiteMode
                 val webDarkChanged = !wasLoaded ||
                     oldSettings.themeMode != newSettings.themeMode ||
-                    oldSettings.nightSurfaceStyle != newSettings.nightSurfaceStyle ||
                     oldSettings.webDarkMode != newSettings.webDarkMode ||
-                    oldSettings.webDarkEngine != newSettings.webDarkEngine ||
                     oldSettings.darkReaderAmoled != newSettings.darkReaderAmoled ||
                     oldSettings.darkReaderBrightness != newSettings.darkReaderBrightness ||
                     oldSettings.darkReaderContrast != newSettings.darkReaderContrast ||
@@ -1325,9 +1320,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 if (!newSettings.backgroundMediaEnabled && oldSettings.backgroundMediaEnabled) {
                     activeMediaTabId = null
                     BackgroundMediaService.stop(app)
-                }
-                if (webDarkChanged) {
-                    syncGlobalPrepaintDarkScripts()
                 }
                 if (activePostureSiteModeChanged || webDarkChanged || thirdPartyCookiesChanged || bgMediaChanged) {
                     syncAllWarmSessionsWithSettings(
@@ -1489,7 +1481,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     _uiState.update { it.copy(siteOverrides = newMap) }
                     syncGlobalPrepaintDarkScripts()
                     refreshResolvedSiteModesForAllTabs(_uiState.value.activeProfile)
-                    val activeId = _uiState.value.activeTabId
+                    val activeId = _uiState.value.activeTab?.id
+                    pool.markAllBackgroundWebDarkDirty(activeId)
                     if (activeId != null) {
                         applyResolvedSettingsToTab(activeId, reloadIfModeChanged = false)
                     }
@@ -1499,6 +1492,27 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
         viewModelScope.launch {
             val currentSettings = prefs.settingsFlow.first()
+            if (!currentSettings.hasClearedLegacyWebDarkOverrides) {
+                val cleanupGen = siteOverrideWrites.beginWrite()
+                siteOverrideWrites.runSerializedWrite(
+                    generation = cleanupGen,
+                    writeToDb = {
+                        db.siteOverrideDao().clearAllWebDarkModeOverridesAndPrune()
+                        prefs.setHasClearedLegacyWebDarkOverrides(true)
+                    },
+                    readSettledFromDb = {
+                        db.siteOverrideDao().getAll()
+                            .associateBy { o -> OmniboxEngine.normalizeHost(o.host) }
+                    },
+                    onSettled = { settled ->
+                        if (_uiState.value.siteOverrides != settled) {
+                            _uiState.update { it.copy(siteOverrides = settled) }
+                            syncGlobalPrepaintDarkScripts()
+                            refreshResolvedSiteModesForAllTabs(_uiState.value.activeProfile)
+                        }
+                    }
+                )
+            }
             val initialOverrides = db.siteOverrideDao().getAll()
                 .associateBy { o -> OmniboxEngine.normalizeHost(o.host) }
             val shouldSeed = !currentSettings.hasSeededDefaults
@@ -1625,7 +1639,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         if (_uiState.value.isSystemDark == isDark) return
         _uiState.update { it.copy(isSystemDark = isDark) }
         if (_uiState.value.settings.themeMode == ThemeMode.SYSTEM) {
-            syncAllWarmSessionsWithSettings(reloadActiveOnSiteModeChange = false)
+            syncAllWarmSessionsWithSettings(
+                reloadActiveOnSiteModeChange = false,
+                updateSiteOverrides = false,
+                updateWebDark = true,
+                updateBgMedia = false
+            )
         }
     }
 
@@ -1723,7 +1742,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             callbacks = sessionCallbacks,
             beforeRestore = { created ->
                 created.applySurfaceBackground(initialDarkSurface, initialAmoledSurface)
-                created.applyWebDarkening(initialDarkState.useAlgorithmicLite)
                 if (!initialSubframeDarkEnabled || subframeRuntimeReady) {
                     created.updateSubframeDarkReaderRuntime(initialSubframeDarkEnabled, app.darkReaderInjector)
                 }
@@ -4376,16 +4394,30 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     ) {
         val normalizedHost = OmniboxEngine.normalizeHost(host)
         if (normalizedHost.isBlank()) return
-        val state = _uiState.value
-        val isPrivate = state.activeTab?.isPrivate ?: state.isPrivateView
+        val isPrivate = _uiState.value.activeTab?.isPrivate ?: _uiState.value.isPrivateView
         val current = effectiveSiteOverride(normalizedHost, isPrivate) ?: SiteOverrideEntity(host = normalizedHost)
-        val optimistic = transform(current)
+        val optimistic = transform(current).copy(host = normalizedHost)
+        val isDefaultOverride = optimistic.isDefault()
         if (isPrivate) {
-            _uiState.update { it.copy(privateSiteOverrides = it.privateSiteOverrides + (normalizedHost to optimistic)) }
+            _uiState.update { state ->
+                val nextPrivate = if (isDefaultOverride && normalizedHost !in state.siteOverrides) {
+                    state.privateSiteOverrides - normalizedHost
+                } else {
+                    state.privateSiteOverrides + (normalizedHost to optimistic)
+                }
+                state.copy(privateSiteOverrides = nextPrivate)
+            }
             onUpdated(optimistic)
             return
         }
-        _uiState.update { it.copy(siteOverrides = it.siteOverrides + (normalizedHost to optimistic)) }
+        _uiState.update { state ->
+            val nextOverrides = if (isDefaultOverride) {
+                state.siteOverrides - normalizedHost
+            } else {
+                state.siteOverrides + (normalizedHost to optimistic)
+            }
+            state.copy(siteOverrides = nextOverrides)
+        }
         onUpdated(optimistic)
         val writeGen = siteOverrideWrites.beginWrite()
         viewModelScope.launch {
@@ -4393,8 +4425,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 generation = writeGen,
                 writeToDb = {
                     val existingDb = db.siteOverrideDao().getByHost(normalizedHost) ?: SiteOverrideEntity(host = normalizedHost)
-                    val saved = transform(existingDb)
-                    db.siteOverrideDao().upsert(saved)
+                    val saved = transform(existingDb).copy(host = normalizedHost)
+                    if (saved.isDefault()) {
+                        db.siteOverrideDao().deleteByHost(normalizedHost)
+                    } else {
+                        db.siteOverrideDao().upsert(saved)
+                    }
                 },
                 readSettledFromDb = {
                     db.siteOverrideDao().getAll()
@@ -4407,39 +4443,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     }
                 }
             )
-        }
-    }
-
-    fun toggleActiveSiteWebDarkMode() {
-        val active = _uiState.value.activeTab
-        val host = OmniboxEngine.normalizeHost(active?.displayHost)
-        val currentlyEnabled = _uiState.value.activeTabWebDarkEffective
-        val nextEnabled = !currentlyEnabled
-
-        if (host.isNotBlank() && active != null) {
-            mutateSiteOverride(
-                host = host,
-                onUpdated = { updated ->
-                    syncGlobalPrepaintDarkScripts()
-                    pool.markAllBackgroundWebDarkDirty(active.id)
-                    val darkState = DarkReaderConfig.resolve(
-                        settings = _uiState.value.settings,
-                        siteOverride = updated,
-                        isChromeDark = isChromeDark()
-                    )
-                    val (isDarkSurface, isAmoledSurface) = resolveWebSurfaceDarkColors(darkState)
-                    pool.getExisting(active.id)?.let { session ->
-                        session.applySurfaceBackground(isDarkSurface, isAmoledSurface)
-                        session.applyWebDarkMode(darkState, app.darkReaderInjector)
-                    }
-                }
-            ) { it.copy(webDarkModeOverride = nextEnabled) }
-            showSnackbar(if (nextEnabled) "Dark web view on for $host" else "Dark web view off for $host")
-        } else {
-            viewModelScope.launch {
-                val nextPref = if (nextEnabled) WebDarkModePreference.ALWAYS_ON else WebDarkModePreference.OFF
-                prefs.setWebDarkMode(nextPref)
-            }
         }
     }
 
@@ -4481,6 +4484,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             if (active != null && OmniboxEngine.normalizeHost(active.displayHost) == normalizedHost) {
                 val darkState = DarkReaderConfig.resolve(_uiState.value.settings, updated, isChromeDark())
                 val (isDarkSurface, isAmoledSurface) = resolveWebSurfaceDarkColors(darkState)
+                if (!darkState.enabled && active.darkReaderSkippedNative) {
+                    updateTab(active.id) { it.copy(darkReaderSkippedNative = false) }
+                }
                 pool.getExisting(active.id)?.let { session ->
                     session.applySurfaceBackground(isDarkSurface, isAmoledSurface)
                     session.applyWebDarkMode(darkState, app.darkReaderInjector)
@@ -5392,7 +5398,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun setAccentPreset(preset: AccentPreset) = viewModelScope.launch { prefs.setAccentPreset(preset) }
     fun setUseDynamicColor(enabled: Boolean) = viewModelScope.launch { prefs.setUseDynamicColor(enabled) }
     fun setWebDarkMode(pref: WebDarkModePreference) = viewModelScope.launch { prefs.setWebDarkMode(pref) }
-    fun setWebDarkEngine(engine: WebDarkEngine) = viewModelScope.launch { prefs.setWebDarkEngine(engine) }
     fun setDarkReaderAmoled(enabled: Boolean) = viewModelScope.launch { prefs.setDarkReaderAmoled(enabled) }
     fun setDarkReaderBrightness(value: Int) = viewModelScope.launch { prefs.setDarkReaderBrightness(value) }
     fun setDarkReaderContrast(value: Int) = viewModelScope.launch { prefs.setDarkReaderContrast(value) }
@@ -5664,21 +5669,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         ThemeMode.SYSTEM -> onSystemDarkThemeProvider?.invoke() ?: _uiState.value.isSystemDark
     }
 
-    private fun isAmoledSurface(): Boolean =
-        isChromeDark() && _uiState.value.settings.nightSurfaceStyle == NightSurfaceStyle.AMOLED
-
     private fun resolveWebSurfaceDarkColors(darkState: ResolvedWebDarkState): Pair<Boolean, Boolean> {
-        val chromeDark = isChromeDark()
-        val isDarkSurface = when {
-            darkState.isSiteOverride -> darkState.enabled
-            else -> darkState.enabled || chromeDark
-        }
-        val isAmoled = when {
-            !isDarkSurface -> false
-            darkState.useDarkReader -> darkState.amoled
-            else -> isAmoledSurface()
-        }
-        return isDarkSurface to isAmoled
+        return darkState.enabled to (darkState.enabled && darkState.amoled)
     }
 
     private fun buildGlobalPrepaintDarkConfig(isPrivate: Boolean): GlobalPrepaintDarkConfig {
@@ -5706,17 +5698,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 }
             }
         }
-        val mode = when (settings.webDarkEngine) {
-            WebDarkEngine.DARK_READER -> PrepaintDarkMode.DARK_READER
-            WebDarkEngine.ALGORITHMIC_LITE -> PrepaintDarkMode.ALGORITHMIC_LITE
-        }
-        val amoled = when (settings.webDarkEngine) {
-            WebDarkEngine.DARK_READER -> settings.darkReaderAmoled
-            WebDarkEngine.ALGORITHMIC_LITE -> isAmoledSurface()
-        }
         return GlobalPrepaintDarkConfig(
-            mode = mode,
-            amoled = amoled,
+            amoled = settings.darkReaderAmoled,
             brightness = settings.darkReaderBrightness,
             contrast = settings.darkReaderContrast,
             sepia = settings.darkReaderSepia,
@@ -5728,8 +5711,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun shouldEnableSubframeDarkRuntime(config: GlobalPrepaintDarkConfig): Boolean =
-        config.mode == PrepaintDarkMode.DARK_READER &&
-            (config.globalEnabled || config.includedHosts.isNotEmpty())
+        config.globalEnabled || config.includedHosts.isNotEmpty()
 
     private fun scheduleSubframeDarkRuntimeWarmup() {
         if (app.darkReaderInjector.isSubframeRuntimeWarmed || subframeDarkWarmupJob?.isActive == true) {
@@ -6100,7 +6082,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             refreshResolvedSiteModesForAllTabs(_uiState.value.activeProfile)
         }
         val state = _uiState.value
-        val activeId = state.activeTabId
+        val activeId = state.activeTab?.id
         val chromeDark = isChromeDark()
         if (updateWebDark) {
             syncGlobalPrepaintDarkScripts()
@@ -6178,6 +6160,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             )
             val (isDarkSurface, isAmoledSurface) = resolveWebSurfaceDarkColors(darkState)
             session.applySurfaceBackground(isDarkSurface, isAmoledSurface)
+            if (!darkState.enabled && tab.darkReaderSkippedNative) {
+                updateTab(tab.id) { it.copy(darkReaderSkippedNative = false) }
+            }
             session.applyWebDarkMode(darkState, app.darkReaderInjector)
         }
 

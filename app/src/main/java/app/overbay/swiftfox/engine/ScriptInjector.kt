@@ -20,14 +20,7 @@ import kotlinx.serialization.json.put
 import java.net.URI
 import java.util.Locale
 
-enum class PrepaintDarkMode {
-    NONE,
-    DARK_READER,
-    ALGORITHMIC_LITE
-}
-
 data class GlobalPrepaintDarkConfig(
-    val mode: PrepaintDarkMode = PrepaintDarkMode.NONE,
     val amoled: Boolean = false,
     val brightness: Int = 100,
     val contrast: Int = 100,
@@ -210,20 +203,11 @@ object ScriptInjector {
         """.trimIndent()
     }
 
-    fun buildPrepaintDarkCss(
-        amoled: Boolean,
-        mode: PrepaintDarkMode = PrepaintDarkMode.DARK_READER
-    ): String {
+    fun buildPrepaintDarkCss(amoled: Boolean): String {
         val bg = if (amoled) "#000000" else "#181818"
         val fg = if (amoled) "#ffffff" else "#e8e8e8"
-        return when (mode) {
-            PrepaintDarkMode.NONE -> ""
-            PrepaintDarkMode.ALGORITHMIC_LITE ->
-                "html{background-color:$bg;color-scheme:dark;}"
-            PrepaintDarkMode.DARK_READER ->
-                "html{background-color:$bg!important;color-scheme:dark!important;}" +
-                    "body,body :not(iframe):not(img):not(video):not(canvas):not(picture):not(svg){background-color:$bg!important;color:$fg!important;}"
-        }
+        return "html{background-color:$bg!important;color-scheme:dark!important;}" +
+            "body,body :not(iframe):not(img):not(video):not(canvas):not(picture):not(svg){background-color:$bg!important;color:$fg!important;}"
     }
 
     /**
@@ -232,7 +216,6 @@ object ScriptInjector {
      * honoring per-site light/dark overrides synchronously.
      */
     fun buildGlobalPrepaintDarkScript(config: GlobalPrepaintDarkConfig): String {
-        if (config.mode == PrepaintDarkMode.NONE) return ""
         val normalizedExcluded = config.excludedHosts
             .map { OmniboxEngine.normalizeHost(it) }
             .filter { it.isNotBlank() }
@@ -244,8 +227,7 @@ object ScriptInjector {
 
         if (!config.globalEnabled && normalizedIncluded.isEmpty()) return ""
 
-        val css = buildPrepaintDarkCss(amoled = config.amoled, mode = config.mode)
-        if (css.isBlank()) return ""
+        val css = buildPrepaintDarkCss(amoled = config.amoled)
 
         val cssLit = json.encodeToString(css)
         val hostsLit = json.encodeToString(if (config.globalEnabled) normalizedExcluded else normalizedIncluded)
@@ -254,81 +236,66 @@ object ScriptInjector {
         } else {
             "if (list.indexOf(host) === -1) return;"
         }
-        val cleanupLogic = if (config.mode == PrepaintDarkMode.ALGORITHMIC_LITE) {
-            """
-                if (document.readyState === 'loading') {
-                    document.addEventListener('DOMContentLoaded', cleanup, { once: true });
-                } else {
-                    cleanup();
-                }
-                setTimeout(cleanup, 1500);
-            """.trimIndent()
-        } else {
-            """
-                var postDomTimer = function() { setTimeout(cleanup, 1500); };
-                if (document.readyState === 'loading') {
-                    document.addEventListener('DOMContentLoaded', postDomTimer, { once: true });
-                } else {
-                    postDomTimer();
-                }
-                setTimeout(cleanup, 6000);
-            """.trimIndent()
-        }
+        val cleanupLogic = """
+            var postDomTimer = function() { setTimeout(cleanup, 1500); };
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', postDomTimer, { once: true });
+            } else {
+                postDomTimer();
+            }
+            setTimeout(cleanup, 6000);
+        """.trimIndent()
 
-        val subframeBranch = if (config.mode == PrepaintDarkMode.DARK_READER) {
-            val excludedLit = json.encodeToString(normalizedExcluded)
-            val includedLit = json.encodeToString(normalizedIncluded)
-            val baseSubframeCfgJson = buildJsonObject {
-                put("amoled", config.amoled)
-                put("brightness", config.brightness.coerceIn(50, 150))
-                put("contrast", config.contrast.coerceIn(50, 150))
-                put("sepia", config.sepia.coerceIn(0, 100))
-                put("skipNativeDark", config.skipNativeDark)
-            }.toString()
-            val globalEnabledLit = if (config.globalEnabled) "true" else "false"
-            """
-                if (window !== window.top) {
-                    var topHost = '';
+        val excludedLit = json.encodeToString(normalizedExcluded)
+        val includedLit = json.encodeToString(normalizedIncluded)
+        val baseSubframeCfgJson = buildJsonObject {
+            put("amoled", config.amoled)
+            put("brightness", config.brightness.coerceIn(50, 150))
+            put("contrast", config.contrast.coerceIn(50, 150))
+            put("sepia", config.sepia.coerceIn(0, 100))
+            put("skipNativeDark", config.skipNativeDark)
+        }.toString()
+        val globalEnabledLit = if (config.globalEnabled) "true" else "false"
+        val subframeBranch = """
+            if (window !== window.top) {
+                var topHost = '';
+                try {
+                    if (window.location && window.location.ancestorOrigins && window.location.ancestorOrigins.length > 0) {
+                        var topOrigin = window.location.ancestorOrigins[window.location.ancestorOrigins.length - 1];
+                        if (topOrigin && topOrigin !== 'null') {
+                            topHost = (new URL(topOrigin).hostname || '').trim().toLowerCase().replace(/^\[|\]$/g, '').replace(/^www\./, '');
+                        }
+                    }
+                } catch (e) {}
+                if (!topHost) {
                     try {
-                        if (window.location && window.location.ancestorOrigins && window.location.ancestorOrigins.length > 0) {
-                            var topOrigin = window.location.ancestorOrigins[window.location.ancestorOrigins.length - 1];
-                            if (topOrigin && topOrigin !== 'null') {
-                                topHost = (new URL(topOrigin).hostname || '').trim().toLowerCase().replace(/^\[|\]$/g, '').replace(/^www\./, '');
-                            }
+                        if (document.referrer) {
+                            topHost = (new URL(document.referrer).hostname || '').trim().toLowerCase().replace(/^\[|\]$/g, '').replace(/^www\./, '');
                         }
                     } catch (e) {}
-                    if (!topHost) {
-                        try {
-                            if (document.referrer) {
-                                topHost = (new URL(document.referrer).hostname || '').trim().toLowerCase().replace(/^\[|\]$/g, '').replace(/^www\./, '');
-                            }
-                        } catch (e) {}
-                    }
-                    var sfExcluded = $excludedLit;
-                    var sfIncluded = $includedLit;
-                    var sfIsIncluded = !!(topHost && sfIncluded.indexOf(topHost) !== -1);
-                    var sfIsExcluded = !!(topHost && sfExcluded.indexOf(topHost) !== -1);
-                    var sfCfg = $baseSubframeCfgJson;
-                    sfCfg.enabled = $globalEnabledLit ? !sfIsExcluded : sfIsIncluded;
-                    sfCfg.forceOverride = sfIsIncluded;
-                    if (typeof window.__sfDarkSubframeBoot === 'function') {
-                        window.__sfDarkSubframeBoot(sfCfg);
-                    } else {
-                        try {
-                            Object.defineProperty(window, '__sfDarkSubframePending', {
-                                value: sfCfg,
-                                writable: true,
-                                enumerable: false,
-                                configurable: true
-                            });
-                        } catch (e) {}
-                    }
-                    return;
                 }
-            """.trimIndent()
-        } else {
-            "if (window !== window.top) return;"
-        }
+                var sfExcluded = $excludedLit;
+                var sfIncluded = $includedLit;
+                var sfIsIncluded = !!(topHost && sfIncluded.indexOf(topHost) !== -1);
+                var sfIsExcluded = !!(topHost && sfExcluded.indexOf(topHost) !== -1);
+                var sfCfg = $baseSubframeCfgJson;
+                sfCfg.enabled = $globalEnabledLit ? !sfIsExcluded : sfIsIncluded;
+                sfCfg.forceOverride = sfIsIncluded;
+                if (typeof window.__sfDarkSubframeBoot === 'function') {
+                    window.__sfDarkSubframeBoot(sfCfg);
+                } else {
+                    try {
+                        Object.defineProperty(window, '__sfDarkSubframePending', {
+                            value: sfCfg,
+                            writable: true,
+                            enumerable: false,
+                            configurable: true
+                        });
+                    } catch (e) {}
+                }
+                return;
+            }
+        """.trimIndent()
 
         return """
             (function() {
@@ -516,7 +483,7 @@ object ScriptInjector {
         isDestroyed: () -> Boolean = { false }
     ) {
         if (isDestroyed() || expectedOrigin.isBlank()) return
-        if (!darkState.useDarkReader) {
+        if (!darkState.enabled) {
             webView.evaluateJavascript(darkReaderInjector.buildDisableScript(tokens.darkReaderKey), null)
             return
         }
@@ -539,7 +506,7 @@ object ScriptInjector {
         isDestroyed: () -> Boolean = { false }
     ) {
         if (isDestroyed()) return
-        if (!darkState.useDarkReader) {
+        if (!darkState.enabled) {
             webView.evaluateJavascript(darkReaderInjector.buildDisableScript(tokens.darkReaderKey), null)
             return
         }

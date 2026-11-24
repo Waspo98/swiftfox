@@ -115,6 +115,8 @@
   var resizeObserver = null;
   var resizeListenerAttached = false;
   var domListenerAttached = false;
+  var mediaQueryListenerAttached = false;
+  var mediaQueryRecheckTimer = null;
 
   var amoledCtrl = typeof createAmoledController === 'function'
     ? createAmoledController(function () { return lastConfig; }, isDarkReaderActive, true)
@@ -306,17 +308,60 @@
     } catch (e) {}
   }
 
+  function attachColorSchemeMediaListener() {
+    if (mediaQueryListenerAttached || typeof window.matchMedia !== 'function') return;
+    try {
+      var mql = window.matchMedia('(prefers-color-scheme: dark)');
+      if (!mql) return;
+      var onChange = function () {
+        nativeDarkCache = null;
+        if (!lastConfig || !lastConfig.enabled || !lastConfig.skipNativeDark ||
+            lastConfig.forceOverride || lastConfig.amoled) {
+          return;
+        }
+        if (mediaQueryRecheckTimer !== null) {
+          clearTimeout(mediaQueryRecheckTimer);
+        }
+        mediaQueryRecheckTimer = setTimeout(function () {
+          mediaQueryRecheckTimer = null;
+          if (lastConfig && lastConfig.enabled && lastConfig.skipNativeDark &&
+              !lastConfig.forceOverride && !lastConfig.amoled) {
+            nativeDarkCache = null;
+            applySubframeConfig(lastConfig);
+          }
+        }, 60);
+      };
+      if (typeof mql.addEventListener === 'function') {
+        mql.addEventListener('change', onChange);
+        mediaQueryListenerAttached = true;
+      } else if (typeof mql.addListener === 'function') {
+        mql.addListener(onChange);
+        mediaQueryListenerAttached = true;
+      }
+    } catch (e) {}
+  }
+
+  function clearMediaQueryRecheckTimer() {
+    if (mediaQueryRecheckTimer !== null) {
+      clearTimeout(mediaQueryRecheckTimer);
+      mediaQueryRecheckTimer = null;
+    }
+  }
+
   function applySubframeConfig(config) {
     if (!config || typeof config !== 'object') return;
     lastConfig = config;
 
     if (!config.enabled) {
       teardownResizeWatch();
+      clearMediaQueryRecheckTimer();
       nativeDarkCache = null;
       appliedSignature = null;
       disableDarkReaderSafe();
       return;
     }
+
+    attachColorSchemeMediaListener();
 
     if (document.readyState === 'loading' || !document.documentElement || !document.body) {
       if (!domListenerAttached) {
@@ -349,7 +394,8 @@
         disableDarkReaderSafe();
         return;
       }
-    } else if (config.amoled) {
+    } else {
+      clearMediaQueryRecheckTimer();
       nativeDarkCache = null;
     }
 

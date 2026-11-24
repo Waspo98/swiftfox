@@ -15,7 +15,7 @@
 | **Rendering Engine** | Android `WebView` (`androidx.webkit`) — 120Hz Chromium scrolling + automatic Play Store security patches |
 | **Tab / Session Isolation** | `WebView` `ProfileStore` multi-profile: shared normal profile by default, optional per-Space container isolation (`space_<id>`), ephemeral **Private Mode** (`swiftfox_private_session`), and isolated FxA OAuth profile (`FXA_AUTH_PROFILE_NAME`) |
 | **Theming (App Chrome)** | Day / Night / System · Night offers **Dark** or **AMOLED Black (`#000000`)** · Accent presets: **Fox Amber Orange** (default), **Midnight Indigo**, **Forest**, **Monochrome** (+ optional Material You toggle) |
-| **Web Content Dark Mode** | Decoupled from app theme · Bundled open-source **Dark Reader** JS engine (AMOLED option, brightness/contrast/sepia, auto-skip native dark sites, 1-tap per-site toggle) + Chromium **Algorithmic Darkening** as optional Fast/Lite mode |
+| **Web Content Dark Mode** | Decoupled from app theme · Bundled open-source **Dark Reader** JS engine (AMOLED option, brightness/contrast/sepia, auto-skip native dark sites, per-site overrides) |
 | **Foldable Ergonomics** | Jetpack `WindowManager` detects Folded vs. Unfolded · Independent profiles per posture for **Toolbar Placement** (Top / Bottom / Split / Side Rail) and **Default Site Mode** (Mobile vs. Desktop) + per-site overrides · Reloads active tab on fold/unfold only if resolved site mode changes |
 | **Tabs & Workspaces** | Zen-inspired **Spaces** + pinned **Essentials** · Visual rounded card grid (folded) + optional collapsible vertical sidebar (unfolded) |
 | **Ad Blocking & Zapper** | Embedded **`adblock-rust`** JNI (`arm64-v8a` + `x86_64`, 16 KB page aligned, Kotlin fallback for JVM tests) with uBO/EasyList + custom filter list URLs + native Material 3 **Element Zapper** HUD ("Zap once" with Undo + "Block permanently" with `-/+` parent/child scope slider & rule manager) |
@@ -138,7 +138,7 @@ Swiftfox/
 ### Milestone 2 — Ad Blocking, Element Zapper, Dark Reader, Userscripts & Reader Mode *(Implemented — `v0.2.0-beta`)*
 - Dockerized `cargo-ndk` `adblock-rust` JNI engine (`arm64-v8a` + `x86_64`, 16 KB page aligned) with serialized engine cache (`engine.dat`), Kotlin fallback matcher, EasyList/EasyPrivacy/uBO defaults, custom filter list URLs, WorkManager periodic updates, network blocking, and two-stage cosmetic CSS/scriptlet injection.
 - Native Material 3 Element Zapper HUD (`Zap once` + `Undo`, `Block permanently`, `-/+` parent/child scope slider, per-site `ZappedRulesOverlay`).
-- Decoupled web-content dark mode: bundled Dark Reader JS engine (AMOLED `#000000`, brightness/contrast/sepia, auto-skip native dark sites, 1-tap per-site bypass) + Chromium Algorithmic Darkening Fast/Lite mode.
+- Decoupled web-content dark mode: bundled Dark Reader JS engine (AMOLED `#000000`, brightness/contrast/sepia, auto-skip native dark sites, per-site overrides in `SiteRulesSheet`).
 - `.user.js` Userscript manager (URL install, local file import, built-in editor, `@match`/`@exclude`/`@run-at`/`@grant`, `GM_addStyle`, `GM_getValue`/`GM_setValue`, OkHttp `GM_xmlhttpRequest`), `SiteRulesSheet` (cookies, User-Agent presets/custom, JS, adblock, Dark Reader, HTTPS bypass, site mode), and built-in Reader Mode (`Readability.js` + `ReaderHtmlParser` + native Compose `ReaderModeOverlay`).
 
 ### Milestone 3 — Native Firefox & Zen Browser Sync + Chrome Import *(Implemented — `v0.3.0-beta`)*

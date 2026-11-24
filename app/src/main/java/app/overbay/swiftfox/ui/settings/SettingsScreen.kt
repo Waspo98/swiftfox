@@ -217,7 +217,6 @@ fun SettingsScreen(
                                     onPrintPage()
                                 },
                                 onToggleSiteMode = { viewModel.toggleActiveTabSiteMode() },
-                                onToggleWebDarkMode = { viewModel.toggleActiveSiteWebDarkMode() },
                                 onToggleShieldAdblock = { viewModel.toggleActiveSiteAdblock() },
                                 onEnterPip = {
                                     viewModel.setOverlay(BrowserOverlay.NONE)
@@ -410,10 +409,10 @@ private fun appearanceSummary(settings: BrowserSettings): String = buildList {
         add(settings.nightSurfaceStyle.label)
     }
     add(if (settings.useDynamicColor) "Material You" else settings.accentPreset.label)
-    if (settings.webDarkMode == WebDarkModePreference.OFF) {
-        add("Web dark off")
-    } else {
-        add(settings.webDarkEngine.label)
+    when (settings.webDarkMode) {
+        WebDarkModePreference.OFF -> add("Web dark off")
+        WebDarkModePreference.FOLLOW_APP -> add(if (settings.darkReaderAmoled) "Dark Reader AMOLED" else "Dark Reader")
+        WebDarkModePreference.ALWAYS_ON -> add(if (settings.darkReaderAmoled) "Always dark AMOLED" else "Always dark")
     }
 }.joinToString(" · ")
 

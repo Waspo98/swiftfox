@@ -93,7 +93,7 @@ class DarkReaderInjector(context: Context?) {
         bridgeToken: String = "",
         runtimeKey: String = DEFAULT_RUNTIME_KEY
     ): String {
-        if (!state.useDarkReader) {
+        if (!state.enabled) {
             return buildDisableScript(runtimeKey)
         }
         val configJson = DarkReaderConfig.toConfigJson(state)
@@ -140,7 +140,7 @@ class DarkReaderInjector(context: Context?) {
         state: ResolvedWebDarkState,
         runtimeKey: String = DEFAULT_RUNTIME_KEY
     ): String {
-        if (!state.useDarkReader) {
+        if (!state.enabled) {
             return buildDisableScript(runtimeKey)
         }
         val configJson = DarkReaderConfig.toConfigJson(state)

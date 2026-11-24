@@ -206,6 +206,35 @@ interface SiteOverrideDao {
 
     @Query("DELETE FROM site_overrides WHERE host = :host")
     suspend fun deleteByHost(host: String)
+
+    @Query("UPDATE site_overrides SET webDarkModeOverride = NULL WHERE webDarkModeOverride IS NOT NULL")
+    suspend fun clearAllWebDarkModeOverrides()
+
+    @Query(
+        """
+        DELETE FROM site_overrides
+        WHERE siteModeOverride IS NULL
+          AND httpsOnlyBypass = 0
+          AND externalAppPolicyOverride IS NULL
+          AND allowCamera IS NULL
+          AND allowMic IS NULL
+          AND allowLocation IS NULL
+          AND allowNotifications IS NULL
+          AND allowProtectedMedia IS NULL
+          AND javascriptEnabled = 1
+          AND webDarkModeOverride IS NULL
+          AND adblockDisabled = 0
+          AND cookiesEnabled = 1
+          AND (customUserAgent IS NULL OR TRIM(customUserAgent) = '')
+        """
+    )
+    suspend fun pruneDefaultOverrides()
+
+    @Transaction
+    suspend fun clearAllWebDarkModeOverridesAndPrune() {
+        clearAllWebDarkModeOverrides()
+        pruneDefaultOverrides()
+    }
 }
 
 @Dao

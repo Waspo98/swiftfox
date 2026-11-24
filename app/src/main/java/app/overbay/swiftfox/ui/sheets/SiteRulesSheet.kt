@@ -94,6 +94,7 @@ fun SiteRulesSheet(
     globalAdblockEnabled: Boolean = true,
     isNativeRust: Boolean = true,
     isPrivate: Boolean = false,
+    darkReaderSkippedNative: Boolean = false,
     persistentRuleIds: Set<String> = emptySet(),
     snackbarMessage: String? = null,
     snackbarId: Long = 0L,
@@ -233,6 +234,13 @@ fun SiteRulesSheet(
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                if (override?.webDarkModeOverride == null && darkReaderSkippedNative) {
+                    Text(
+                        text = "Native dark mode detected and kept — choose Force dark to override",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
                 val darkOptions = remember { listOf(null, true, false) }
                 SwiftfoxSegmentedControl(
                     options = darkOptions,
@@ -240,7 +248,7 @@ fun SiteRulesSheet(
                     onSelect = onSetWebDarkOverride,
                     labelFor = { choice ->
                         when (choice) {
-                            null -> "Global"
+                            null -> "Default"
                             true -> "Force dark"
                             false -> "Force light"
                         }

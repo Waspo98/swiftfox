@@ -10,6 +10,8 @@
   var fetchMethodSet = false;
   var domListenerAttached = false;
   var loadListenerAttached = false;
+  var mediaQueryListenerAttached = false;
+  var mediaQueryRecheckTimer = null;
   var domRecheckTimer = null;
   var nativeDarkCache = null;
   var probedDarkSignalSignature = null;
@@ -325,6 +327,48 @@
     }
   }
 
+  function clearMediaQueryRecheckTimer() {
+    if (mediaQueryRecheckTimer !== null) {
+      clearTimeout(mediaQueryRecheckTimer);
+      mediaQueryRecheckTimer = null;
+    }
+  }
+
+  function attachColorSchemeMediaListener() {
+    if (mediaQueryListenerAttached || typeof window.matchMedia !== 'function') return;
+    try {
+      var mql = window.matchMedia('(prefers-color-scheme: dark)');
+      if (!mql) return;
+      var onChange = function () {
+        nativeDarkCache = null;
+        probedDarkSignalSignature = null;
+        if (!lastConfig || !lastConfig.enabled || !lastConfig.skipNativeDark ||
+            lastConfig.forceOverride || lastConfig.amoled) {
+          return;
+        }
+        if (mediaQueryRecheckTimer !== null) {
+          clearTimeout(mediaQueryRecheckTimer);
+        }
+        mediaQueryRecheckTimer = setTimeout(function () {
+          mediaQueryRecheckTimer = null;
+          if (lastConfig && lastConfig.enabled && lastConfig.skipNativeDark &&
+              !lastConfig.forceOverride && !lastConfig.amoled) {
+            nativeDarkCache = null;
+            probedDarkSignalSignature = null;
+            api.apply(lastConfig);
+          }
+        }, 60);
+      };
+      if (typeof mql.addEventListener === 'function') {
+        mql.addEventListener('change', onChange);
+        mediaQueryListenerAttached = true;
+      } else if (typeof mql.addListener === 'function') {
+        mql.addListener(onChange);
+        mediaQueryListenerAttached = true;
+      }
+    } catch (e) {}
+  }
+
   function attachNativeDarkMutationObserver() {
     if (nativeDarkObserver || typeof MutationObserver !== 'function') return;
     if (!lastConfig || !lastConfig.enabled || !lastConfig.skipNativeDark ||
@@ -449,6 +493,7 @@
 
       if (!config.enabled) {
         teardownNativeDarkObserver();
+        clearMediaQueryRecheckTimer();
         nativeDarkCache = null;
         probedDarkSignalSignature = null;
         appliedSignature = null;
@@ -463,6 +508,8 @@
         scheduleDomReadyRecheck();
         return;
       }
+
+      attachColorSchemeMediaListener();
 
       if (config.skipNativeDark && !config.forceOverride && !config.amoled) {
         // Wait for DOMContentLoaded before enabling Dark Reader if we're still loading
@@ -494,10 +541,9 @@
         attachNativeDarkMutationObserver();
       } else {
         teardownNativeDarkObserver();
-        if (config.amoled) {
-          nativeDarkCache = null;
-          probedDarkSignalSignature = null;
-        }
+        clearMediaQueryRecheckTimer();
+        nativeDarkCache = null;
+        probedDarkSignalSignature = null;
       }
 
       var nextSignature = buildConfigSignature(config);

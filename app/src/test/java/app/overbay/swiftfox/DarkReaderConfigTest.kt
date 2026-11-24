@@ -2,10 +2,8 @@ package app.overbay.swiftfox
 
 import app.overbay.swiftfox.data.db.SiteOverrideEntity
 import app.overbay.swiftfox.data.prefs.BrowserSettings
-import app.overbay.swiftfox.data.prefs.WebDarkEngine
 import app.overbay.swiftfox.data.prefs.WebDarkModePreference
 import app.overbay.swiftfox.engine.GlobalPrepaintDarkConfig
-import app.overbay.swiftfox.engine.PrepaintDarkMode
 import app.overbay.swiftfox.engine.ScriptInjector
 import app.overbay.swiftfox.features.darkreader.DarkReaderConfig
 import app.overbay.swiftfox.features.darkreader.DarkReaderInjector
@@ -60,37 +58,9 @@ class DarkReaderConfigTest {
     }
 
     @Test
-    fun exposesDarkReaderVsAlgorithmicLiteEngineFlags() {
-        val drSettings = BrowserSettings(
-            webDarkMode = WebDarkModePreference.ALWAYS_ON,
-            webDarkEngine = WebDarkEngine.DARK_READER
-        )
-        val drState = DarkReaderConfig.resolve(drSettings, null, isChromeDark = true)
-        assertTrue(drState.useDarkReader)
-        assertFalse(drState.useAlgorithmicLite)
-
-        val liteSettings = BrowserSettings(
-            webDarkMode = WebDarkModePreference.ALWAYS_ON,
-            webDarkEngine = WebDarkEngine.ALGORITHMIC_LITE
-        )
-        val liteState = DarkReaderConfig.resolve(liteSettings, null, isChromeDark = true)
-        assertFalse(liteState.useDarkReader)
-        assertTrue(liteState.useAlgorithmicLite)
-
-        val disabledLite = DarkReaderConfig.resolve(
-            liteSettings.copy(webDarkMode = WebDarkModePreference.OFF),
-            null,
-            isChromeDark = false
-        )
-        assertFalse(disabledLite.useDarkReader)
-        assertFalse(disabledLite.useAlgorithmicLite)
-    }
-
-    @Test
     fun serializesConfigJsonWithAmoledSlidersSkipNativeDarkAndForceOverride() {
         val settings = BrowserSettings(
             webDarkMode = WebDarkModePreference.ALWAYS_ON,
-            webDarkEngine = WebDarkEngine.DARK_READER,
             darkReaderAmoled = true,
             darkReaderBrightness = 115,
             darkReaderContrast = 120,
@@ -113,15 +83,12 @@ class DarkReaderConfigTest {
     @Test
     fun injectorBuildsScriptsAndParsesStatusJsonSafely() {
         val injector = DarkReaderInjector(null)
-        val liteState = DarkReaderConfig.resolve(
-            BrowserSettings(
-                webDarkMode = WebDarkModePreference.ALWAYS_ON,
-                webDarkEngine = WebDarkEngine.ALGORITHMIC_LITE
-            ),
+        val disabledState = DarkReaderConfig.resolve(
+            BrowserSettings(webDarkMode = WebDarkModePreference.OFF),
             null,
             isChromeDark = true
         )
-        val disableScript = injector.buildApplyScript(liteState)
+        val disableScript = injector.buildApplyScript(disabledState)
         assertEquals(injector.buildDisableScript(), disableScript)
         assertTrue(disableScript.contains("window[\"__swiftfoxDarkReader\"]"))
         assertTrue(disableScript.contains("rt.apply({enabled:false})"))
@@ -130,7 +97,6 @@ class DarkReaderConfigTest {
         val drState = DarkReaderConfig.resolve(
             BrowserSettings(
                 webDarkMode = WebDarkModePreference.ALWAYS_ON,
-                webDarkEngine = WebDarkEngine.DARK_READER,
                 darkReaderAmoled = true
             ),
             null,
@@ -168,16 +134,6 @@ class DarkReaderConfigTest {
             "",
             ScriptInjector.buildGlobalPrepaintDarkScript(
                 GlobalPrepaintDarkConfig(
-                    mode = PrepaintDarkMode.NONE,
-                    globalEnabled = true
-                )
-            )
-        )
-        assertEquals(
-            "",
-            ScriptInjector.buildGlobalPrepaintDarkScript(
-                GlobalPrepaintDarkConfig(
-                    mode = PrepaintDarkMode.DARK_READER,
                     globalEnabled = false,
                     includedHosts = emptySet()
                 )
@@ -186,7 +142,6 @@ class DarkReaderConfigTest {
 
         val darkReaderGlobal = ScriptInjector.buildGlobalPrepaintDarkScript(
             GlobalPrepaintDarkConfig(
-                mode = PrepaintDarkMode.DARK_READER,
                 amoled = true,
                 globalEnabled = true,
                 excludedHosts = setOf("WWW.Example.com", "light.org")
@@ -205,7 +160,6 @@ class DarkReaderConfigTest {
 
         val allowlistOnly = ScriptInjector.buildGlobalPrepaintDarkScript(
             GlobalPrepaintDarkConfig(
-                mode = PrepaintDarkMode.DARK_READER,
                 amoled = false,
                 globalEnabled = false,
                 includedHosts = setOf("www.news.ycombinator.com")
@@ -216,17 +170,6 @@ class DarkReaderConfigTest {
         assertFalse(allowlistOnly.contains("#ece7f0"))
         assertTrue(allowlistOnly.contains("\"news.ycombinator.com\""))
         assertTrue(allowlistOnly.contains("list.indexOf(host) === -1"))
-
-        val liteGlobal = ScriptInjector.buildGlobalPrepaintDarkScript(
-            GlobalPrepaintDarkConfig(
-                mode = PrepaintDarkMode.ALGORITHMIC_LITE,
-                amoled = false,
-                globalEnabled = true
-            )
-        )
-        assertTrue(liteGlobal.contains("html{background-color:#181818;color-scheme:dark;}"))
-        assertFalse(liteGlobal.contains("!important"))
-        assertTrue(liteGlobal.contains("DOMContentLoaded"))
     }
 
     @Test
@@ -266,6 +209,16 @@ class DarkReaderConfigTest {
         assertTrue(js.contains("hasNewDarkThemeSignal"))
         assertTrue(js.contains("!nativeDarkCache.settled || hasNewDarkThemeSignal()"))
         assertTrue(js.contains("setTimeout"))
+        // Live prefers-color-scheme media listener re-probes native dark mode when app theme changes
+        assertTrue(js.contains("attachColorSchemeMediaListener"))
+        assertTrue(js.contains("window.matchMedia('(prefers-color-scheme: dark)')"))
+        assertTrue(js.contains("function clearMediaQueryRecheckTimer()"))
+        // teardownNativeDarkObserver (called by 3s timer, window.load, and evaluateNativeDark) must NOT
+        // cancel an active mediaQueryRecheckTimer; only disable / non-skip branches clear it
+        val teardownBody = js.substringAfter("function teardownNativeDarkObserver()")
+            .substringBefore("function clearMediaQueryRecheckTimer()")
+        assertFalse(teardownBody.contains("mediaQueryRecheckTimer"))
+        assertTrue(js.contains("clearMediaQueryRecheckTimer();"))
     }
 
     @Test
@@ -285,7 +238,6 @@ class DarkReaderConfigTest {
     fun globalPrepaintDarkReaderResolvesSubframeInClosureWithoutLeakingHostLists() {
         val script = ScriptInjector.buildGlobalPrepaintDarkScript(
             GlobalPrepaintDarkConfig(
-                mode = PrepaintDarkMode.DARK_READER,
                 amoled = true,
                 brightness = 110,
                 contrast = 105,
@@ -310,17 +262,6 @@ class DarkReaderConfigTest {
         assertTrue(script.contains("\"sepia\":15"))
         assertTrue(script.contains("\"skipNativeDark\":true"))
         assertFalse(script.contains("SwiftfoxNativeChannel"))
-
-        // Algorithmic Lite does not inject Dark Reader subframe handoff
-        val liteScript = ScriptInjector.buildGlobalPrepaintDarkScript(
-            GlobalPrepaintDarkConfig(
-                mode = PrepaintDarkMode.ALGORITHMIC_LITE,
-                amoled = false,
-                globalEnabled = true
-            )
-        )
-        assertFalse(liteScript.contains("__sfDarkSubframeBoot"))
-        assertFalse(liteScript.contains("__sfDarkSubframePending"))
     }
 
     @Test
@@ -347,6 +288,8 @@ class DarkReaderConfigTest {
         assertTrue(subframeJs.contains("ResizeObserver"))
         // Re-evaluates native dark mode even when toggling off AMOLED / enabling skipNativeDark live
         assertTrue(subframeJs.contains("evaluateSubframeNativeDark"))
+        assertTrue(subframeJs.contains("attachColorSchemeMediaListener"))
+        assertTrue(subframeJs.contains("clearMediaQueryRecheckTimer();"))
         // Live sync via parent/top-verified postMessage
         assertTrue(subframeJs.contains("__swiftfoxDarkSync"))
         assertTrue(subframeJs.contains("event.source !== window.parent && event.source !== window.top"))

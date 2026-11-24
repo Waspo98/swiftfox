@@ -1057,6 +1057,7 @@ fun BrowserScreen(
                 globalAdblockEnabled = state.settings.adblockEnabled,
                 isNativeRust = state.adblockStatus.isNativeRust,
                 isPrivate = siteRulesTab.isPrivate,
+                darkReaderSkippedNative = siteRulesTab.darkReaderSkippedNative,
                 persistentRuleIds = persistentRuleIds,
                 snackbarMessage = state.snackbarMessage,
                 snackbarId = state.snackbarId,

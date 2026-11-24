@@ -84,7 +84,22 @@ data class SiteOverrideEntity(
     val adblockDisabled: Boolean = false,
     val cookiesEnabled: Boolean = true,
     val customUserAgent: String? = null
-)
+) {
+    fun isDefault(): Boolean =
+        siteModeOverride == null &&
+            !httpsOnlyBypass &&
+            externalAppPolicyOverride == null &&
+            allowCamera == null &&
+            allowMic == null &&
+            allowLocation == null &&
+            allowNotifications == null &&
+            allowProtectedMedia == null &&
+            javascriptEnabled &&
+            webDarkModeOverride == null &&
+            !adblockDisabled &&
+            cookiesEnabled &&
+            customUserAgent.isNullOrBlank()
+}
 
 @Entity(tableName = "downloads")
 data class DownloadRecordEntity(

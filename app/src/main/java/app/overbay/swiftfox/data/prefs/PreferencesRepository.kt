@@ -28,7 +28,6 @@ class PreferencesRepository(private val context: Context) {
         val ACCENT_PRESET = stringPreferencesKey("accent_preset")
         val USE_DYNAMIC_COLOR = booleanPreferencesKey("use_dynamic_color")
         val WEB_DARK_MODE = stringPreferencesKey("web_dark_mode")
-        val WEB_DARK_ENGINE = stringPreferencesKey("web_dark_engine")
         val DARK_READER_AMOLED = booleanPreferencesKey("dark_reader_amoled")
         val DARK_READER_BRIGHTNESS = intPreferencesKey("dark_reader_brightness")
         val DARK_READER_CONTRAST = intPreferencesKey("dark_reader_contrast")
@@ -72,6 +71,7 @@ class PreferencesRepository(private val context: Context) {
         val SYNC_LOCAL_HISTORY_SEEDED = booleanPreferencesKey("sync_local_history_seeded")
         val SYNC_ZEN_SEPARATE_ESSENTIALS = booleanPreferencesKey("sync_zen_separate_essentials")
         val HAS_SEEDED_DEFAULTS = booleanPreferencesKey("has_seeded_defaults")
+        val CLEARED_LEGACY_WEB_DARK_OVERRIDES = booleanPreferencesKey("cleared_legacy_web_dark_overrides")
     }
 
     val settingsFlow: Flow<BrowserSettings> = context.swiftfoxDataStore.data
@@ -89,7 +89,6 @@ class PreferencesRepository(private val context: Context) {
                 accentPreset = parseEnum(prefs[Keys.ACCENT_PRESET], AccentPreset.FOX_AMBER),
                 useDynamicColor = prefs[Keys.USE_DYNAMIC_COLOR] ?: false,
                 webDarkMode = parseEnum(prefs[Keys.WEB_DARK_MODE], WebDarkModePreference.FOLLOW_APP),
-                webDarkEngine = parseEnum(prefs[Keys.WEB_DARK_ENGINE], WebDarkEngine.DARK_READER),
                 darkReaderAmoled = prefs[Keys.DARK_READER_AMOLED] ?: false,
                 darkReaderBrightness = (prefs[Keys.DARK_READER_BRIGHTNESS] ?: 100).coerceIn(50, 150),
                 darkReaderContrast = (prefs[Keys.DARK_READER_CONTRAST] ?: 100).coerceIn(50, 150),
@@ -137,7 +136,8 @@ class PreferencesRepository(private val context: Context) {
                 syncLastTimestampMs = prefs[Keys.SYNC_LAST_TIMESTAMP_MS] ?: 0L,
                 syncLocalHistorySeeded = prefs[Keys.SYNC_LOCAL_HISTORY_SEEDED] ?: false,
                 syncZenSeparateEssentials = prefs[Keys.SYNC_ZEN_SEPARATE_ESSENTIALS],
-                hasSeededDefaults = prefs[Keys.HAS_SEEDED_DEFAULTS] ?: false
+                hasSeededDefaults = prefs[Keys.HAS_SEEDED_DEFAULTS] ?: false,
+                hasClearedLegacyWebDarkOverrides = prefs[Keys.CLEARED_LEGACY_WEB_DARK_OVERRIDES] ?: false
             )
         }
 
@@ -159,10 +159,6 @@ class PreferencesRepository(private val context: Context) {
 
     suspend fun setWebDarkMode(preference: WebDarkModePreference) {
         context.swiftfoxDataStore.edit { it[Keys.WEB_DARK_MODE] = preference.name }
-    }
-
-    suspend fun setWebDarkEngine(engine: WebDarkEngine) {
-        context.swiftfoxDataStore.edit { it[Keys.WEB_DARK_ENGINE] = engine.name }
     }
 
     suspend fun setDarkReaderAmoled(enabled: Boolean) {
@@ -314,6 +310,10 @@ class PreferencesRepository(private val context: Context) {
 
     suspend fun setHasSeededDefaults(seeded: Boolean) {
         context.swiftfoxDataStore.edit { it[Keys.HAS_SEEDED_DEFAULTS] = seeded }
+    }
+
+    suspend fun setHasClearedLegacyWebDarkOverrides(cleared: Boolean) {
+        context.swiftfoxDataStore.edit { it[Keys.CLEARED_LEGACY_WEB_DARK_OVERRIDES] = cleared }
     }
 
     suspend fun setSyncZenSeparateEssentials(separate: Boolean?) {

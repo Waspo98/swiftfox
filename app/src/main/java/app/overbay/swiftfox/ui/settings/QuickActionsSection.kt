@@ -30,10 +30,8 @@ import androidx.compose.material.icons.automirrored.rounded.SendToMobile
 import androidx.compose.material.icons.rounded.AutoFixHigh
 import androidx.compose.material.icons.rounded.Bookmark
 import androidx.compose.material.icons.rounded.BookmarkBorder
-import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.DesktopWindows
 import androidx.compose.material.icons.rounded.FindInPage
-import androidx.compose.material.icons.rounded.LightMode
 import androidx.compose.material.icons.rounded.PictureInPictureAlt
 import androidx.compose.material.icons.rounded.Print
 import androidx.compose.material.icons.rounded.PushPin
@@ -54,7 +52,6 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.overbay.swiftfox.data.prefs.SiteMode
-import app.overbay.swiftfox.data.prefs.WebDarkEngine
 import app.overbay.swiftfox.features.sync.SyncAccountState
 import app.overbay.swiftfox.ui.browser.BrowserUiState
 
@@ -68,7 +65,6 @@ fun QuickActionsSection(
     onShareCleanUrl: () -> Unit,
     onPrintPage: () -> Unit,
     onToggleSiteMode: () -> Unit,
-    onToggleWebDarkMode: () -> Unit,
     onToggleShieldAdblock: () -> Unit,
     onEnterPip: () -> Unit,
     onLaunchZapper: () -> Unit,
@@ -82,17 +78,8 @@ fun QuickActionsSection(
     val activeTab = state.activeTab
     val isWebPage = activeTab != null && !activeTab.isStartPage
     val isDesktop = activeTab?.resolvedSiteMode == SiteMode.DESKTOP
-    val isWebDark = state.activeTabWebDarkEffective
     val siteAdblockDisabled = state.activeSiteOverride?.adblockDisabled == true
     val isShieldActive = state.settings.adblockEnabled && !siteAdblockDisabled
-
-    val darkSubtitle = when {
-        !isWebDark -> "Site native"
-        activeTab?.darkReaderSkippedNative == true -> "Native dark kept"
-        state.settings.webDarkEngine == WebDarkEngine.ALGORITHMIC_LITE -> "Lite mode on"
-        state.settings.darkReaderAmoled -> "Dark Reader AMOLED"
-        else -> "Dark Reader on"
-    }
 
     val shieldEnabled = !isWebPage || state.settings.adblockEnabled
     val shieldSubtitle = when {
@@ -216,11 +203,12 @@ fun QuickActionsSection(
                             .fillMaxHeight()
                     )
                     QuickControlTile(
-                        title = "Web dark",
-                        subtitle = darkSubtitle,
-                        icon = if (isWebDark) Icons.Rounded.DarkMode else Icons.Rounded.LightMode,
-                        active = isWebDark,
-                        onClick = onToggleWebDarkMode,
+                        title = "Shield",
+                        subtitle = shieldSubtitle,
+                        icon = if (isShieldActive) Icons.Rounded.Shield else Icons.Rounded.Security,
+                        active = isShieldActive,
+                        enabled = shieldEnabled,
+                        onClick = onToggleShieldAdblock,
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxHeight()
@@ -234,12 +222,16 @@ fun QuickActionsSection(
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     QuickControlTile(
-                        title = "Shield",
-                        subtitle = shieldSubtitle,
-                        icon = if (isShieldActive) Icons.Rounded.Shield else Icons.Rounded.Security,
-                        active = isShieldActive,
-                        enabled = shieldEnabled,
-                        onClick = onToggleShieldAdblock,
+                        title = "Reader mode",
+                        subtitle = when {
+                            !isWebPage -> "Open a page first"
+                            activeTab.isReaderAvailable -> "Article ready"
+                            else -> "Clean reading view"
+                        },
+                        icon = Icons.AutoMirrored.Rounded.MenuBook,
+                        active = isWebPage && activeTab.isReaderAvailable,
+                        enabled = isWebPage,
+                        onClick = onOpenReaderMode,
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxHeight()
@@ -276,11 +268,6 @@ fun QuickActionsSection(
                         icon = Icons.Rounded.AutoFixHigh,
                         enabled = jsEnabledForSite,
                         onClick = onLaunchZapper
-                    )
-                    QuickActionPill(
-                        label = "Reader mode",
-                        icon = Icons.AutoMirrored.Rounded.MenuBook,
-                        onClick = onOpenReaderMode
                     )
                     QuickActionPill(
                         label = "Site rules",

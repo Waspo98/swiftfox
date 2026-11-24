@@ -8,6 +8,7 @@ import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -377,6 +378,10 @@ fun BrowserScreen(
 
     var omniboxSourceRect by remember { mutableStateOf<Rect?>(null) }
     val omniboxProgress = remember { Animatable(if (state.isOmniboxFocused) 1f else 0f) }
+    val isOmniboxAnimating by remember { derivedStateOf { omniboxProgress.value > 0.001f } }
+    LaunchedEffect(state.windowState) {
+        omniboxSourceRect = null
+    }
     LaunchedEffect(state.isOmniboxFocused, reduceMotion) {
         val target = if (state.isOmniboxFocused) 1f else 0f
         if (reduceMotion) {
@@ -684,6 +689,7 @@ fun BrowserScreen(
         var lastVisibleOverlay by remember { mutableStateOf(BrowserOverlay.SETTINGS) }
         var lastOverlayDepth by remember { mutableStateOf(0) }
         val isOverlayShowing = state.activeOverlay != BrowserOverlay.NONE
+        val displayOverlay = if (isOverlayShowing) state.activeOverlay else lastVisibleOverlay
         val currentDepth = state.overlayBackStack.size
         val overlayPushDirection = when {
             !isOverlayShowing -> 0
@@ -691,11 +697,9 @@ fun BrowserScreen(
             currentDepth < lastOverlayDepth -> -1
             else -> 0
         }
-        if (isOverlayShowing) {
-            lastVisibleOverlay = state.activeOverlay
-        }
         SideEffect {
             if (isOverlayShowing) {
+                lastVisibleOverlay = state.activeOverlay
                 lastOverlayDepth = currentDepth
             } else {
                 lastOverlayDepth = 0
@@ -718,7 +722,7 @@ fun BrowserScreen(
             label = "browser_overlay_sheet_slide"
         ) {
             AnimatedContent(
-                targetState = lastVisibleOverlay,
+                targetState = displayOverlay,
                 modifier = Modifier.fillMaxSize(),
                 transitionSpec = {
                     when {
@@ -895,18 +899,30 @@ fun BrowserScreen(
         }
 
         // Mozilla Account OAuth WebView Flow — straight-up / straight-down slide
-        var cachedFxaAuthUrl by remember { mutableStateOf<String?>(null) }
-        if (state.fxaAuthUrl != null) {
-            cachedFxaAuthUrl = state.fxaAuthUrl
+        // Clears cached OAuth URL immediately once exit animation completes so tokens/state aren't retained.
+        val fxaTransitionState = remember { MutableTransitionState(state.fxaAuthUrl != null) }
+        var cachedFxaAuthUrl by remember { mutableStateOf(state.fxaAuthUrl) }
+        LaunchedEffect(state.fxaAuthUrl) {
+            if (state.fxaAuthUrl != null) {
+                cachedFxaAuthUrl = state.fxaAuthUrl
+                fxaTransitionState.targetState = true
+            } else {
+                fxaTransitionState.targetState = false
+            }
+        }
+        LaunchedEffect(fxaTransitionState.isIdle, fxaTransitionState.currentState, state.fxaAuthUrl) {
+            if (fxaTransitionState.isIdle && !fxaTransitionState.currentState && state.fxaAuthUrl == null) {
+                cachedFxaAuthUrl = null
+            }
         }
         AnimatedVisibility(
-            visible = state.fxaAuthUrl != null,
+            visibleState = fxaTransitionState,
             enter = if (reduceMotion) EnterTransition.None else slideInVertically(tween(280, easing = EmphasizedDecelerateEasing)) { it },
             exit = if (reduceMotion) ExitTransition.None else slideOutVertically(tween(240, easing = EmphasizedAccelerateEasing)) { it },
             modifier = Modifier.fillMaxSize(),
             label = "fxa_auth_slide"
         ) {
-            cachedFxaAuthUrl?.let { authUrl ->
+            (state.fxaAuthUrl ?: cachedFxaAuthUrl)?.let { authUrl ->
                 FxAAuthWebViewOverlay(
                     authUrl = authUrl,
                     isRedirectUrl = { url -> viewModel.isFxAOAuthRedirectUrl(url) },
@@ -916,19 +932,31 @@ fun BrowserScreen(
             }
         }
 
-        // Native Reader Mode Overlay — straight-up / straight-down slide (article cached through exit)
-        var cachedReaderArticle by remember { mutableStateOf<ReaderArticle?>(null) }
-        if (state.readerArticle != null) {
-            cachedReaderArticle = state.readerArticle
+        // Native Reader Mode Overlay — straight-up / straight-down slide
+        // Clears cached article immediately after exit animation so private-tab content isn't retained.
+        val readerTransitionState = remember { MutableTransitionState(state.readerArticle != null) }
+        var cachedReaderArticle by remember { mutableStateOf(state.readerArticle) }
+        LaunchedEffect(state.readerArticle) {
+            if (state.readerArticle != null) {
+                cachedReaderArticle = state.readerArticle
+                readerTransitionState.targetState = true
+            } else {
+                readerTransitionState.targetState = false
+            }
+        }
+        LaunchedEffect(readerTransitionState.isIdle, readerTransitionState.currentState, state.readerArticle) {
+            if (readerTransitionState.isIdle && !readerTransitionState.currentState && state.readerArticle == null) {
+                cachedReaderArticle = null
+            }
         }
         AnimatedVisibility(
-            visible = state.readerArticle != null,
+            visibleState = readerTransitionState,
             enter = if (reduceMotion) EnterTransition.None else slideInVertically(tween(280, easing = EmphasizedDecelerateEasing)) { it },
             exit = if (reduceMotion) ExitTransition.None else slideOutVertically(tween(240, easing = EmphasizedAccelerateEasing)) { it },
             modifier = Modifier.fillMaxSize(),
             label = "reader_mode_slide"
         ) {
-            cachedReaderArticle?.let { article ->
+            (state.readerArticle ?: cachedReaderArticle)?.let { article ->
                 val tabIsPrivate = activeTab?.isPrivate == true
                 ReaderModeOverlay(
                     article = article,
@@ -962,11 +990,11 @@ fun BrowserScreen(
             }
         }
 
-        // Focused Omnibox overlay with smooth bounds-anchored morph expand from whichever search bar was tapped
-        if (state.isOmniboxFocused || omniboxProgress.value > 0.001f) {
+        // Focused Omnibox overlay with zero-recomposition 120Hz bounds-anchored morph expand
+        if (state.isOmniboxFocused || isOmniboxAnimating) {
             OmniboxOverlay(
                 isVisible = state.isOmniboxFocused,
-                expandProgress = omniboxProgress.value,
+                expandProgressProvider = { omniboxProgress.value },
                 sourceRect = omniboxSourceRect,
                 query = state.omniboxQuery,
                 searchEngineLabel = state.settings.searchEngine.label,

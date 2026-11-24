@@ -25,10 +25,28 @@ sealed class CustomIconSpec {
         is LocalImage -> "$IMAGE_PREFIX$fileName"
     }
 
+    /**
+     * Encodes an explicitly user-chosen icon, prefixing [MaterialIcon] with [ICON_PREFIX]
+     * so sync engines (e.g. Zen Spaces) can distinguish manual icon overrides from synced defaults.
+     */
+    fun encodeExplicit(): String? = when (this) {
+        None -> null
+        is MaterialIcon -> "$ICON_PREFIX$key"
+        is Emoji -> "$EMOJI_PREFIX$text"
+        is LocalImage -> "$IMAGE_PREFIX$fileName"
+    }
+
     companion object {
         const val EMOJI_PREFIX = "emoji:"
         const val IMAGE_PREFIX = "image:"
         const val ICON_PREFIX = "icon:"
+
+        fun isExplicitCustomIcon(raw: String?): Boolean {
+            val trimmed = raw?.trim().orEmpty()
+            return trimmed.startsWith(EMOJI_PREFIX) ||
+                trimmed.startsWith(IMAGE_PREFIX) ||
+                trimmed.startsWith(ICON_PREFIX)
+        }
 
         val BUILTIN_ICON_KEYS: List<String> = listOf(
             "home", "work", "book", "code", "shop", "star",

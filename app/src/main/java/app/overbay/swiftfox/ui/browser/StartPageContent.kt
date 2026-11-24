@@ -44,6 +44,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -58,6 +59,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import app.overbay.swiftfox.data.db.EssentialEntity
 import app.overbay.swiftfox.data.db.SpaceEntity
 import app.overbay.swiftfox.data.prefs.AccentPreset
@@ -73,6 +75,7 @@ import app.overbay.swiftfox.ui.components.ReorderModeBanner
 import app.overbay.swiftfox.ui.components.SheetActionItem
 import app.overbay.swiftfox.ui.components.SiteIconBadge
 import app.overbay.swiftfox.ui.components.SpaceIconGlyph
+import app.overbay.swiftfox.ui.components.dragReorderContainer
 import app.overbay.swiftfox.ui.components.dragReorderItem
 import app.overbay.swiftfox.ui.components.rememberDragReorderController
 import app.overbay.swiftfox.ui.tabs.DeleteSpaceDialog
@@ -118,6 +121,11 @@ fun StartPageContent(
     val foxColors = LocalSwiftfoxColors.current
     val isPrivate = state.activeTab?.isPrivate == true || state.isPrivateView
     val isUnfolded = state.windowState.posture == DevicePosture.UNFOLDED
+
+    LaunchedEffect(isPrivate, state.activeSpaceId) {
+        isReorderingEssentials = false
+        isReorderingSpaces = false
+    }
 
     val essentials = state.activeSpaceEssentials
     val essentialsReorder = rememberDragReorderController(
@@ -362,10 +370,20 @@ fun StartPageContent(
                     }
                     val rows = gridEntries.chunked(columns)
 
-                    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    Column(
+                        modifier = Modifier.dragReorderContainer(
+                            enabled = isReorderingEssentials,
+                            controller = essentialsReorder
+                        ),
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
                         rows.forEach { rowItems ->
+                            val rowHasDragging = isReorderingEssentials &&
+                                rowItems.any { it?.id == essentialsReorder.draggingKey }
                             Row(
-                                modifier = Modifier.fillMaxWidth(),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .zIndex(if (rowHasDragging) 12f else 0f),
                                 horizontalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
                                 rowItems.forEach { item ->
@@ -380,7 +398,8 @@ fun StartPageContent(
                                                 .dragReorderItem(
                                                     key = item.id,
                                                     enabled = isReorderingEssentials,
-                                                    controller = essentialsReorder
+                                                    controller = essentialsReorder,
+                                                    handlePointerInput = false
                                                 )
                                         )
                                     } else {

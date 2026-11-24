@@ -77,6 +77,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import app.overbay.swiftfox.data.db.EssentialEntity
 import app.overbay.swiftfox.data.db.SpaceEntity
 import app.overbay.swiftfox.data.db.ZenPinnedItemEntity
@@ -94,6 +95,7 @@ import app.overbay.swiftfox.ui.components.ReorderModeBanner
 import app.overbay.swiftfox.ui.components.SheetActionItem
 import app.overbay.swiftfox.ui.components.SiteIconBadge
 import app.overbay.swiftfox.ui.components.SpaceIconGlyph
+import app.overbay.swiftfox.ui.components.dragReorderContainer
 import app.overbay.swiftfox.ui.components.dragReorderItem
 import app.overbay.swiftfox.ui.components.rememberDragReorderController
 import app.overbay.swiftfox.ui.theme.LocalSwiftfoxColors
@@ -156,9 +158,7 @@ fun ArcSpacesSidebar(
 
     // Exit reorder mode cleanly if the sidebar collapses or switches private/space view
     LaunchedEffect(isEffectiveExpanded, state.isPrivateView, state.activeSpaceId) {
-        if (!isEffectiveExpanded && reorderMode != SidebarReorderMode.SPACES && reorderMode != SidebarReorderMode.OPEN_TABS) {
-            reorderMode = SidebarReorderMode.NONE
-        }
+        reorderMode = SidebarReorderMode.NONE
     }
 
     val expandedWidth = if (state.windowState.windowWidthDp < 780) 232.dp else 264.dp
@@ -787,12 +787,20 @@ private fun ColumnScope.ArcExpandedSidebarContent(
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .dragReorderContainer(
+                            enabled = isReorderingEss,
+                            controller = essentialsReorder
+                        )
                         .padding(bottom = 4.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     displayedEssentials.chunked(4).forEach { rowItems ->
+                        val rowHasDragging = isReorderingEss &&
+                            rowItems.any { it.id == essentialsReorder.draggingKey }
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .zIndex(if (rowHasDragging) 12f else 0f),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             rowItems.forEach { ess ->
@@ -810,7 +818,8 @@ private fun ColumnScope.ArcExpandedSidebarContent(
                                         .dragReorderItem(
                                             key = ess.id,
                                             enabled = isReorderingEss,
-                                            controller = essentialsReorder
+                                            controller = essentialsReorder,
+                                            handlePointerInput = false
                                         )
                                 )
                             }

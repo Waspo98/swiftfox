@@ -47,6 +47,7 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
@@ -60,27 +61,21 @@ enum class DragAxis {
 }
 
 /**
- * Pure helper for moving an item inside a key list, unit-testable outside Compose.
- */
-internal fun <T> moveListItem(items: List<T>, fromIndex: Int, toIndex: Int): List<T> {
-    if (fromIndex == toIndex || fromIndex !in items.indices || toIndex !in items.indices) return items
-    val mutable = items.toMutableList()
-    val moved = mutable.removeAt(fromIndex)
-    mutable.add(toIndex, moved)
-    return mutable
-}
-
-/**
  * Coordinates drag-and-drop reordering for 1D rows, 1D lists, and 2D grids in explicit Reorder Mode.
  *
  * Because layout slots are tracked via `boundsInRoot()` BEFORE `graphicsLayer`, swapping two items
  * immediately compensates `dragOffset` by `(oldSlot.topLeft - newSlot.topLeft)` so the dragged tile
  * remains pixel-locked under the user's finger with zero jump or flicker.
+ *
+ * For 2D `Column`/`Row` grids where items move across rows during drag, attach
+ * [dragReorderContainer] to the outer grid container and pass `handlePointerInput = false` to
+ * [dragReorderItem] so recomposition across rows never cancels the active drag gesture.
  */
 class DragReorderController<T>(
     private val keyOf: (T) -> String,
     private val axis: DragAxis,
-    private val onCommitOrder: (List<String>) -> Unit
+    private val onCommitOrder: (List<String>) -> Unit,
+    private val clockMs: () -> Long = { System.currentTimeMillis() }
 ) {
     val items: SnapshotStateList<T> = mutableStateListOf()
 
@@ -92,10 +87,23 @@ class DragReorderController<T>(
 
     private val slotBounds = LinkedHashMap<String, Rect>()
     private var lastSwapTimeMs = 0L
+    private var pendingCommittedKeys: List<String>? = null
+    private var pendingCommitTimeMs = 0L
 
     fun syncFromSource(source: List<T>) {
         if (draggingKey != null) return
         val sourceKeys = source.map(keyOf)
+        val pending = pendingCommittedKeys
+        if (pending != null) {
+            if (sourceKeys == pending) {
+                pendingCommittedKeys = null
+            } else if (sourceKeys.toSet() == pending.toSet() && clockMs() - pendingCommitTimeMs < 400L) {
+                // Ignore transient pre-commit frame while ViewModel state settles
+                return
+            } else {
+                pendingCommittedKeys = null
+            }
+        }
         val currentKeys = items.map(keyOf)
         if (sourceKeys != currentKeys || items.size != source.size || items.toList() != source) {
             items.clear()
@@ -110,10 +118,50 @@ class DragReorderController<T>(
         }
     }
 
+    /**
+     * Resolves which item's slot contains [rootPoint] (with a small hit-slop margin for gaps
+     * between tiles) so container-level drag gestures can start a drag seamlessly.
+     */
+    fun findKeyAt(rootPoint: Offset, slopPx: Float = 16f): String? {
+        val activeKeys = items.map(keyOf)
+        // Exact bounding-box hit first
+        for (key in activeKeys) {
+            val rect = slotBounds[key] ?: continue
+            if (rect.contains(rootPoint)) return key
+        }
+        // Small gap tolerance around tiles
+        var bestKey: String? = null
+        var bestDist = Float.MAX_VALUE
+        for (key in activeKeys) {
+            val rect = slotBounds[key] ?: continue
+            val expanded = Rect(
+                left = rect.left - slopPx,
+                top = rect.top - slopPx,
+                right = rect.right + slopPx,
+                bottom = rect.bottom + slopPx
+            )
+            if (expanded.contains(rootPoint)) {
+                val dist = hypot(rootPoint.x - rect.center.x, rootPoint.y - rect.center.y)
+                if (dist < bestDist) {
+                    bestDist = dist
+                    bestKey = key
+                }
+            }
+        }
+        return bestKey
+    }
+
     fun startDrag(key: String, haptic: HapticFeedback?) {
+        if (items.none { keyOf(it) == key }) return
+        pendingCommittedKeys = null
         draggingKey = key
         dragOffset = Offset.Zero
         haptic?.performHapticFeedback(HapticFeedbackType.LongPress)
+    }
+
+    fun onDragDelta(delta: Offset, haptic: HapticFeedback?) {
+        val activeKey = draggingKey ?: return
+        onDragDelta(activeKey, delta, haptic)
     }
 
     fun onDragDelta(key: String, delta: Offset, haptic: HapticFeedback?) {
@@ -128,7 +176,7 @@ class DragReorderController<T>(
         val currentRect = slotBounds[key] ?: return
         val liveCenter = currentRect.center + dragOffset
 
-        val now = System.currentTimeMillis()
+        val now = clockMs()
         if (now - lastSwapTimeMs < 45L) return
 
         val fromIdx = items.indexOfFirst { keyOf(it) == key }
@@ -177,10 +225,15 @@ class DragReorderController<T>(
 
     fun endDrag() {
         val wasDragging = draggingKey != null
+        val committedKeys = if (wasDragging) items.map(keyOf) else null
+        if (committedKeys != null) {
+            pendingCommittedKeys = committedKeys
+            pendingCommitTimeMs = clockMs()
+        }
         draggingKey = null
         dragOffset = Offset.Zero
-        if (wasDragging) {
-            onCommitOrder(items.map(keyOf))
+        if (committedKeys != null) {
+            onCommitOrder(committedKeys)
         }
     }
 }
@@ -203,20 +256,67 @@ fun <T> rememberDragReorderController(
             syncFromSource(sourceItems)
         }
     }
-    LaunchedEffect(sourceItems, controller.draggingKey) {
+    LaunchedEffect(sourceItems) {
         controller.syncFromSource(sourceItems)
     }
     return controller
 }
 
 /**
+ * Container-level drag gesture handler for 2D grids (such as `Column` of `Row`s) where child tiles
+ * move between parent `Row` composables on swap. Keeping `pointerInput` on the stable container
+ * guarantees drag gestures stay uninterrupted across any number of row/column swaps.
+ */
+fun <T> Modifier.dragReorderContainer(
+    enabled: Boolean,
+    controller: DragReorderController<T>
+): Modifier = composed {
+    val haptic = LocalHapticFeedback.current
+    var containerOriginInRoot by remember { mutableStateOf(Offset.Zero) }
+
+    this
+        .onGloballyPositioned { coords ->
+            if (coords.isAttached) {
+                containerOriginInRoot = coords.positionInRoot()
+            }
+        }
+        .then(
+            if (enabled) {
+                Modifier.pointerInput(controller, enabled) {
+                    detectDragGestures(
+                        onDragStart = { localOffset ->
+                            val hitKey = controller.findKeyAt(containerOriginInRoot + localOffset)
+                            if (hitKey != null) {
+                                controller.startDrag(hitKey, haptic)
+                            }
+                        },
+                        onDragEnd = { controller.endDrag() },
+                        onDragCancel = { controller.endDrag() },
+                        onDrag = { change, dragAmount ->
+                            if (controller.draggingKey != null) {
+                                change.consume()
+                                controller.onDragDelta(dragAmount, haptic)
+                            }
+                        }
+                    )
+                }
+            } else {
+                Modifier
+            }
+        )
+}
+
+/**
  * Attaches drag-and-drop reorder behavior to an item when [enabled] is true.
  * Handles slot tracking, finger-locked drag translation, lifted scale, and z-index elevation.
+ *
+ * Set [handlePointerInput] to `false` when the parent grid container uses [dragReorderContainer].
  */
 fun <T> Modifier.dragReorderItem(
     key: String,
     enabled: Boolean,
-    controller: DragReorderController<T>
+    controller: DragReorderController<T>,
+    handlePointerInput: Boolean = true
 ): Modifier = composed {
     val haptic = LocalHapticFeedback.current
     val reduceMotion = rememberReduceMotion()
@@ -236,7 +336,7 @@ fun <T> Modifier.dragReorderItem(
             }
         }
         .then(
-            if (enabled) {
+            if (enabled && handlePointerInput) {
                 Modifier.pointerInput(key, enabled) {
                     detectDragGestures(
                         onDragStart = { controller.startDrag(key, haptic) },
@@ -308,10 +408,10 @@ fun ReorderModeBanner(
                     shape = RoundedCornerShape(12.dp),
                     color = MaterialTheme.colorScheme.primary,
                     contentColor = MaterialTheme.colorScheme.onPrimary,
-                    modifier = Modifier.heightIn(min = 36.dp)
+                    modifier = Modifier.heightIn(min = 48.dp)
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {

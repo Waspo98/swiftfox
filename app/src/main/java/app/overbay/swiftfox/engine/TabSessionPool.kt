@@ -266,15 +266,6 @@ class TabSessionPool(
         }
     }
 
-    fun clearAllProfilesData(containerProfiles: Collection<String>) {
-        clearProfilesData(
-            containerProfiles = containerProfiles,
-            clearHistory = true,
-            clearCookiesAndSiteData = true,
-            clearCache = true
-        )
-    }
-
     fun clearProfilesData(
         containerProfiles: Collection<String>,
         clearHistory: Boolean,

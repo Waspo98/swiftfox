@@ -16,7 +16,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -58,16 +57,24 @@ fun SpaceIconGlyph(
 ) {
     val repo = LocalFaviconRepository.current
     val spec = remember(iconKey) { CustomIconSpec.parse(iconKey) }
-    val revision by (repo?.revision?.collectAsState() ?: remember { mutableStateOf(0L) })
 
     when (spec) {
         is CustomIconSpec.LocalImage -> {
             var bitmap by remember(spec.fileName, repo) {
                 mutableStateOf(repo?.getCachedCustomImage(spec.fileName))
             }
-            LaunchedEffect(spec.fileName, repo, revision) {
-                if (bitmap == null && repo != null) {
+            LaunchedEffect(spec.fileName, repo) {
+                if (repo == null) return@LaunchedEffect
+                if (bitmap == null) {
                     bitmap = repo.loadCustomImage(spec.fileName)
+                }
+                repo.revision.collect {
+                    val cached = repo.getCachedCustomImage(spec.fileName)
+                    if (cached != null) {
+                        bitmap = cached
+                    } else if (bitmap == null) {
+                        bitmap = repo.loadCustomImage(spec.fileName)
+                    }
                 }
             }
             val img = remember(bitmap) { bitmap?.asImageBitmap() }
@@ -152,7 +159,6 @@ fun SiteIconBadge(
     val repo = LocalFaviconRepository.current
     val reduceMotion = rememberReduceMotion()
     val spec = remember(customIcon) { CustomIconSpec.parse(customIcon) }
-    val revision by (repo?.revision?.collectAsState() ?: remember { mutableStateOf(0L) })
 
     val hostKey = remember(url) { FaviconRepository.normalizedHost(url) }
     var customBitmap by remember(spec, repo) {
@@ -170,16 +176,26 @@ fun SiteIconBadge(
         )
     }
 
-    LaunchedEffect(spec, repo, revision) {
+    LaunchedEffect(spec, repo) {
         if (spec is CustomIconSpec.LocalImage && repo != null) {
-            val loaded = repo.loadCustomImage(spec.fileName)
-            if (loaded != null) customBitmap = loaded
+            if (customBitmap == null) {
+                customBitmap = repo.loadCustomImage(spec.fileName)
+            }
+            repo.revision.collect {
+                val cached = repo.getCachedCustomImage(spec.fileName)
+                if (cached != null) {
+                    customBitmap = cached
+                } else if (customBitmap == null) {
+                    customBitmap = repo.loadCustomImage(spec.fileName)
+                }
+            }
         } else {
             customBitmap = null
         }
     }
 
-    LaunchedEffect(spec, hostKey, url, privateTabId, repo, revision) {
+    // Fetch website favicon once per target without tying cancellation to global cache revisions
+    LaunchedEffect(spec, hostKey, url, privateTabId, repo) {
         if (spec != CustomIconSpec.None || repo == null) return@LaunchedEffect
         val cached = repo.getCachedFavicon(url, privateTabId)
         if (cached != null) {
@@ -188,6 +204,18 @@ fun SiteIconBadge(
             val fetched = repo.getOrFetchFavicon(url, privateTabId = null)
             if (fetched != null) {
                 faviconBitmap = fetched
+            }
+        }
+    }
+
+    // Observe cache updates (WebView onReceivedIcon, private tab icon updates, or cache clears)
+    // without cancelling in-flight fetches or recomposing unrelated badges.
+    LaunchedEffect(spec, hostKey, privateTabId, repo) {
+        if (spec != CustomIconSpec.None || repo == null) return@LaunchedEffect
+        repo.revision.collect {
+            val cached = repo.getCachedFavicon(url, privateTabId)
+            if (cached !== faviconBitmap) {
+                faviconBitmap = cached
             }
         }
     }

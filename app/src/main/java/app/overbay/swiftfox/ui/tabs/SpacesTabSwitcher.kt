@@ -57,6 +57,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -140,6 +141,10 @@ fun SpacesTabSwitcher(
 
     val foxColors = LocalSwiftfoxColors.current
     val essentials = state.activeSpaceEssentials
+
+    LaunchedEffect(state.isPrivateView, state.activeSpaceId) {
+        reorderMode = SwitcherReorderMode.NONE
+    }
     val spacesReorder = rememberDragReorderController(
         sourceItems = state.spaces,
         keyOf = { it.id },

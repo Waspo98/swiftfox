@@ -16,6 +16,7 @@ import app.overbay.swiftfox.data.db.SwiftfoxDatabase
 import app.overbay.swiftfox.data.db.SyncedRemoteTabEntity
 import app.overbay.swiftfox.data.db.ZenPinnedItemEntity
 import app.overbay.swiftfox.data.prefs.PreferencesRepository
+import app.overbay.swiftfox.features.icons.CustomIconSpec
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -1406,11 +1407,8 @@ class MozillaSyncCoordinator(
                 val localId = prev?.id ?: "zen_${zenSpace.uuid}"
                 zenSpaceIdMap[zenSpace.uuid] = localId
                 val prevIconKey = prev?.iconKey
-                val resolvedIconKey = if (
-                    prevIconKey != null &&
-                    (prevIconKey.startsWith("emoji:") || prevIconKey.startsWith("image:"))
-                ) {
-                    prevIconKey
+                val resolvedIconKey = if (CustomIconSpec.isExplicitCustomIcon(prevIconKey)) {
+                    prevIconKey!!
                 } else {
                     ZenSpacesCodec.mapZenIconToSwiftfoxKey(zenSpace.icon, zenSpace.name)
                 }

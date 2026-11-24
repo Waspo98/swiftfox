@@ -55,6 +55,7 @@ import app.overbay.swiftfox.features.darkreader.ResolvedWebDarkState
 import app.overbay.swiftfox.features.foldable.FoldableWindowState
 import app.overbay.swiftfox.features.foldable.SiteModeResolver
 import app.overbay.swiftfox.features.icons.CustomIconSpec
+import app.overbay.swiftfox.features.icons.FaviconRepository
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
 import app.overbay.swiftfox.features.omnibox.OmniboxSuggestion
 import app.overbay.swiftfox.features.omnibox.SuggestionKind
@@ -239,6 +240,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 pool.getExisting(tabId)?.rotateTokensForOrigin(origin)
             }
             val isSameUrl = currentTab.url == url
+            if (currentTab.isPrivate) {
+                val prevHost = FaviconRepository.normalizedHost(currentTab.url)
+                val nextHost = FaviconRepository.normalizedHost(url)
+                if (prevHost != nextHost) {
+                    app.faviconRepository.clearPrivateTabIcon(tabId)
+                }
+            }
             pendingBlockedDeltaByTab.remove(tabId)
             cosmeticExceptionsByTab.remove(tabId)
             spaCheckJobByTab.remove(tabId)?.cancel()
@@ -1573,7 +1581,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         selectImmediately: Boolean = true,
         isPopupWindow: Boolean = false,
         closeFoldedSidebar: Boolean = true,
-        dismissAllOverlays: Boolean = false
+        dismissAllOverlays: Boolean = false,
+        isPinned: Boolean = false,
+        customIcon: String? = null,
+        customTitle: String? = null
     ): BrowserTabUi {
         if (selectImmediately) {
             stopActiveZapperIfRunning()
@@ -1593,6 +1604,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             effectiveSiteOverride(host, isPrivate)?.siteModeOverride
         )
         val resolvedMode = SiteModeResolver.resolve(null, siteOverride, currentState.activeProfile)
+        val effectivePinned = !isPrivate && isPinned
 
         val tab = BrowserTabUi(
             id = UUID.randomUUID().toString(),
@@ -1600,14 +1612,29 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             title = if (url == OmniboxEngine.NEW_TAB_URL) "New Tab" else host.ifBlank { url },
             url = url,
             isPrivate = isPrivate,
+            isPinned = effectivePinned,
+            customIcon = if (isPrivate) null else customIcon,
+            customTitle = if (isPrivate) null else customTitle,
             isPopupWindow = isPopupWindow,
             resolvedSiteMode = resolvedMode,
             lastAccessedAt = System.currentTimeMillis()
         )
 
         _uiState.update { state ->
+            val updatedTabs = if (effectivePinned) {
+                val spacePinned = state.tabs.filter { !it.isPrivate && it.spaceId == spaceId && it.isPinned }
+                val insertAfterId = spacePinned.lastOrNull()?.id
+                if (insertAfterId != null) {
+                    val idx = state.tabs.indexOfFirst { it.id == insertAfterId } + 1
+                    state.tabs.toMutableList().apply { add(idx, tab) }
+                } else {
+                    listOf(tab) + state.tabs
+                }
+            } else {
+                state.tabs + tab
+            }
             state.copy(
-                tabs = state.tabs + tab,
+                tabs = updatedTabs,
                 activeTabId = if (selectImmediately) tab.id else state.activeTabId,
                 isPrivateView = if (selectImmediately) isPrivate else state.isPrivateView,
                 activeSpaceId = if (selectImmediately && !isPrivate) spaceId else state.activeSpaceId,
@@ -1638,7 +1665,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
 
         if (!isPrivate) {
-            persistTab(tab)
+            if (effectivePinned) {
+                persistTabsForSpace(spaceId)
+            } else {
+                persistTab(tab)
+            }
         }
         if (selectImmediately) {
             pool.setActiveTab(tab.id)
@@ -1757,7 +1788,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     db.tabDao().deleteById(tabId)
                 }
             }
-            cleanupUnusedCustomImage(closing.customIcon)
         } else {
             app.faviconRepository.clearPrivateTabIcon(tabId)
             if (clearAllPrivateState) {
@@ -1787,6 +1817,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             state.permissionPrompt?.let(::denyPromptSilently)
         }
 
+        val prevRecentlyClosedIcon = _uiState.value.recentlyClosedTab?.customIcon
         val showClosedSnackbar = !closing.isPrivate && !closing.isStartPage
         _uiState.update { current ->
             val wasActive = current.activeTabId == tabId
@@ -1797,7 +1828,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 privateZappedRules = if (clearAllPrivateState) emptyMap() else current.privateZappedRules,
                 recentlyClosedTab = if (showClosedSnackbar) closing else null,
                 recentlyResetSiteOverride = null,
-                snackbarMessage = if (showClosedSnackbar) "Closed ${closing.title}" else null,
+                snackbarMessage = if (showClosedSnackbar) "Closed ${closing.displayTitle}" else null,
                 snackbarId = if (showClosedSnackbar) snackbarCounter.incrementAndGet() else current.snackbarId,
                 zapper = if (wasActive) ZapperUiState() else current.zapper,
                 readerArticle = if (wasActive) null else current.readerArticle,
@@ -1807,6 +1838,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 httpsErrorPrompt = if (current.httpsErrorPrompt?.tabId == tabId || wasActive) null else current.httpsErrorPrompt,
                 permissionPrompt = if (current.permissionPrompt?.tabId == tabId || wasActive) null else current.permissionPrompt
             )
+        }
+        // Clean up after _uiState has dropped the closing tab (and any superseded recentlyClosedTab)
+        cleanupUnusedCustomImage(prevRecentlyClosedIcon)
+        if (!closing.isPrivate && !showClosedSnackbar) {
+            cleanupUnusedCustomImage(closing.customIcon)
         }
 
         if (nextActiveId != null && nextActiveId != state.activeTabId) {
@@ -1836,7 +1872,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             url = closed.url,
             isPrivate = false,
             spaceId = validSpaceId,
-            selectImmediately = true
+            selectImmediately = true,
+            isPinned = closed.isPinned,
+            customIcon = closed.customIcon,
+            customTitle = closed.customTitle
         )
     }
 
@@ -1987,11 +2026,16 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         spaceToDelete.containerProfileName?.let { profileName ->
             pool.deleteContainerProfile(profileName)
         }
+        val affectedZenPinnedIcons = _uiState.value.zenPinnedItems
+            .filter { it.spaceId == spaceId }
+            .mapNotNull { it.customIcon }
+        val affectedTabIcons = affectedTabs.mapNotNull { it.customIcon }
         _uiState.update { state ->
             state.copy(
                 spaces = state.spaces.filterNot { it.id == spaceId },
                 activeSpaceId = if (wasActiveSpacePointer) fallback.id else state.activeSpaceId,
                 tabs = remainingAfter,
+                zenPinnedItems = state.zenPinnedItems.filterNot { it.spaceId == spaceId },
                 externalAppPrompt = if (wasViewingDeletedSpace || state.externalAppPrompt?.tabId in affectedIds) null else state.externalAppPrompt,
                 httpsErrorPrompt = if (wasViewingDeletedSpace || state.httpsErrorPrompt?.tabId in affectedIds) null else state.httpsErrorPrompt,
                 permissionPrompt = if (wasViewingDeletedSpace || state.permissionPrompt?.tabId in affectedIds) null else state.permissionPrompt
@@ -2009,6 +2053,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
         showSnackbar("Deleted Space \"${spaceToDelete.name}\"")
         cleanupUnusedCustomImage(spaceToDelete.iconKey)
+        affectedTabIcons.forEach(::cleanupUnusedCustomImage)
+        affectedZenPinnedIcons.forEach(::cleanupUnusedCustomImage)
     }
 
     fun renameSpace(spaceId: String, newName: String) {
@@ -2026,7 +2072,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun setSpaceIcon(spaceId: String, iconKey: String) {
         val existing = _uiState.value.spaces.firstOrNull { it.id == spaceId } ?: return
         val oldIcon = existing.iconKey
-        val nextKey = iconKey.trim().ifEmpty { "layers" }
+        val nextKey = CustomIconSpec.parse(iconKey).encodeExplicit() ?: "${CustomIconSpec.ICON_PREFIX}layers"
         val updated = existing.copy(iconKey = nextKey)
         _uiState.update { state ->
             state.copy(spaces = state.spaces.map { if (it.id == spaceId) updated else it })
@@ -3526,14 +3572,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun clearAllBrowsingData() {
-        clearBrowsingData(
-            clearHistory = true,
-            clearCookiesAndSiteData = true,
-            clearCache = true
-        )
-    }
-
     fun clearBrowsingData(
         clearHistory: Boolean,
         clearCookiesAndSiteData: Boolean,
@@ -3551,6 +3589,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             if (clearHistory) {
                 db.historyDao().clearAll()
                 app.mozillaSyncCoordinator.mirrorHistoryCleared()
+            }
+            if (clearHistory || clearCache) {
+                app.faviconRepository.clearFaviconCache()
             }
             val containerProfiles = _uiState.value.spaces.mapNotNull { it.containerProfileName }
             pool.clearProfilesData(
@@ -3826,6 +3867,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     }
                 }
                 if (prevOverride != null) {
+                    val discardedClosedIcon = _uiState.value.recentlyClosedTab?.customIcon
                     _uiState.update {
                         it.copy(
                             snackbarMessage = "Reset overrides for $normalizedHost",
@@ -3834,6 +3876,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                             recentlyResetSiteOverride = prevOverride
                         )
                     }
+                    cleanupUnusedCustomImage(discardedClosedIcon)
                 } else {
                     showSnackbar("Reset site overrides for $normalizedHost")
                 }
@@ -4138,6 +4181,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         ChromeBookmarkHtmlCodec.export(_uiState.value.bookmarks)
 
     fun showSnackbar(message: String) {
+        val discardedClosedIcon = _uiState.value.recentlyClosedTab?.customIcon
         _uiState.update {
             it.copy(
                 snackbarMessage = message,
@@ -4146,9 +4190,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 recentlyResetSiteOverride = null
             )
         }
+        cleanupUnusedCustomImage(discardedClosedIcon)
     }
 
     fun clearSnackbar() {
+        val discardedClosedIcon = _uiState.value.recentlyClosedTab?.customIcon
         _uiState.update {
             it.copy(
                 snackbarMessage = null,
@@ -4156,6 +4202,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 recentlyResetSiteOverride = null
             )
         }
+        cleanupUnusedCustomImage(discardedClosedIcon)
     }
 
     private fun isChromeDark(): Boolean = when (_uiState.value.settings.themeMode) {

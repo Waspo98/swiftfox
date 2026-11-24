@@ -47,10 +47,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -70,7 +75,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 @Composable
 fun OmniboxOverlay(
     isVisible: Boolean = true,
-    expandProgress: Float = 1f,
+    expandProgressProvider: () -> Float = { 1f },
     sourceRect: Rect? = null,
     query: String,
     searchEngineLabel: String,
@@ -131,19 +136,21 @@ fun OmniboxOverlay(
         }
     }
 
-    val p = expandProgress.coerceIn(0f, 1f)
-    val backdropAlpha = (p * 1.35f).coerceIn(0f, 1f)
-    val backButtonAlpha = ((p - 0.18f) / 0.82f).coerceIn(0f, 1f)
-    val bodyProgress = ((p - 0.14f) / 0.86f).coerceIn(0f, 1f)
-    val bodySlidePx = with(density) { 26.dp.toPx() } * (1f - bodyProgress)
-    val fallbackSlidePx = with(density) { 18.dp.toPx() } * (1f - p)
+    val primaryColor = MaterialTheme.colorScheme.primary
+    val bodySlideMaxPx = with(density) { 26.dp.toPx() }
+    val fallbackSlideMaxPx = with(density) { 18.dp.toPx() }
+    val pillCornerPx = with(density) { 28.dp.toPx() }
+    val oneDpPx = with(density) { 1.dp.toPx() }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        // Animated full-screen backdrop surface
+        // Animated full-screen backdrop surface (read progress in graphicsLayer only for 120Hz zero-recomposition)
         Surface(
             modifier = Modifier
                 .fillMaxSize()
-                .graphicsLayer { alpha = backdropAlpha },
+                .graphicsLayer {
+                    val p = expandProgressProvider().coerceIn(0f, 1f)
+                    alpha = (p * 1.35f).coerceIn(0f, 1f)
+                },
             color = MaterialTheme.colorScheme.background
         ) {}
 
@@ -167,8 +174,10 @@ fun OmniboxOverlay(
                     modifier = Modifier
                         .size(48.dp)
                         .graphicsLayer {
-                            alpha = backButtonAlpha
-                            translationX = -14f * (1f - backButtonAlpha)
+                            val p = expandProgressProvider().coerceIn(0f, 1f)
+                            val backAlpha = ((p - 0.18f) / 0.82f).coerceIn(0f, 1f)
+                            alpha = backAlpha
+                            translationX = -14f * (1f - backAlpha)
                         }
                 ) {
                     Icon(
@@ -180,10 +189,6 @@ fun OmniboxOverlay(
                 Surface(
                     shape = RoundedCornerShape(28.dp),
                     color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    border = BorderStroke(
-                        width = (1f + p).dp,
-                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.45f + 0.55f * p)
-                    ),
                     modifier = Modifier
                         .weight(1f)
                         .heightIn(min = 52.dp)
@@ -196,6 +201,7 @@ fun OmniboxOverlay(
                             }
                         }
                         .graphicsLayer {
+                            val p = expandProgressProvider().coerceIn(0f, 1f)
                             val src = sourceRect
                             val dst = targetPillRect
                             if (src != null && dst != null && dst.width > 0f && dst.height > 0f) {
@@ -207,12 +213,28 @@ fun OmniboxOverlay(
                                 scaleX = sx + (1f - sx) * p
                                 scaleY = sy + (1f - sy) * p
                             } else {
-                                translationY = -fallbackSlidePx
+                                translationY = -fallbackSlideMaxPx * (1f - p)
                                 val s = 0.94f + 0.06f * p
                                 scaleX = s
                                 scaleY = s
                                 alpha = (p * 1.4f).coerceIn(0f, 1f)
                             }
+                        }
+                        .drawWithContent {
+                            drawContent()
+                            val p = expandProgressProvider().coerceIn(0f, 1f)
+                            val strokePx = oneDpPx * (1f + p)
+                            val half = strokePx / 2f
+                            drawRoundRect(
+                                color = primaryColor.copy(alpha = 0.45f + 0.55f * p),
+                                topLeft = Offset(half, half),
+                                size = Size(
+                                    width = (size.width - strokePx).coerceAtLeast(0f),
+                                    height = (size.height - strokePx).coerceAtLeast(0f)
+                                ),
+                                cornerRadius = CornerRadius(pillCornerPx, pillCornerPx),
+                                style = Stroke(width = strokePx)
+                            )
                         }
                 ) {
                     Row(
@@ -301,8 +323,10 @@ fun OmniboxOverlay(
                     .weight(1f)
                     .fillMaxWidth()
                     .graphicsLayer {
+                        val p = expandProgressProvider().coerceIn(0f, 1f)
+                        val bodyProgress = ((p - 0.14f) / 0.86f).coerceIn(0f, 1f)
                         alpha = bodyProgress
-                        translationY = bodySlidePx
+                        translationY = bodySlideMaxPx * (1f - bodyProgress)
                     }
             ) {
                 // Quick Bang shortcuts bar

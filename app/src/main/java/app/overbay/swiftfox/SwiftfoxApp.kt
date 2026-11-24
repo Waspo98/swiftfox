@@ -86,7 +86,7 @@ class SwiftfoxApp : Application() {
         super.onCreate()
         database = SwiftfoxDatabase.getInstance(this)
         preferencesRepository = PreferencesRepository(this)
-        faviconRepository = FaviconRepository(this, httpClient)
+        faviconRepository = FaviconRepository(this, httpClient, appScope)
         OmniboxEngine.configureHttpClient(httpClient)
         downloadCoordinator = DownloadCoordinator(this, database.downloadRecordDao(), httpClient)
         downloadCoordinator.registerCompletionReceiver(appScope)

@@ -15,6 +15,7 @@ import app.overbay.swiftfox.features.darkreader.DarkReaderInjector
 import app.overbay.swiftfox.features.downloads.DownloadCoordinator
 import app.overbay.swiftfox.features.icons.FaviconRepository
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
+import app.overbay.swiftfox.features.omnibox.TopDomainsRepository
 import app.overbay.swiftfox.features.reader.ReaderExtractor
 import app.overbay.swiftfox.features.sync.MozillaSyncCoordinator
 import app.overbay.swiftfox.features.sync.SyncWorkerBridge
@@ -80,6 +81,9 @@ class SwiftfoxApp : Application() {
     lateinit var faviconRepository: FaviconRepository
         private set
 
+    lateinit var topDomainsRepository: TopDomainsRepository
+        private set
+
     val tabSessionPool = TabSessionPool(maxWarmSessions = 5)
 
     override fun onCreate() {
@@ -87,6 +91,7 @@ class SwiftfoxApp : Application() {
         database = SwiftfoxDatabase.getInstance(this)
         preferencesRepository = PreferencesRepository(this)
         faviconRepository = FaviconRepository(this, httpClient, appScope)
+        topDomainsRepository = TopDomainsRepository(this)
         OmniboxEngine.configureHttpClient(httpClient)
         downloadCoordinator = DownloadCoordinator(this, database.downloadRecordDao(), httpClient)
         downloadCoordinator.registerCompletionReceiver(appScope)
@@ -146,6 +151,7 @@ class SwiftfoxApp : Application() {
 
         // Run Mozilla Sync/JNA init, JS asset warmup, and WorkManager scheduling off the main thread.
         appScope.launch {
+            topDomainsRepository.warmUp()
             darkReaderInjector.warmUpAssets()
             zapperController.warmUpAssets()
             userscriptBridge.warmUpAssets()

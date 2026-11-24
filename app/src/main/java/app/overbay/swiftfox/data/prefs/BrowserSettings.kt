@@ -43,7 +43,7 @@ enum class SearchEngineId(
     GOOGLE(
         label = "Google",
         searchUrlTemplate = "https://www.google.com/search?q=%s",
-        suggestUrlTemplate = "https://suggestqueries.google.com/complete/search?client=firefox&q=%s"
+        suggestUrlTemplate = "https://suggestqueries.google.com/complete/search?client=chrome&q=%s"
     ),
     DUCKDUCKGO(
         label = "DuckDuckGo",

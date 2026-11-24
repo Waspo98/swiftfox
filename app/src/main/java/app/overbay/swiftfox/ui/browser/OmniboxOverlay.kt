@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -97,6 +98,7 @@ fun OmniboxOverlay(
     val focusManager = LocalFocusManager.current
     val density = LocalDensity.current
     val quickBangs = remember { OmniboxEngine.bangs.take(7) }
+    val quickTlds = remember { OmniboxEngine.quickTldShortcuts }
     var targetPillRect by remember { mutableStateOf<Rect?>(null) }
 
     // TextFieldState owns the IME buffer synchronously so fast typing bursts never race with
@@ -107,6 +109,12 @@ fun OmniboxOverlay(
     )
     val currentText = textFieldState.text.toString()
     val activeBang = remember(currentText) { OmniboxEngine.detectBang(currentText) }
+    val isAllSelected = currentText.isNotEmpty() &&
+        textFieldState.selection.min == 0 &&
+        textFieldState.selection.max == currentText.length
+    val showQuickTldChips = !isAllSelected && remember(currentText) {
+        OmniboxEngine.shouldShowQuickTldChips(currentText)
+    }
     var lastSyncedExternalQuery by remember { mutableStateOf(query) }
     val autocompleteGate = remember { OmniboxAutocompleteGate(initialSuppressed = query.isNotEmpty()) }
     var gateVersion by remember { mutableIntStateOf(0) }
@@ -410,48 +418,97 @@ fun OmniboxOverlay(
                         translationY = bodySlideMaxPx * (1f - bodyProgress)
                     }
             ) {
-                // Quick Bang shortcuts bar
+                // Quick TLD shortcuts (while typing a single domain-like token) or Quick Bangs
                 LazyRow(
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    items(
-                        items = quickBangs,
-                        key = { it.name },
-                        contentType = { "bang_shortcut" }
-                    ) { bang ->
-                        Surface(
-                            onClick = {
-                                val bangPrefix = "${bang.triggers.first()} "
-                                autocompleteGate.onExternalQuerySynced(bangPrefix)
-                                gateVersion++
-                                textFieldState.setTextAndPlaceCursorAtEnd(bangPrefix)
-                                lastSyncedExternalQuery = bangPrefix
-                                onQueryChange(bangPrefix)
-                            },
-                            shape = RoundedCornerShape(16.dp),
-                            color = MaterialTheme.colorScheme.surfaceContainer,
-                            border = BorderStroke(
-                                1.dp,
-                                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
-                            ),
-                            modifier = Modifier.heightIn(min = 48.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    if (showQuickTldChips) {
+                        items(
+                            items = quickTlds,
+                            key = { "tld_$it" },
+                            contentType = { "tld_shortcut" }
+                        ) { shortcut ->
+                            val isPrimaryCom = shortcut == ".com"
+                            Surface(
+                                onClick = {
+                                    val applied = OmniboxEngine.applyTldShortcut(currentText, shortcut)
+                                        ?: return@Surface
+                                    onSubmit(applied)
+                                },
+                                shape = RoundedCornerShape(16.dp),
+                                color = if (isPrimaryCom) {
+                                    MaterialTheme.colorScheme.primaryContainer
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceContainer
+                                },
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (isPrimaryCom) {
+                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
+                                    } else {
+                                        MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                                    }
+                                ),
+                                modifier = Modifier
+                                    .widthIn(min = 52.dp)
+                                    .heightIn(min = 48.dp)
                             ) {
-                                Text(
-                                    text = bang.triggers.first(),
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                                Text(
-                                    text = bang.name,
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+                                Box(
+                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = shortcut,
+                                        style = MaterialTheme.typography.labelLarge,
+                                        color = if (isPrimaryCom) {
+                                            MaterialTheme.colorScheme.onPrimaryContainer
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurface
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    } else {
+                        items(
+                            items = quickBangs,
+                            key = { it.name },
+                            contentType = { "bang_shortcut" }
+                        ) { bang ->
+                            Surface(
+                                onClick = {
+                                    val bangPrefix = "${bang.triggers.first()} "
+                                    autocompleteGate.onExternalQuerySynced(bangPrefix)
+                                    gateVersion++
+                                    textFieldState.setTextAndPlaceCursorAtEnd(bangPrefix)
+                                    lastSyncedExternalQuery = bangPrefix
+                                    onQueryChange(bangPrefix)
+                                },
+                                shape = RoundedCornerShape(16.dp),
+                                color = MaterialTheme.colorScheme.surfaceContainer,
+                                border = BorderStroke(
+                                    1.dp,
+                                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                                ),
+                                modifier = Modifier.heightIn(min = 48.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Text(
+                                        text = bang.triggers.first(),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    Text(
+                                        text = bang.name,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
                             }
                         }
                     }

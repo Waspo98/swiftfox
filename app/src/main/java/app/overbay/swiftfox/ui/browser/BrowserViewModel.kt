@@ -57,7 +57,7 @@ import app.overbay.swiftfox.features.foldable.FoldableWindowState
 import app.overbay.swiftfox.features.foldable.SiteModeResolver
 import app.overbay.swiftfox.features.icons.CustomIconSpec
 import app.overbay.swiftfox.features.icons.FaviconRepository
-import app.overbay.swiftfox.features.omnibox.AutocompleteCandidate
+import app.overbay.swiftfox.features.omnibox.OmniboxCandidateBuilder
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
 import app.overbay.swiftfox.features.omnibox.OmniboxSuggestion
 import app.overbay.swiftfox.features.omnibox.SuggestionKind
@@ -3612,74 +3612,17 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    private fun buildInMemoryAutocompleteCandidates(
-        state: BrowserUiState,
-        maxBookmarksAndHistory: Int = Int.MAX_VALUE
-    ): List<AutocompleteCandidate> {
-        val inPrivate = state.isPrivateView
-        return buildList {
-            state.tabs.forEach { tab ->
-                if (!tab.isStartPage && !tab.isUnloaded && tab.isPrivate == inPrivate) {
-                    add(
-                        AutocompleteCandidate(
-                            url = tab.url,
-                            priority = 40,
-                            visitCount = 1,
-                            lastVisitedAt = tab.lastAccessedAt
-                        )
-                    )
-                }
-            }
-            if (!inPrivate) {
-                state.essentials.forEach { ess ->
-                    add(AutocompleteCandidate(url = ess.url, priority = 30, visitCount = 2))
-                }
-                state.zenPinnedItems.forEach { pin ->
-                    add(AutocompleteCandidate(url = pin.url, priority = 30, visitCount = 2))
-                }
-            }
-            val bookmarkSlice = if (state.bookmarks.size > maxBookmarksAndHistory) {
-                state.bookmarks.take(maxBookmarksAndHistory)
-            } else {
-                state.bookmarks
-            }
-            bookmarkSlice.forEach { bm ->
-                add(
-                    AutocompleteCandidate(
-                        url = bm.url,
-                        priority = 20,
-                        visitCount = 2,
-                        lastVisitedAt = bm.updatedAt.coerceAtLeast(bm.createdAt)
-                    )
-                )
-            }
-            if (!inPrivate) {
-                val historySlice = if (state.history.size > maxBookmarksAndHistory) {
-                    state.history.take(maxBookmarksAndHistory)
-                } else {
-                    state.history
-                }
-                historySlice.forEach { h ->
-                    add(
-                        AutocompleteCandidate(
-                            url = h.url,
-                            priority = 10,
-                            visitCount = h.visitCount,
-                            lastVisitedAt = h.lastVisitedAt
-                        )
-                    )
-                }
-            }
-        }
-    }
-
     fun onOmniboxQueryChanged(query: String) {
         val snapshot = _uiState.value
         // Keep the synchronous Main-thread pass strictly bounded so huge synced bookmark
-        // collections never jank typing; the coroutine below refines across the full corpus.
+        // collections never jank typing; binary search over TopDomainsRepository is O(log n).
+        val instantCandidates = OmniboxCandidateBuilder.buildInMemoryCandidates(
+            state = snapshot,
+            maxBookmarksAndHistory = 80
+        ) + app.topDomainsRepository.findPrefixCandidates(query)
         val instantAutocomplete = OmniboxEngine.findInlineAutocomplete(
             rawQuery = query,
-            candidates = buildInMemoryAutocompleteCandidates(snapshot, maxBookmarksAndHistory = 80)
+            candidates = instantCandidates
         )
         _uiState.update {
             it.copy(
@@ -3719,6 +3662,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 return@launch
             }
 
+            app.topDomainsRepository.ensureLoaded()
+
             val bang = OmniboxEngine.detectBang(trimmed)
             if (bang != null) {
                 val target = if (bang.query.isNotBlank()) {
@@ -3753,28 +3698,51 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             }
 
             val inPrivate = _uiState.value.isPrivateView
-            _uiState.value.tabs
-                .filter {
-                    !it.isStartPage &&
-                        !it.isUnloaded &&
-                        it.isPrivate == inPrivate &&
-                        (it.title.contains(trimmed, true) || it.url.contains(trimmed, true))
+            val matchingTabs = _uiState.value.tabs
+                .filter { tab ->
+                    val effectiveUrl = if (tab.isUnloaded) {
+                        tab.pinnedUrl?.takeIf { it.isNotBlank() } ?: tab.url
+                    } else {
+                        tab.url
+                    }
+                    effectiveUrl.isNotBlank() &&
+                        effectiveUrl != OmniboxEngine.NEW_TAB_URL &&
+                        tab.isPrivate == inPrivate &&
+                        (tab.displayTitle.contains(trimmed, true) || effectiveUrl.contains(trimmed, true))
                 }
+                .sortedBy { it.isUnloaded }
                 .take(2)
-                .forEach { tab ->
-                    results += OmniboxSuggestion(
-                        id = "tab_${tab.id}",
-                        title = tab.title,
-                        subtitle = "Switch to open tab · ${tab.displayHost}",
-                        targetUrl = tab.url,
-                        kind = SuggestionKind.OPEN_TAB,
-                        tabId = tab.id
-                    )
+            matchingTabs.forEach { tab ->
+                val effectiveUrl = if (tab.isUnloaded) {
+                    tab.pinnedUrl?.takeIf { it.isNotBlank() } ?: tab.url
+                } else {
+                    tab.url
                 }
+                val hostLabel = OmniboxEngine.extractHost(effectiveUrl).ifBlank { effectiveUrl }
+                results += OmniboxSuggestion(
+                    id = "tab_${tab.id}",
+                    title = tab.displayTitle,
+                    subtitle = if (tab.isUnloaded) {
+                        "Open saved tab · $hostLabel"
+                    } else {
+                        "Switch to open tab · $hostLabel"
+                    },
+                    targetUrl = effectiveUrl,
+                    kind = SuggestionKind.OPEN_TAB,
+                    tabId = tab.id
+                )
+            }
 
-            val dbBookmarks = db.bookmarkDao().search(trimmed, limit = 12)
-            dbBookmarks.take(3).forEach { bm ->
-                if (results.none { it.targetUrl == bm.url }) {
+            val hostPrefix = OmniboxEngine.extractHostPrefixForDbQuery(query)
+            val dbPrefixBookmarks = if (hostPrefix != null) {
+                db.bookmarkDao().searchByUrlPrefix(hostPrefix, limit = 12)
+            } else {
+                emptyList()
+            }
+            val dbSearchBookmarks = db.bookmarkDao().search(trimmed, limit = 12)
+            val combinedBookmarks = (dbPrefixBookmarks + dbSearchBookmarks).distinctBy { it.id }
+            combinedBookmarks.take(3).forEach { bm ->
+                if (results.none { it.targetUrl.trimEnd('/').equals(bm.url.trimEnd('/'), ignoreCase = true) }) {
                     results += OmniboxSuggestion(
                         id = "bm_${bm.id}",
                         title = bm.title,
@@ -3784,9 +3752,23 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     )
                 }
             }
-            val dbHistory = if (!inPrivate) db.historyDao().search(trimmed, limit = 16) else emptyList()
-            dbHistory.take(4).forEach { h ->
-                if (results.none { it.targetUrl == h.url }) {
+
+            val dbPrefixHistory = if (!inPrivate && hostPrefix != null) {
+                db.historyDao().searchByUrlPrefix(hostPrefix, limit = 20)
+            } else {
+                emptyList()
+            }
+            val dbSearchHistory = if (!inPrivate) {
+                db.historyDao().search(trimmed, limit = 16)
+            } else {
+                emptyList()
+            }
+            val combinedHistory = (dbPrefixHistory + dbSearchHistory).distinctBy { it.url }
+            var historyRowsAdded = 0
+            combinedHistory.forEach { h ->
+                if (historyRowsAdded < 4 &&
+                    results.none { it.targetUrl.trimEnd('/').equals(h.url.trimEnd('/'), ignoreCase = true) }
+                ) {
                     results += OmniboxSuggestion(
                         id = "hist_${h.url}",
                         title = h.title,
@@ -3794,42 +3776,52 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                         targetUrl = h.url,
                         kind = SuggestionKind.HISTORY
                     )
+                    historyRowsAdded++
+                }
+            }
+
+            // Query full on-device Mozilla Places history (synced Zen/Firefox desktop history
+            // beyond the 400-visit Room mirror) when History Sync is enabled and outside Private Mode.
+            val placesMatches = if (!inPrivate && bang == null && _uiState.value.settings.syncHistoryEnabled) {
+                app.mozillaSyncCoordinator.querySyncedHistoryForOmnibox(trimmed, limit = 10)
+            } else {
+                emptyList()
+            }
+            placesMatches.forEach { hit ->
+                if (historyRowsAdded < 5 &&
+                    results.none { it.targetUrl.trimEnd('/').equals(hit.url.trimEnd('/'), ignoreCase = true) }
+                ) {
+                    val host = OmniboxEngine.extractHost(hit.url).ifBlank { hit.url }
+                    results += OmniboxSuggestion(
+                        id = "places_${hit.url}",
+                        title = hit.title.ifBlank { host },
+                        subtitle = host,
+                        targetUrl = hit.url,
+                        kind = SuggestionKind.HISTORY
+                    )
+                    historyRowsAdded++
                 }
             }
 
             val stateSnapshot = _uiState.value
-            val refinedAutocomplete = withContext(Dispatchers.Default) {
-                val allAutocompleteCandidates = buildList {
-                    addAll(buildInMemoryAutocompleteCandidates(stateSnapshot))
-                    dbBookmarks.forEach { bm ->
-                        add(
-                            AutocompleteCandidate(
-                                url = bm.url,
-                                priority = 20,
-                                visitCount = 2,
-                                lastVisitedAt = bm.updatedAt.coerceAtLeast(bm.createdAt)
-                            )
-                        )
-                    }
-                    dbHistory.forEach { h ->
-                        add(
-                            AutocompleteCandidate(
-                                url = h.url,
-                                priority = 10,
-                                visitCount = h.visitCount,
-                                lastVisitedAt = h.lastVisitedAt
-                            )
-                        )
-                    }
+            val (allAutocompleteCandidates, refinedAutocomplete) = withContext(Dispatchers.Default) {
+                val allCandidates = buildList {
+                    addAll(OmniboxCandidateBuilder.buildInMemoryCandidates(stateSnapshot))
+                    addAll(OmniboxCandidateBuilder.fromBookmarks(combinedBookmarks))
+                    addAll(OmniboxCandidateBuilder.fromHistory(combinedHistory))
+                    addAll(OmniboxCandidateBuilder.fromPlacesMatches(placesMatches))
+                    addAll(app.topDomainsRepository.findPrefixCandidates(query))
                 }
-                OmniboxEngine.findInlineAutocomplete(
+                val best = OmniboxEngine.findInlineAutocomplete(
                     rawQuery = query,
-                    candidates = allAutocompleteCandidates
+                    candidates = allCandidates
                 )
+                allCandidates to best
             }
 
             val resolvedDirect = OmniboxEngine.resolveInput(trimmed, _uiState.value.settings)
-            if (OmniboxEngine.looksLikeUrl(trimmed)) {
+            val looksDirect = OmniboxEngine.looksLikeUrl(trimmed)
+            if (looksDirect) {
                 results.add(
                     0,
                     OmniboxSuggestion(
@@ -3842,7 +3834,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 )
             } else if (bang == null) {
                 if (refinedAutocomplete != null &&
-                    results.none { it.targetUrl.equals(refinedAutocomplete.targetUrl, ignoreCase = true) }
+                    results.none {
+                        it.targetUrl.trimEnd('/').equals(refinedAutocomplete.targetUrl.trimEnd('/'), ignoreCase = true)
+                    }
                 ) {
                     results.add(
                         0,
@@ -3864,8 +3858,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 )
             }
 
-            _uiState.update {
-                it.copy(
+            _uiState.update { state ->
+                if (state.omniboxQuery != query) state
+                else state.copy(
                     omniboxSuggestions = results,
                     omniboxInlineAutocomplete = refinedAutocomplete
                 )
@@ -3875,22 +3870,35 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             if (inPrivate) return@launch
 
             delay(180)
-            val live = OmniboxEngine.fetchLiveSuggestions(trimmed, _uiState.value.settings)
-            if (live.isNotEmpty()) {
-                val merged = results.toMutableList()
-                live.forEach { suggestionText ->
-                    val url = OmniboxEngine.buildSearchUrl(suggestionText, _uiState.value.settings)
-                    if (merged.none { it.title.equals(suggestionText, ignoreCase = true) }) {
-                        merged += OmniboxSuggestion(
-                            id = "live_$suggestionText",
-                            title = suggestionText,
-                            subtitle = _uiState.value.settings.searchEngine.label,
-                            targetUrl = url,
-                            kind = SuggestionKind.SEARCH
+            val liveResult = OmniboxEngine.fetchLiveSuggestionsResult(trimmed, _uiState.value.settings)
+            if (liveResult.navigationalHits.isNotEmpty() || liveResult.searchQueries.isNotEmpty()) {
+                val allowNav = !looksDirect && bang == null
+                val merged = OmniboxCandidateBuilder.mergeLiveSuggestions(
+                    existingSuggestions = results,
+                    liveResult = liveResult,
+                    settings = _uiState.value.settings,
+                    allowNavPromotion = allowNav
+                )
+                val updatedAutocomplete = if (allowNav && liveResult.navigationalHits.isNotEmpty()) {
+                    withContext(Dispatchers.Default) {
+                        val navCandidates = OmniboxCandidateBuilder.fromNavigationalSuggestions(
+                            liveResult.navigationalHits
+                        )
+                        OmniboxEngine.findInlineAutocomplete(
+                            rawQuery = query,
+                            candidates = allAutocompleteCandidates + navCandidates
                         )
                     }
+                } else {
+                    refinedAutocomplete
                 }
-                _uiState.update { it.copy(omniboxSuggestions = merged) }
+                _uiState.update { state ->
+                    if (state.omniboxQuery != query) state
+                    else state.copy(
+                        omniboxSuggestions = merged,
+                        omniboxInlineAutocomplete = updatedAutocomplete
+                    )
+                }
             }
         }
     }

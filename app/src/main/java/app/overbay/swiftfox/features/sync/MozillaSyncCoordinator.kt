@@ -137,6 +137,7 @@ class MozillaSyncCoordinator(
     @Volatile
     private var remoteTabsStorage: RemoteTabsStorage? = null
 
+    @Volatile
     private var accountManager: FxaAccountManager? = null
 
     private val accountObserver = object : AccountObserver {
@@ -1535,6 +1536,106 @@ class MozillaSyncCoordinator(
 
             syncedSpaceEntities.size
         }
+    }
+
+    data class PlacesOmniboxMatch(
+        val url: String,
+        val title: String,
+        val score: Int,
+        val fromAutocomplete: Boolean
+    )
+
+    /**
+     * Queries the full on-device Mozilla `PlacesHistoryStorage` directly so synced desktop
+     * Zen/Firefox history beyond the 400-visit Room mirror still powers omnibox autocomplete
+     * and suggestions. Safe to call during sign-out or when signed out (returns empty).
+     */
+    suspend fun querySyncedHistoryForOmnibox(
+        query: String,
+        limit: Int = 10
+    ): List<PlacesOmniboxMatch> = withContext(Dispatchers.IO) {
+        val trimmed = query.trim()
+        if (trimmed.isEmpty() || limit <= 0) return@withContext emptyList()
+        if (trimmed.startsWith("!") || trimmed.startsWith("@")) return@withContext emptyList()
+        if (isSigningOut.get()) return@withContext emptyList()
+        val mgr = accountManager ?: return@withContext emptyList()
+        if (mgr.connectedAccount() == null) return@withContext emptyList()
+        val settings = try {
+            prefs.settingsFlow.first()
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (_: Throwable) {
+            return@withContext emptyList()
+        }
+        if (!settings.syncHistoryEnabled) return@withContext emptyList()
+        if (isSigningOut.get()) return@withContext emptyList()
+        val store = historyStorage ?: return@withContext emptyList()
+
+        val indexByUrl = HashMap<String, Int>(limit + 2)
+        val matches = ArrayList<PlacesOmniboxMatch>(limit + 2)
+
+        fun isHttpUrl(url: String): Boolean =
+            url.startsWith("http://", ignoreCase = true) || url.startsWith("https://", ignoreCase = true)
+
+        fun urlKey(url: String): String = url.trimEnd('/').lowercase(Locale.ROOT)
+
+        try {
+            val autoHit = store.getAutocompleteSuggestion(trimmed)
+            val autoUrl = autoHit?.url?.trim().orEmpty()
+            if (autoUrl.isNotEmpty() && isHttpUrl(autoUrl)) {
+                val key = urlKey(autoUrl)
+                val fallbackTitle = OmniboxEngine.extractHost(autoUrl)
+                    .ifBlank { autoHit?.text?.trim()?.trimEnd('/').orEmpty() }
+                    .ifBlank { autoUrl }
+                indexByUrl[key] = matches.size
+                matches += PlacesOmniboxMatch(
+                    url = autoUrl,
+                    title = fallbackTitle,
+                    score = 1000,
+                    fromAutocomplete = true
+                )
+            }
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (_: Throwable) {
+            // Places store may be resetting during sign-out or unavailable; degrade gracefully.
+        }
+
+        if (isSigningOut.get()) return@withContext emptyList()
+
+        try {
+            val searchResults = store.getSuggestions(trimmed, limit)
+            for (hit in searchResults) {
+                val url = hit.url.trim()
+                if (url.isEmpty() || !isHttpUrl(url)) continue
+                val key = urlKey(url)
+                val resolvedTitle = hit.title?.takeIf { it.isNotBlank() }
+                val existingIdx = indexByUrl[key]
+                if (existingIdx != null) {
+                    val existing = matches[existingIdx]
+                    if (resolvedTitle != null) {
+                        matches[existingIdx] = existing.copy(
+                            title = resolvedTitle,
+                            score = maxOf(existing.score, hit.score)
+                        )
+                    }
+                } else {
+                    indexByUrl[key] = matches.size
+                    matches += PlacesOmniboxMatch(
+                        url = url,
+                        title = resolvedTitle ?: OmniboxEngine.extractHost(url).ifBlank { url },
+                        score = hit.score,
+                        fromAutocomplete = false
+                    )
+                }
+            }
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (_: Throwable) {
+            // Ignore transient Places reader errors.
+        }
+
+        matches
     }
 
     private fun updateConnectedFromProfile(profile: Profile?) {

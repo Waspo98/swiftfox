@@ -108,6 +108,23 @@ interface BookmarkDao {
     )
     suspend fun search(query: String, limit: Int = 6): List<BookmarkEntity>
 
+    @Query(
+        """
+        SELECT * FROM bookmarks
+        WHERE url LIKE 'https://' || :escapedPrefix || '%' ESCAPE '\'
+           OR url LIKE 'https://www.' || :escapedPrefix || '%' ESCAPE '\'
+           OR url LIKE 'http://' || :escapedPrefix || '%' ESCAPE '\'
+           OR url LIKE 'http://www.' || :escapedPrefix || '%' ESCAPE '\'
+           OR url LIKE 'https://m.' || :escapedPrefix || '%' ESCAPE '\'
+           OR url LIKE 'https://mobile.' || :escapedPrefix || '%' ESCAPE '\'
+           OR url LIKE 'http://m.' || :escapedPrefix || '%' ESCAPE '\'
+           OR url LIKE 'http://mobile.' || :escapedPrefix || '%' ESCAPE '\'
+        ORDER BY updatedAt DESC, createdAt DESC
+        LIMIT :limit
+        """
+    )
+    suspend fun searchByUrlPrefix(escapedPrefix: String, limit: Int = 12): List<BookmarkEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(bookmark: BookmarkEntity)
 
@@ -139,6 +156,23 @@ interface HistoryDao {
         "SELECT * FROM history WHERE title LIKE '%' || :query || '%' OR url LIKE '%' || :query || '%' ORDER BY visitCount DESC, lastVisitedAt DESC LIMIT :limit"
     )
     suspend fun search(query: String, limit: Int = 8): List<HistoryEntity>
+
+    @Query(
+        """
+        SELECT * FROM history
+        WHERE url LIKE 'https://' || :escapedPrefix || '%' ESCAPE '\'
+           OR url LIKE 'https://www.' || :escapedPrefix || '%' ESCAPE '\'
+           OR url LIKE 'http://' || :escapedPrefix || '%' ESCAPE '\'
+           OR url LIKE 'http://www.' || :escapedPrefix || '%' ESCAPE '\'
+           OR url LIKE 'https://m.' || :escapedPrefix || '%' ESCAPE '\'
+           OR url LIKE 'https://mobile.' || :escapedPrefix || '%' ESCAPE '\'
+           OR url LIKE 'http://m.' || :escapedPrefix || '%' ESCAPE '\'
+           OR url LIKE 'http://mobile.' || :escapedPrefix || '%' ESCAPE '\'
+        ORDER BY visitCount DESC, lastVisitedAt DESC
+        LIMIT :limit
+        """
+    )
+    suspend fun searchByUrlPrefix(escapedPrefix: String, limit: Int = 20): List<HistoryEntity>
 
     @Query("SELECT * FROM history WHERE url = :url LIMIT 1")
     suspend fun findByUrl(url: String): HistoryEntity?

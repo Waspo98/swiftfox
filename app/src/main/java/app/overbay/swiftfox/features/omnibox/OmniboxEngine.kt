@@ -8,8 +8,11 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.ResponseBody
@@ -65,6 +68,18 @@ data class AutocompleteCandidate(
     val priority: Int = 0,
     val visitCount: Int = 0,
     val lastVisitedAt: Long = 0L
+)
+
+data class NavigationalSuggestion(
+    val url: String,
+    val displayHost: String,
+    val title: String,
+    val relevance: Int = 0
+)
+
+data class LiveSuggestionsResult(
+    val navigationalHits: List<NavigationalSuggestion> = emptyList(),
+    val searchQueries: List<String> = emptyList()
 )
 
 /**
@@ -137,6 +152,21 @@ class OmniboxAutocompleteGate(initialSuppressed: Boolean = false) {
 object OmniboxEngine {
 
     const val NEW_TAB_URL = "about:blank"
+
+    const val PRIORITY_OPEN_TAB = 40
+    const val PRIORITY_ESSENTIAL_OR_PIN = 30
+    const val PRIORITY_UNLOADED_TAB = 25
+    const val PRIORITY_BOOKMARK = 20
+    const val PRIORITY_REMOTE_TAB = 15
+    const val PRIORITY_HISTORY = 10
+    const val PRIORITY_NAV_SUGGESTION = 6
+    const val PRIORITY_TOP_DOMAIN = 5
+
+    private const val MIN_SINGLE_CHAR_HISTORY_VISITS = 3
+
+    val quickTldShortcuts: List<String> = listOf(
+        ".com", ".org", ".net", ".io", ".app", ".ai", ".dev", ".gov", ".edu"
+    )
 
     val bangs: List<SearchBang> = listOf(
         SearchBang(listOf("!w", "@w"), "Wikipedia", "https://en.wikipedia.org/w/index.php?search=%s"),
@@ -327,8 +357,23 @@ object OmniboxEngine {
         val scheme: String,
         val authority: String,
         val hostNoWww: String,
+        val hostNoMobile: String,
         val cleanPath: String
     )
+
+    private fun stripMobileHostPrefix(hostNoWww: String): String {
+        if (hostNoWww.contains(':') || hostNoWww.startsWith("[")) return hostNoWww
+        val stripped = when {
+            hostNoWww.startsWith("mobile.") -> hostNoWww.removePrefix("mobile.")
+            hostNoWww.startsWith("m.") -> hostNoWww.removePrefix("m.")
+            else -> return hostNoWww
+        }
+        return if (stripped.contains('.') && !stripped.startsWith(".") && !stripped.endsWith(".")) {
+            stripped
+        } else {
+            hostNoWww
+        }
+    }
 
     private fun parseCandidateUrl(rawUrl: String): ParsedCandidateUrl? {
         val trimmed = rawUrl.trim()
@@ -352,6 +397,7 @@ object OmniboxEngine {
         }
         val hostNoWww = normalizedAuthority.removePrefix("www.")
         if (hostNoWww.isBlank()) return null
+        val hostNoMobile = stripMobileHostPrefix(hostNoWww)
         val rawPath = if (pathStart >= 0 && afterScheme[pathStart] == '/') {
             afterScheme.substring(pathStart).substringBefore('?').substringBefore('#')
         } else {
@@ -361,6 +407,7 @@ object OmniboxEngine {
             scheme = scheme,
             authority = normalizedAuthority,
             hostNoWww = hostNoWww,
+            hostNoMobile = hostNoMobile,
             cleanPath = rawPath
         )
     }
@@ -374,9 +421,100 @@ object OmniboxEngine {
         }
     }
 
+    /** Escapes SQLite LIKE metacharacters (`\`, `%`, `_`) for use with `ESCAPE '\'`. */
+    fun escapeSqlLikePrefix(rawPrefix: String): String {
+        if (rawPrefix.isEmpty()) return ""
+        val sb = StringBuilder(rawPrefix.length + 4)
+        for (ch in rawPrefix) {
+            when (ch) {
+                '\\', '%', '_' -> {
+                    sb.append('\\')
+                    sb.append(ch)
+                }
+                else -> sb.append(ch)
+            }
+        }
+        return sb.toString()
+    }
+
+    /**
+     * Extracts a clean lowercase host/URL prefix from omnibox input suitable for dedicated
+     * Room `LIKE` prefix queries so article title matches never crowd out domain completions.
+     */
+    fun extractHostPrefixForDbQuery(rawQuery: String): String? {
+        val trimmed = rawQuery.trim()
+        if (trimmed.isEmpty() || trimmed.any { it.isWhitespace() }) return null
+        if (trimmed.startsWith("!") || trimmed.startsWith("@")) return null
+        val lower = trimmed.lowercase(Locale.ROOT)
+        if (lower == "http:" || lower == "https:" || lower == "http:/" || lower == "https:/") return null
+        val afterScheme = when {
+            lower.startsWith("https://") -> lower.removePrefix("https://")
+            lower.startsWith("http://") -> lower.removePrefix("http://")
+            else -> lower
+        }
+        val normalized = when {
+            afterScheme.startsWith("www.") -> afterScheme.removePrefix("www.")
+            afterScheme.startsWith("mobile.") -> afterScheme.removePrefix("mobile.")
+            afterScheme.startsWith("m.") -> afterScheme.removePrefix("m.")
+            else -> afterScheme
+        }
+        if (normalized.isEmpty()) return null
+        return escapeSqlLikePrefix(normalized)
+    }
+
+    /**
+     * Returns true when the user is typing a single domain-like token without spaces or a
+     * completed TLD (e.g. `theverge`, `theverge.`, `https://myblog`), so the omnibox can
+     * surface one-tap `.com`/`.org`/`.net` shortcut chips.
+     */
+    fun shouldShowQuickTldChips(rawInput: String): Boolean {
+        val trimmed = rawInput.trim()
+        if (trimmed.isEmpty() || trimmed.any { it.isWhitespace() }) return false
+        if (trimmed.startsWith("!") || trimmed.startsWith("@")) return false
+        if (trimmed.startsWith("about:", ignoreCase = true)) return false
+        if (trimmed.contains('?') || trimmed.contains('#')) return false
+        val lower = trimmed.lowercase(Locale.ROOT)
+        if (lower == "http:" || lower == "https:" || lower == "http:/" || lower == "https:/") {
+            return false
+        }
+        val remainder = when {
+            lower.startsWith("https://") -> lower.removePrefix("https://")
+            lower.startsWith("http://") -> lower.removePrefix("http://")
+            else -> lower
+        }
+        if (remainder.isEmpty() || remainder.contains('/')) return false
+        if (looksLikeUrl(remainder)) return false
+
+        val withoutWww = remainder.removePrefix("www.")
+        val hasTrailingDot = withoutWww.endsWith('.')
+        val hostStub = if (hasTrailingDot) withoutWww.removeSuffix(".") else withoutWww
+        if (hostStub.isEmpty() || hostStub == "www") return false
+        // Reject filenames/versions (e.g. "node.js", "v1.2") unless user explicitly typed a trailing dot
+        if (!hasTrailingDot && hostStub.contains('.')) return false
+        if (!hostStub.any { it.isLetter() }) return false
+        return hostStub.split('.').all { label ->
+            label.isNotEmpty() &&
+                label.first().isLetterOrDigit() &&
+                label.last().isLetterOrDigit() &&
+                label.all { it.isLetterOrDigit() || it == '-' }
+        }
+    }
+
+    /**
+     * Applies a quick TLD shortcut (`.com`, `.org`, etc.) cleanly to [rawInput],
+     * avoiding duplicate dots.
+     */
+    fun applyTldShortcut(rawInput: String, shortcut: String): String? {
+        val trimmed = rawInput.trim()
+        if (trimmed.isEmpty() || shortcut.isEmpty()) return null
+        val base = trimmed.trimEnd('.')
+        if (base.isEmpty()) return null
+        return "$base$shortcut"
+    }
+
     /**
      * Deduplicates autocomplete candidates within each source priority tier by trimmed URL so
-     * combining in-memory state with Room search results never double-counts `visitCount`.
+     * combining in-memory state with Room/Places search results never double-counts `visitCount`.
      */
     fun dedupeAutocompleteCandidates(
         candidates: List<AutocompleteCandidate>
@@ -386,7 +524,8 @@ object OmniboxEngine {
         for (candidate in candidates) {
             val trimmedUrl = candidate.url.trim()
             if (trimmedUrl.isEmpty()) continue
-            val key = candidate.priority to trimmedUrl
+            val dedupeUrl = trimmedUrl.trimEnd('/').lowercase(Locale.ROOT)
+            val key = candidate.priority to dedupeUrl
             val existing = byKey[key]
             if (existing == null) {
                 byKey[key] = candidate
@@ -400,15 +539,35 @@ object OmniboxEngine {
         return byKey.values.toList()
     }
 
+    private fun isCandidateEligibleForPrefix(
+        candidate: AutocompleteCandidate,
+        effectiveHostPrefix: String,
+        typedHasPath: Boolean
+    ): Boolean {
+        if (typedHasPath) {
+            return candidate.priority >= PRIORITY_HISTORY
+        }
+        val len = effectiveHostPrefix.length
+        return when {
+            len <= 0 -> false
+            len == 1 -> candidate.priority >= PRIORITY_BOOKMARK ||
+                (candidate.priority >= PRIORITY_HISTORY && candidate.visitCount >= MIN_SINGLE_CHAR_HISTORY_VISITS)
+            len == 2 -> candidate.priority >= PRIORITY_HISTORY ||
+                (candidate.priority >= PRIORITY_TOP_DOMAIN && effectiveHostPrefix.contains('.'))
+            else -> true
+        }
+    }
+
     /**
      * Finds the best inline URL completion for [rawQuery] across open tabs, pinned items,
-     * bookmarks, and history so pressing Enter navigates directly to the highlighted site.
+     * bookmarks, synced remote tabs, local & synced history, navigational search suggestions,
+     * and offline top domains so pressing Enter navigates directly to the highlighted site.
      */
     fun findInlineAutocomplete(
         rawQuery: String,
         candidates: List<AutocompleteCandidate>
     ): InlineUrlAutocomplete? {
-        if (rawQuery.length < 2 || candidates.isEmpty()) return null
+        if (rawQuery.isEmpty() || candidates.isEmpty()) return null
         if (rawQuery.any { it.isWhitespace() }) return null
         if (rawQuery.startsWith("!") || rawQuery.startsWith("@")) return null
         if (rawQuery.contains('?') || rawQuery.contains('#')) return null
@@ -431,7 +590,13 @@ object OmniboxEngine {
         if (typedRemainder.isEmpty()) return null
 
         val typedHasWww = typedRemainder.startsWith("www.")
+        val typedHasMobilePrefix = typedRemainder.startsWith("m.") || typedRemainder.startsWith("mobile.")
         val typedHasPath = typedRemainder.contains('/')
+        val effectiveHostPrefix = when {
+            typedHasWww -> typedRemainder.removePrefix("www.")
+            else -> typedRemainder
+        }.substringBefore('/')
+        if (effectiveHostPrefix.isEmpty()) return null
         val displaySchemePrefix = typedSchemePrefix.orEmpty()
 
         data class ScoredMatch(
@@ -439,7 +604,8 @@ object OmniboxEngine {
             var suffix: String,
             var targetUrl: String,
             var maxPriority: Int,
-            var totalVisits: Int,
+            var personalVisits: Int,
+            var fallbackScore: Int,
             var latestVisit: Long,
             var preferHttps: Boolean
         )
@@ -448,6 +614,9 @@ object OmniboxEngine {
         val dedupedCandidates = dedupeAutocompleteCandidates(candidates)
 
         for (candidate in dedupedCandidates) {
+            if (!isCandidateEligibleForPrefix(candidate, effectiveHostPrefix, typedHasPath)) {
+                continue
+            }
             val parsed = parseCandidateUrl(candidate.url) ?: continue
             val bareHost = extractHostOnlyFromAuthority(parsed.hostNoWww)
             val effectiveScheme = when (typedSchemePrefix) {
@@ -459,7 +628,38 @@ object OmniboxEngine {
                 }
                 else -> parsed.scheme
             }
-            val displayHost = if (typedHasWww) parsed.authority else parsed.hostNoWww
+
+            val displayHost: String
+            val targetAuthority: String
+            when {
+                typedHasWww -> {
+                    if (parsed.authority.startsWith("www.")) {
+                        displayHost = parsed.authority
+                        targetAuthority = parsed.authority
+                    } else if (!isLocalHostOrLan(bareHost) &&
+                        !parsed.authority.contains(':') &&
+                        parsed.hostNoWww.count { it == '.' } == 1
+                    ) {
+                        displayHost = "www.${parsed.hostNoWww}"
+                        targetAuthority = parsed.authority
+                    } else {
+                        displayHost = parsed.authority
+                        targetAuthority = parsed.authority
+                    }
+                }
+                typedHasMobilePrefix -> {
+                    displayHost = parsed.hostNoWww
+                    targetAuthority = parsed.authority
+                }
+                else -> {
+                    displayHost = parsed.hostNoMobile
+                    targetAuthority = if (parsed.hostNoMobile != parsed.hostNoWww) {
+                        parsed.hostNoMobile
+                    } else {
+                        parsed.authority
+                    }
+                }
+            }
 
             val completedDisplay: String
             val targetUrl: String
@@ -468,7 +668,7 @@ object OmniboxEngine {
                 if (!completedDisplay.startsWith(typedLower) || completedDisplay.length <= typedLower.length) {
                     continue
                 }
-                targetUrl = "$effectiveScheme://${parsed.authority}/"
+                targetUrl = "$effectiveScheme://$targetAuthority/"
             } else {
                 if (parsed.cleanPath.isEmpty()) continue
                 val fullDisplay = "$displaySchemePrefix$displayHost${parsed.cleanPath}"
@@ -483,7 +683,7 @@ object OmniboxEngine {
                     fullDisplay
                 }
                 val completedPath = completedDisplay.removePrefix("$displaySchemePrefix$displayHost")
-                targetUrl = "$effectiveScheme://${parsed.authority}$completedPath"
+                targetUrl = "$effectiveScheme://$targetAuthority$completedPath"
             }
 
             if (completedDisplay.length <= typedLower.length) continue
@@ -492,7 +692,8 @@ object OmniboxEngine {
 
             val key = completedDisplay.lowercase(Locale.ROOT)
             val existing = grouped[key]
-            val visits = candidate.visitCount.coerceAtLeast(1)
+            val isPersonal = candidate.priority >= PRIORITY_HISTORY
+            val weight = candidate.visitCount.coerceAtLeast(1)
             val isHttps = effectiveScheme == "https"
             if (existing == null) {
                 grouped[key] = ScoredMatch(
@@ -500,8 +701,9 @@ object OmniboxEngine {
                     suffix = suffix,
                     targetUrl = targetUrl,
                     maxPriority = candidate.priority,
-                    totalVisits = visits,
-                    latestVisit = candidate.lastVisitedAt,
+                    personalVisits = if (isPersonal) weight else 0,
+                    fallbackScore = if (isPersonal) 0 else weight,
+                    latestVisit = if (isPersonal) candidate.lastVisitedAt else 0L,
                     preferHttps = isHttps
                 )
             } else {
@@ -515,17 +717,22 @@ object OmniboxEngine {
                     existing.suffix = suffix
                     existing.preferHttps = isHttps
                 }
-                existing.totalVisits += visits
-                if (candidate.lastVisitedAt > existing.latestVisit) {
-                    existing.latestVisit = candidate.lastVisitedAt
+                if (isPersonal) {
+                    existing.personalVisits += weight
+                    if (candidate.lastVisitedAt > existing.latestVisit) {
+                        existing.latestVisit = candidate.lastVisitedAt
+                    }
+                } else if (weight > existing.fallbackScore) {
+                    existing.fallbackScore = weight
                 }
             }
         }
 
         val best = grouped.values.maxWithOrNull(
             compareBy<ScoredMatch> { it.maxPriority }
-                .thenBy { it.totalVisits }
+                .thenBy { it.personalVisits }
                 .thenBy { it.latestVisit }
+                .thenBy { it.fallbackScore }
                 .thenByDescending { it.displayKey.length }
         ) ?: return null
 
@@ -700,15 +907,76 @@ object OmniboxEngine {
         return false
     }
 
-    suspend fun fetchLiveSuggestions(
+    /**
+     * Parses OpenSearch JSON arrays (`[query, [suggestions...]]`) and Google `client=chrome`
+     * payloads (which include `google:suggesttype` = `"NAVIGATION"` and `google:suggestrelevance`).
+     */
+    fun parseLiveSuggestionsResponse(body: String): LiveSuggestionsResult {
+        if (body.isBlank()) return LiveSuggestionsResult()
+        return runCatching {
+            val root = json.parseToJsonElement(body).jsonArray
+            if (root.size < 2 || root[1] !is JsonArray) return LiveSuggestionsResult()
+            val items = root[1].jsonArray
+            val descriptions = root.getOrNull(2) as? JsonArray
+            val metadata = root.getOrNull(4) as? JsonObject
+            val suggestTypes = metadata?.get("google:suggesttype") as? JsonArray
+            val relevances = metadata?.get("google:suggestrelevance") as? JsonArray
+
+            val navHits = mutableListOf<NavigationalSuggestion>()
+            val seenNavUrls = HashSet<String>()
+            val queries = mutableListOf<String>()
+            val seenQueries = HashSet<String>()
+
+            for (i in items.indices) {
+                val rawText = (items[i] as? JsonPrimitive)?.contentOrNull?.trim().orEmpty()
+                if (rawText.isEmpty()) continue
+                val type = (suggestTypes?.getOrNull(i) as? JsonPrimitive)?.contentOrNull
+                if (type.equals("NAVIGATION", ignoreCase = true)) {
+                    val parsed = parseCandidateUrl(rawText) ?: continue
+                    val bareHost = extractHostOnlyFromAuthority(parsed.hostNoWww)
+                    if (isLocalHostOrLan(bareHost)) continue
+                    val effectiveScheme = if (parsed.scheme == "http" && !parsed.authority.contains(':')) {
+                        "https"
+                    } else {
+                        parsed.scheme
+                    }
+                    val path = parsed.cleanPath.ifEmpty { "/" }
+                    val normalizedUrl = "$effectiveScheme://${parsed.authority}$path"
+                    if (seenNavUrls.add(normalizedUrl.lowercase(Locale.ROOT))) {
+                        val desc = (descriptions?.getOrNull(i) as? JsonPrimitive)?.contentOrNull?.trim().orEmpty()
+                        val relevance = (relevances?.getOrNull(i) as? JsonPrimitive)?.intOrNull ?: 0
+                        navHits += NavigationalSuggestion(
+                            url = normalizedUrl,
+                            displayHost = parsed.hostNoWww,
+                            title = desc.ifBlank { parsed.hostNoWww },
+                            relevance = relevance
+                        )
+                    }
+                } else if (queries.size < 5) {
+                    if (seenQueries.add(rawText.lowercase(Locale.ROOT))) {
+                        queries += rawText
+                    }
+                }
+            }
+
+            LiveSuggestionsResult(
+                navigationalHits = navHits
+                    .sortedByDescending { it.relevance }
+                    .take(2),
+                searchQueries = queries
+            )
+        }.getOrDefault(LiveSuggestionsResult())
+    }
+
+    suspend fun fetchLiveSuggestionsResult(
         query: String,
         settings: BrowserSettings
-    ): List<String> = withContext(Dispatchers.IO) {
+    ): LiveSuggestionsResult = withContext(Dispatchers.IO) {
         val trimmed = query.trim()
-        if (trimmed.length < 2 || !settings.searchSuggestionsEnabled) return@withContext emptyList()
-        if (looksLikeUrl(trimmed) || detectBang(trimmed) != null) return@withContext emptyList()
+        if (trimmed.length < 2 || !settings.searchSuggestionsEnabled) return@withContext LiveSuggestionsResult()
+        if (looksLikeUrl(trimmed) || detectBang(trimmed) != null) return@withContext LiveSuggestionsResult()
 
-        val template = settings.searchEngine.suggestUrlTemplate ?: return@withContext emptyList()
+        val template = settings.searchEngine.suggestUrlTemplate ?: return@withContext LiveSuggestionsResult()
         val encoded = URLEncoder.encode(trimmed, StandardCharsets.UTF_8.name())
         val requestUrl = template.replace("%s", encoded)
 
@@ -721,22 +989,14 @@ object OmniboxEngine {
         val cancelHandle = coroutineContext[Job]?.invokeOnCompletion { call.cancel() }
         try {
             call.execute().use { response ->
-                if (!response.isSuccessful) return@use emptyList()
+                if (!response.isSuccessful) return@use LiveSuggestionsResult()
                 val body = readBoundedBody(response.body, MAX_SUGGESTION_BYTES)
-                val root = json.parseToJsonElement(body).jsonArray
-                if (root.size >= 2 && root[1] is JsonArray) {
-                    root[1].jsonArray
-                        .mapNotNull { runCatching { it.jsonPrimitive.content }.getOrNull() }
-                        .filter { it.isNotBlank() }
-                        .take(5)
-                } else {
-                    emptyList()
-                }
+                parseLiveSuggestionsResponse(body)
             }
         } catch (e: CancellationException) {
             throw e
         } catch (_: Throwable) {
-            emptyList()
+            LiveSuggestionsResult()
         } finally {
             cancelHandle?.dispose()
         }

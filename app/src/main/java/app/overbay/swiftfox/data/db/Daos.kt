@@ -61,6 +61,9 @@ interface TabDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(tab: TabEntity)
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAll(tabs: List<TabEntity>)
+
     @Query("UPDATE tabs SET spaceId = :newSpaceId WHERE spaceId = :oldSpaceId AND isPrivate = 0")
     suspend fun reassignSpace(oldSpaceId: String, newSpaceId: String)
 
@@ -284,8 +287,17 @@ interface ZenPinnedItemDao {
     @Query("SELECT * FROM zen_pinned_items ORDER BY sortOrder ASC")
     fun observeAll(): Flow<List<ZenPinnedItemEntity>>
 
+    @Query("SELECT * FROM zen_pinned_items ORDER BY sortOrder ASC")
+    suspend fun getAll(): List<ZenPinnedItemEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(item: ZenPinnedItemEntity)
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAll(items: List<ZenPinnedItemEntity>)
+
+    @Query("DELETE FROM zen_pinned_items WHERE id = :id")
+    suspend fun deleteById(id: String)
 
     @Query("DELETE FROM zen_pinned_items WHERE spaceId = :spaceId")
     suspend fun deleteBySpace(spaceId: String)

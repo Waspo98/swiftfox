@@ -25,7 +25,8 @@ data class EssentialEntity(
     val domain: String,
     val sortOrder: Int = 0,
     val syncGuid: String? = null,
-    val zenContainerGuid: String? = null
+    val zenContainerGuid: String? = null,
+    val customIcon: String? = null
 )
 
 @Entity(tableName = "tabs")
@@ -38,7 +39,9 @@ data class TabEntity(
     val isPinned: Boolean = false,
     val siteModeOverride: String? = null,
     val lastAccessedAt: Long = System.currentTimeMillis(),
-    val sortOrder: Int = 0
+    val sortOrder: Int = 0,
+    val customIcon: String? = null,
+    val customTitle: String? = null
 )
 
 @Entity(tableName = "bookmarks")
@@ -164,5 +167,6 @@ data class ZenPinnedItemEntity(
     val url: String,
     val folderName: String? = null,
     val isPinned: Boolean = true,
-    val sortOrder: Int = 0
+    val sortOrder: Int = 0,
+    val customIcon: String? = null
 )

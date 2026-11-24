@@ -26,7 +26,7 @@ import kotlinx.coroutines.sync.withLock
         SyncedRemoteTabEntity::class,
         ZenPinnedItemEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = true
 )
 abstract class SwiftfoxDatabase : RoomDatabase() {
@@ -270,6 +270,15 @@ abstract class SwiftfoxDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_3_4: Migration = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `essentials` ADD COLUMN `customIcon` TEXT")
+                db.execSQL("ALTER TABLE `tabs` ADD COLUMN `customIcon` TEXT")
+                db.execSQL("ALTER TABLE `tabs` ADD COLUMN `customTitle` TEXT")
+                db.execSQL("ALTER TABLE `zen_pinned_items` ADD COLUMN `customIcon` TEXT")
+            }
+        }
+
         @Volatile
         private var instance: SwiftfoxDatabase? = null
 
@@ -279,7 +288,7 @@ abstract class SwiftfoxDatabase : RoomDatabase() {
                     context.applicationContext,
                     SwiftfoxDatabase::class.java,
                     "swiftfox.db"
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                     .fallbackToDestructiveMigrationOnDowngrade(dropAllTables = true)
                     .build()
                     .also { instance = it }

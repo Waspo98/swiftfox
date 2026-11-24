@@ -2,6 +2,7 @@ package app.overbay.swiftfox.ui.browser
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -48,7 +49,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -57,11 +64,14 @@ import androidx.compose.ui.unit.dp
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
 import app.overbay.swiftfox.features.omnibox.OmniboxSuggestion
 import app.overbay.swiftfox.features.omnibox.SuggestionKind
+import app.overbay.swiftfox.ui.components.SiteIconBadge
 import kotlinx.coroutines.flow.distinctUntilChanged
 
 @Composable
 fun OmniboxOverlay(
     isVisible: Boolean = true,
+    expandProgress: Float = 1f,
+    sourceRect: Rect? = null,
     query: String,
     searchEngineLabel: String,
     suggestions: List<OmniboxSuggestion>,
@@ -71,7 +81,10 @@ fun OmniboxOverlay(
     onDismiss: () -> Unit
 ) {
     val focusRequester = remember { FocusRequester() }
+    val focusManager = LocalFocusManager.current
+    val density = LocalDensity.current
     val quickBangs = remember { OmniboxEngine.bangs.take(7) }
+    var targetPillRect by remember { mutableStateOf<Rect?>(null) }
 
     // TextFieldState owns the IME buffer synchronously so fast typing bursts never race with
     // parent recompositions or drop characters; select-all on initial open or rapid reopen.
@@ -113,13 +126,27 @@ fun OmniboxOverlay(
                 lastSyncedExternalQuery = query
             }
             focusRequester.requestFocus()
+        } else {
+            focusManager.clearFocus(force = true)
         }
     }
 
-    Surface(
-        modifier = Modifier.fillMaxSize(),
-        color = MaterialTheme.colorScheme.background
-    ) {
+    val p = expandProgress.coerceIn(0f, 1f)
+    val backdropAlpha = (p * 1.35f).coerceIn(0f, 1f)
+    val backButtonAlpha = ((p - 0.18f) / 0.82f).coerceIn(0f, 1f)
+    val bodyProgress = ((p - 0.14f) / 0.86f).coerceIn(0f, 1f)
+    val bodySlidePx = with(density) { 26.dp.toPx() } * (1f - bodyProgress)
+    val fallbackSlidePx = with(density) { 18.dp.toPx() } * (1f - p)
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        // Animated full-screen backdrop surface
+        Surface(
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer { alpha = backdropAlpha },
+            color = MaterialTheme.colorScheme.background
+        ) {}
+
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -127,7 +154,7 @@ fun OmniboxOverlay(
                 .navigationBarsPadding()
                 .imePadding()
         ) {
-            // Focused omnibox pill with Fox Amber focus ring
+            // Focused omnibox pill morphing directly from tapped search bar bounds into Fox Amber focus ring
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -137,7 +164,12 @@ fun OmniboxOverlay(
             ) {
                 IconButton(
                     onClick = onDismiss,
-                    modifier = Modifier.size(48.dp)
+                    modifier = Modifier
+                        .size(48.dp)
+                        .graphicsLayer {
+                            alpha = backButtonAlpha
+                            translationX = -14f * (1f - backButtonAlpha)
+                        }
                 ) {
                     Icon(
                         imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
@@ -148,10 +180,40 @@ fun OmniboxOverlay(
                 Surface(
                     shape = RoundedCornerShape(28.dp),
                     color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    border = BorderStroke(2.dp, MaterialTheme.colorScheme.primary),
+                    border = BorderStroke(
+                        width = (1f + p).dp,
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.45f + 0.55f * p)
+                    ),
                     modifier = Modifier
                         .weight(1f)
                         .heightIn(min = 52.dp)
+                        .onGloballyPositioned { coords ->
+                            if (coords.isAttached) {
+                                val r = coords.boundsInRoot()
+                                if (r.width > 0f && r.height > 0f) {
+                                    targetPillRect = r
+                                }
+                            }
+                        }
+                        .graphicsLayer {
+                            val src = sourceRect
+                            val dst = targetPillRect
+                            if (src != null && dst != null && dst.width > 0f && dst.height > 0f) {
+                                val inv = 1f - p
+                                translationX = (src.center.x - dst.center.x) * inv
+                                translationY = (src.center.y - dst.center.y) * inv
+                                val sx = (src.width / dst.width).coerceIn(0.45f, 1.25f)
+                                val sy = (src.height / dst.height).coerceIn(0.75f, 1.35f)
+                                scaleX = sx + (1f - sx) * p
+                                scaleY = sy + (1f - sy) * p
+                            } else {
+                                translationY = -fallbackSlidePx
+                                val s = 0.94f + 0.06f * p
+                                scaleX = s
+                                scaleY = s
+                                alpha = (p * 1.4f).coerceIn(0f, 1f)
+                            }
+                        }
                 ) {
                     Row(
                         modifier = Modifier
@@ -233,67 +295,78 @@ fun OmniboxOverlay(
                 }
             }
 
-            // Quick Bang shortcuts bar
-            LazyRow(
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            // Quick Bangs + Suggestions glide cleanly into place underneath the expanding search bar
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .graphicsLayer {
+                        alpha = bodyProgress
+                        translationY = bodySlidePx
+                    }
             ) {
-                items(
-                    items = quickBangs,
-                    key = { it.name },
-                    contentType = { "bang_shortcut" }
-                ) { bang ->
-                    Surface(
-                        onClick = {
-                            val bangPrefix = "${bang.triggers.first()} "
-                            textFieldState.setTextAndPlaceCursorAtEnd(bangPrefix)
-                            lastSyncedExternalQuery = bangPrefix
-                            onQueryChange(bangPrefix)
-                        },
-                        shape = RoundedCornerShape(16.dp),
-                        color = MaterialTheme.colorScheme.surfaceContainer,
-                        border = BorderStroke(
-                            1.dp,
-                            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
-                        ),
-                        modifier = Modifier.heightIn(min = 48.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                // Quick Bang shortcuts bar
+                LazyRow(
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(
+                        items = quickBangs,
+                        key = { it.name },
+                        contentType = { "bang_shortcut" }
+                    ) { bang ->
+                        Surface(
+                            onClick = {
+                                val bangPrefix = "${bang.triggers.first()} "
+                                textFieldState.setTextAndPlaceCursorAtEnd(bangPrefix)
+                                lastSyncedExternalQuery = bangPrefix
+                                onQueryChange(bangPrefix)
+                            },
+                            shape = RoundedCornerShape(16.dp),
+                            color = MaterialTheme.colorScheme.surfaceContainer,
+                            border = BorderStroke(
+                                1.dp,
+                                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                            ),
+                            modifier = Modifier.heightIn(min = 48.dp)
                         ) {
-                            Text(
-                                text = bang.triggers.first(),
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                            Text(
-                                text = bang.name,
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                            Row(
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text(
+                                    text = bang.triggers.first(),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Text(
+                                    text = bang.name,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
                     }
                 }
-            }
 
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
 
-            // Ranked suggestions
-            LazyColumn(
-                modifier = Modifier.weight(1f),
-                contentPadding = PaddingValues(vertical = 8.dp)
-            ) {
-                items(
-                    items = suggestions,
-                    key = { it.id },
-                    contentType = { it.kind }
-                ) { suggestion ->
-                    SuggestionRow(
-                        suggestion = suggestion,
-                        onClick = { onSelectSuggestion(suggestion) }
-                    )
+                // Ranked suggestions with web favicons
+                LazyColumn(
+                    modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(vertical = 8.dp)
+                ) {
+                    items(
+                        items = suggestions,
+                        key = { it.id },
+                        contentType = { it.kind }
+                    ) { suggestion ->
+                        SuggestionRow(
+                            suggestion = suggestion,
+                            onClick = { onSelectSuggestion(suggestion) }
+                        )
+                    }
                 }
             }
         }
@@ -305,7 +378,7 @@ private fun SuggestionRow(
     suggestion: OmniboxSuggestion,
     onClick: () -> Unit
 ) {
-    val icon = when (suggestion.kind) {
+    val fallbackIcon = when (suggestion.kind) {
         SuggestionKind.OPEN_TAB -> Icons.Rounded.Tab
         SuggestionKind.BOOKMARK -> Icons.Rounded.Bookmark
         SuggestionKind.HISTORY -> Icons.Rounded.History
@@ -313,6 +386,9 @@ private fun SuggestionRow(
         SuggestionKind.DIRECT_URL -> Icons.Rounded.Public
         SuggestionKind.SEARCH -> Icons.Rounded.Search
     }
+    val useSiteFavicon = suggestion.kind == SuggestionKind.OPEN_TAB ||
+        suggestion.kind == SuggestionKind.BOOKMARK ||
+        suggestion.kind == SuggestionKind.HISTORY
 
     Surface(
         onClick = onClick,
@@ -328,25 +404,47 @@ private fun SuggestionRow(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = if (suggestion.kind == SuggestionKind.OPEN_TAB || suggestion.kind == SuggestionKind.BANG) {
-                    MaterialTheme.colorScheme.primaryContainer
-                } else {
-                    MaterialTheme.colorScheme.surfaceContainerHigh
-                },
-                modifier = Modifier.size(36.dp)
-            ) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = null,
-                    tint = if (suggestion.kind == SuggestionKind.OPEN_TAB || suggestion.kind == SuggestionKind.BANG) {
+            if (useSiteFavicon) {
+                SiteIconBadge(
+                    url = suggestion.targetUrl,
+                    fallbackLabel = suggestion.title,
+                    size = 36.dp,
+                    iconSize = 20.dp,
+                    shape = RoundedCornerShape(12.dp),
+                    containerColor = if (suggestion.kind == SuggestionKind.OPEN_TAB) {
+                        MaterialTheme.colorScheme.primaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.surfaceContainerHigh
+                    },
+                    tint = if (suggestion.kind == SuggestionKind.OPEN_TAB) {
                         MaterialTheme.colorScheme.primary
                     } else {
                         MaterialTheme.colorScheme.onSurfaceVariant
                     },
-                    modifier = Modifier.padding(8.dp)
+                    fallbackVector = fallbackIcon,
+                    fillImageToContainer = true
                 )
+            } else {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = if (suggestion.kind == SuggestionKind.BANG) {
+                        MaterialTheme.colorScheme.primaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.surfaceContainerHigh
+                    },
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(
+                        imageVector = fallbackIcon,
+                        contentDescription = null,
+                        tint = if (suggestion.kind == SuggestionKind.BANG) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        modifier = Modifier.padding(8.dp)
+                    )
+                }
             }
 
             Column(modifier = Modifier.weight(1f)) {

@@ -1,5 +1,6 @@
 package app.overbay.swiftfox.ui.tabs
 
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
@@ -44,10 +45,16 @@ import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.ChevronLeft
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.DesktopWindows
+import androidx.compose.material.icons.rounded.DragIndicator
+import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.PushPin
 import androidx.compose.material.icons.rounded.Shield
+import androidx.compose.material.icons.rounded.StarOutline
+import androidx.compose.material.icons.rounded.SwapVert
 import androidx.compose.material.icons.rounded.Tab
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -56,6 +63,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -73,15 +81,34 @@ import app.overbay.swiftfox.data.db.EssentialEntity
 import app.overbay.swiftfox.data.db.SpaceEntity
 import app.overbay.swiftfox.data.db.ZenPinnedItemEntity
 import app.overbay.swiftfox.data.prefs.SiteMode
+import app.overbay.swiftfox.features.omnibox.OmniboxEngine
 import app.overbay.swiftfox.ui.browser.BrowserTabUi
 import app.overbay.swiftfox.ui.browser.BrowserUiState
 import app.overbay.swiftfox.ui.browser.EmphasizedDecelerateEasing
+import app.overbay.swiftfox.ui.components.CustomIconPickerSheet
+import app.overbay.swiftfox.ui.components.DragAxis
+import app.overbay.swiftfox.ui.components.EditTitleAndUrlDialog
+import app.overbay.swiftfox.ui.components.ItemActionBottomSheet
+import app.overbay.swiftfox.ui.components.RenameSpaceDialog
+import app.overbay.swiftfox.ui.components.ReorderModeBanner
+import app.overbay.swiftfox.ui.components.SheetActionItem
+import app.overbay.swiftfox.ui.components.SiteIconBadge
+import app.overbay.swiftfox.ui.components.SpaceIconGlyph
+import app.overbay.swiftfox.ui.components.dragReorderItem
+import app.overbay.swiftfox.ui.components.rememberDragReorderController
 import app.overbay.swiftfox.ui.theme.LocalSwiftfoxColors
 import app.overbay.swiftfox.ui.theme.SwiftfoxEmblem
 import app.overbay.swiftfox.ui.theme.SwiftfoxEmblemVariant
-import app.overbay.swiftfox.ui.theme.firstDisplaySymbol
 import app.overbay.swiftfox.ui.theme.rememberReduceMotion
-import app.overbay.swiftfox.ui.theme.spaceIconFor
+
+private enum class SidebarReorderMode {
+    NONE,
+    SPACES,
+    ESSENTIALS,
+    PINNED_TABS,
+    ZEN_PINNED,
+    OPEN_TABS
+}
 
 @Composable
 fun ArcSpacesSidebar(
@@ -100,12 +127,39 @@ fun ArcSpacesSidebar(
     onOpenEssential: (String) -> Unit,
     onCreateSpace: (String, String, Boolean) -> Unit,
     onDeleteSpace: (String) -> Unit,
+    itemCallbacks: WorkspaceItemCallbacks = WorkspaceItemCallbacks(onDeleteSpace = onDeleteSpace),
     modifier: Modifier = Modifier
 ) {
     var showCreateSpaceDialog by remember { mutableStateOf(false) }
+    var reorderMode by remember { mutableStateOf(SidebarReorderMode.NONE) }
+
+    // Active action-sheet & dialog targets
+    var actionSpace by remember { mutableStateOf<SpaceEntity?>(null) }
+    var spaceToRename by remember { mutableStateOf<SpaceEntity?>(null) }
+    var spaceToPickIcon by remember { mutableStateOf<SpaceEntity?>(null) }
     var spaceToDelete by remember { mutableStateOf<SpaceEntity?>(null) }
+
+    var actionEssential by remember { mutableStateOf<EssentialEntity?>(null) }
+    var essentialToEdit by remember { mutableStateOf<EssentialEntity?>(null) }
+    var essentialToPickIcon by remember { mutableStateOf<EssentialEntity?>(null) }
+
+    var actionTab by remember { mutableStateOf<BrowserTabUi?>(null) }
+    var tabToEdit by remember { mutableStateOf<BrowserTabUi?>(null) }
+    var tabToPickIcon by remember { mutableStateOf<BrowserTabUi?>(null) }
+
+    var actionZenPinned by remember { mutableStateOf<ZenPinnedItemEntity?>(null) }
+    var zenPinnedToEdit by remember { mutableStateOf<ZenPinnedItemEntity?>(null) }
+    var zenPinnedToPickIcon by remember { mutableStateOf<ZenPinnedItemEntity?>(null) }
+
     val reduceMotion = rememberReduceMotion()
     val isEffectiveExpanded = isOverlayDrawer || expanded
+
+    // Exit reorder mode cleanly if the sidebar collapses or switches private/space view
+    LaunchedEffect(isEffectiveExpanded, state.isPrivateView, state.activeSpaceId) {
+        if (!isEffectiveExpanded && reorderMode != SidebarReorderMode.SPACES && reorderMode != SidebarReorderMode.OPEN_TABS) {
+            reorderMode = SidebarReorderMode.NONE
+        }
+    }
 
     val expandedWidth = if (state.windowState.windowWidthDp < 780) 232.dp else 264.dp
     val targetWidth = if (expanded) expandedWidth else 72.dp
@@ -153,50 +207,68 @@ fun ArcSpacesSidebar(
                 .wrapContentWidth(align = Alignment.Start, unbounded = true)
                 .width(contentTargetWidth)
         }
-        Column(
-            modifier = innerColumnModifier
-                .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.Start))
-                .statusBarsPadding()
-                .then(if (!bottomBarPresent) Modifier.navigationBarsPadding() else Modifier)
-                .padding(
-                    horizontal = when {
-                        isOverlayDrawer -> 14.dp
-                        isEffectiveExpanded -> 12.dp
-                        else -> 8.dp
-                    },
-                    vertical = if (isOverlayDrawer) 12.dp else 10.dp
-                ),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            if (isEffectiveExpanded) {
-                ArcExpandedSidebarContent(
-                    state = state,
-                    isOverlayDrawer = isOverlayDrawer,
-                    onToggleExpanded = onToggleExpanded,
-                    onCloseDrawer = onCloseDrawer,
-                    onSelectSpace = onSelectSpace,
-                    onTogglePrivate = onTogglePrivate,
-                    onSelectTab = onSelectTab,
-                    onCloseTab = onCloseTab,
-                    onCreateTab = onCreateTab,
-                    onCreatePrivateTab = onCreatePrivateTab,
-                    onOpenEssential = onOpenEssential,
-                    onRequestCreateSpace = { showCreateSpaceDialog = true },
-                    onRequestDeleteSpace = { spaceToDelete = it }
-                )
-            } else {
-                ArcCollapsedSidebarRail(
-                    state = state,
-                    onToggleExpanded = onToggleExpanded,
-                    onSelectSpace = onSelectSpace,
-                    onTogglePrivate = onTogglePrivate,
-                    onSelectTab = onSelectTab,
-                    onCreateTab = onCreateTab,
-                    onCreatePrivateTab = onCreatePrivateTab
-                )
+        Crossfade(
+            targetState = isEffectiveExpanded,
+            animationSpec = if (reduceMotion) snap() else tween(200),
+            modifier = innerColumnModifier,
+            label = "arc_sidebar_mode_crossfade"
+        ) { showExpanded ->
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.Start))
+                    .statusBarsPadding()
+                    .then(if (!bottomBarPresent) Modifier.navigationBarsPadding() else Modifier)
+                    .padding(
+                        horizontal = when {
+                            isOverlayDrawer -> 14.dp
+                            showExpanded -> 12.dp
+                            else -> 8.dp
+                        },
+                        vertical = if (isOverlayDrawer) 12.dp else 10.dp
+                    ),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                if (showExpanded) {
+                    ArcExpandedSidebarContent(
+                        state = state,
+                        isOverlayDrawer = isOverlayDrawer,
+                        reorderMode = reorderMode,
+                        onExitReorderMode = { reorderMode = SidebarReorderMode.NONE },
+                        onToggleExpanded = onToggleExpanded,
+                        onCloseDrawer = onCloseDrawer,
+                        onSelectSpace = onSelectSpace,
+                        onTogglePrivate = onTogglePrivate,
+                        onSelectTab = onSelectTab,
+                        onCloseTab = onCloseTab,
+                        onCreateTab = onCreateTab,
+                        onCreatePrivateTab = onCreatePrivateTab,
+                        onOpenEssential = onOpenEssential,
+                        onRequestCreateSpace = { showCreateSpaceDialog = true },
+                        onLongPressSpace = { actionSpace = it },
+                        onLongPressEssential = { actionEssential = it },
+                        onLongPressTab = { actionTab = it },
+                        onLongPressZenPinned = { actionZenPinned = it },
+                        itemCallbacks = itemCallbacks
+                    )
+                } else {
+                    ArcCollapsedSidebarRail(
+                        state = state,
+                        onToggleExpanded = onToggleExpanded,
+                        onSelectSpace = onSelectSpace,
+                        onTogglePrivate = onTogglePrivate,
+                        onSelectTab = onSelectTab,
+                        onCreateTab = onCreateTab,
+                        onCreatePrivateTab = onCreatePrivateTab,
+                        onLongPressSpace = { actionSpace = it },
+                        onLongPressTab = { actionTab = it }
+                    )
+                }
             }
         }
     }
+
+    // --- Dialogs & Action Sheets ---
 
     if (showCreateSpaceDialog) {
         CreateSpaceDialog(
@@ -205,6 +277,77 @@ fun ArcSpacesSidebar(
                 showCreateSpaceDialog = false
                 onCreateSpace(name, iconKey, isolated)
             }
+        )
+    }
+
+    actionSpace?.let { target ->
+        ItemActionBottomSheet(
+            title = target.name,
+            subtitle = if (!target.containerProfileName.isNullOrBlank()) "Isolated container workspace" else "Workspace",
+            leadingIcon = {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    modifier = Modifier.size(40.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        SpaceIconGlyph(
+                            iconKey = target.iconKey,
+                            tint = MaterialTheme.colorScheme.primary,
+                            size = 22.dp
+                        )
+                    }
+                }
+            },
+            actions = listOf(
+                SheetActionItem(
+                    label = "Rename workspace",
+                    icon = Icons.Rounded.Edit,
+                    onClick = { spaceToRename = target }
+                ),
+                SheetActionItem(
+                    label = "Change icon",
+                    icon = Icons.Rounded.Palette,
+                    onClick = { spaceToPickIcon = target }
+                ),
+                SheetActionItem(
+                    label = "Reorder workspaces",
+                    icon = Icons.Rounded.SwapVert,
+                    enabled = state.spaces.size > 1 && isEffectiveExpanded,
+                    onClick = { reorderMode = SidebarReorderMode.SPACES }
+                ),
+                SheetActionItem(
+                    label = "Delete workspace",
+                    icon = Icons.Rounded.DeleteOutline,
+                    isDestructive = true,
+                    enabled = state.spaces.size > 1,
+                    onClick = { spaceToDelete = target }
+                )
+            ),
+            onDismiss = { actionSpace = null }
+        )
+    }
+
+    spaceToRename?.let { target ->
+        RenameSpaceDialog(
+            initialName = target.name,
+            onDismiss = { spaceToRename = null },
+            onConfirm = { newName ->
+                itemCallbacks.onRenameSpace(target.id, newName)
+                spaceToRename = null
+            }
+        )
+    }
+
+    spaceToPickIcon?.let { target ->
+        CustomIconPickerSheet(
+            title = "Icon for ${target.name}",
+            currentIconSpec = target.iconKey,
+            allowResetToFavicon = false,
+            onSelectIcon = { spec ->
+                if (spec != null) itemCallbacks.onSetSpaceIcon(target.id, spec)
+            },
+            onDismiss = { spaceToPickIcon = null }
         )
     }
 
@@ -218,12 +361,289 @@ fun ArcSpacesSidebar(
             }
         )
     }
+
+    actionEssential?.let { target ->
+        ItemActionBottomSheet(
+            title = target.title,
+            subtitle = target.domain,
+            leadingIcon = {
+                SiteIconBadge(
+                    url = target.url,
+                    fallbackLabel = target.title,
+                    customIcon = target.customIcon,
+                    size = 40.dp,
+                    iconSize = 24.dp,
+                    shape = RoundedCornerShape(12.dp),
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    fillImageToContainer = true
+                )
+            },
+            actions = listOf(
+                SheetActionItem(
+                    label = "Edit title & URL",
+                    icon = Icons.Rounded.Edit,
+                    onClick = { essentialToEdit = target }
+                ),
+                SheetActionItem(
+                    label = "Set custom icon",
+                    icon = Icons.Rounded.Palette,
+                    onClick = { essentialToPickIcon = target }
+                ),
+                SheetActionItem(
+                    label = "Reorder essentials",
+                    icon = Icons.Rounded.SwapVert,
+                    enabled = state.activeSpaceEssentials.size > 1,
+                    onClick = { reorderMode = SidebarReorderMode.ESSENTIALS }
+                ),
+                SheetActionItem(
+                    label = "Delete",
+                    icon = Icons.Rounded.DeleteOutline,
+                    isDestructive = true,
+                    onClick = { itemCallbacks.onRemoveEssential(target.id) }
+                )
+            ),
+            onDismiss = { actionEssential = null }
+        )
+    }
+
+    essentialToEdit?.let { target ->
+        EditTitleAndUrlDialog(
+            dialogTitle = "Edit Essential",
+            initialTitle = target.title,
+            initialUrl = target.url,
+            onDismiss = { essentialToEdit = null },
+            onConfirm = { title, url ->
+                itemCallbacks.onUpdateEssential(target.id, title, url)
+                essentialToEdit = null
+            }
+        )
+    }
+
+    essentialToPickIcon?.let { target ->
+        CustomIconPickerSheet(
+            title = "Icon for ${target.title}",
+            currentIconSpec = target.customIcon,
+            allowResetToFavicon = true,
+            previewUrl = target.url,
+            previewLabel = target.title,
+            onSelectIcon = { spec ->
+                itemCallbacks.onSetEssentialCustomIcon(target.id, spec)
+            },
+            onDismiss = { essentialToPickIcon = null }
+        )
+    }
+
+    actionTab?.let { target ->
+        val isPrivate = target.isPrivate
+        val tabActions = buildList {
+            if (!isPrivate) {
+                add(
+                    SheetActionItem(
+                        label = if (target.isPinned) "Unpin tab" else "Pin tab",
+                        icon = Icons.Rounded.PushPin,
+                        onClick = { itemCallbacks.onSetTabPinned(target.id, !target.isPinned) }
+                    )
+                )
+                if (!target.isStartPage) {
+                    add(
+                        SheetActionItem(
+                            label = "Add to Essentials",
+                            icon = Icons.Rounded.StarOutline,
+                            onClick = { itemCallbacks.onAddTabToEssentials(target.id) }
+                        )
+                    )
+                }
+                add(
+                    SheetActionItem(
+                        label = if (target.isPinned) "Edit pinned URL & label" else "Edit tab URL & label",
+                        icon = Icons.Rounded.Edit,
+                        onClick = { tabToEdit = target }
+                    )
+                )
+                add(
+                    SheetActionItem(
+                        label = "Set custom icon",
+                        icon = Icons.Rounded.Palette,
+                        onClick = { tabToPickIcon = target }
+                    )
+                )
+            }
+            val groupSize = if (target.isPinned && !isPrivate) {
+                state.visiblePinnedTabs.size
+            } else {
+                state.visibleRegularTabs.size
+            }
+            if (isEffectiveExpanded) {
+                add(
+                    SheetActionItem(
+                        label = if (target.isPinned) "Reorder pinned tabs" else "Reorder tabs",
+                        icon = Icons.Rounded.SwapVert,
+                        enabled = groupSize > 1,
+                        onClick = {
+                            reorderMode = if (target.isPinned && !isPrivate) {
+                                SidebarReorderMode.PINNED_TABS
+                            } else {
+                                SidebarReorderMode.OPEN_TABS
+                            }
+                        }
+                    )
+                )
+            }
+            add(
+                SheetActionItem(
+                    label = if (target.isPinned) "Close & delete pinned tab" else "Close tab",
+                    icon = Icons.Rounded.DeleteOutline,
+                    isDestructive = true,
+                    onClick = { onCloseTab(target.id) }
+                )
+            )
+        }
+        ItemActionBottomSheet(
+            title = target.displayTitle,
+            subtitle = target.displayHost.ifBlank { "Start Page" },
+            leadingIcon = {
+                if (target.isStartPage && target.customIcon == null) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        modifier = Modifier.size(40.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            SwiftfoxEmblem(
+                                size = 22.dp,
+                                variant = if (isPrivate) SwiftfoxEmblemVariant.PURPLE else SwiftfoxEmblemVariant.ORANGE
+                            )
+                        }
+                    }
+                } else {
+                    SiteIconBadge(
+                        url = target.url,
+                        fallbackLabel = target.displayHost.ifBlank { target.displayTitle },
+                        customIcon = if (isPrivate) null else target.customIcon,
+                        privateTabId = if (isPrivate) target.id else null,
+                        size = 40.dp,
+                        iconSize = 24.dp,
+                        shape = RoundedCornerShape(12.dp),
+                        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        fillImageToContainer = true
+                    )
+                }
+            },
+            actions = tabActions,
+            onDismiss = { actionTab = null }
+        )
+    }
+
+    tabToEdit?.let { target ->
+        EditTitleAndUrlDialog(
+            dialogTitle = if (target.isPinned) "Edit Pinned Tab" else "Edit Tab",
+            initialTitle = target.displayTitle,
+            initialUrl = if (target.isStartPage) "" else target.url,
+            onDismiss = { tabToEdit = null },
+            onConfirm = { title, url ->
+                itemCallbacks.onEditTabTitleAndUrl(target.id, title, url)
+                tabToEdit = null
+            }
+        )
+    }
+
+    tabToPickIcon?.let { target ->
+        CustomIconPickerSheet(
+            title = "Icon for ${target.displayTitle}",
+            currentIconSpec = target.customIcon,
+            allowResetToFavicon = true,
+            previewUrl = target.url,
+            previewLabel = target.displayHost.ifBlank { target.displayTitle },
+            onSelectIcon = { spec ->
+                itemCallbacks.onSetTabCustomIcon(target.id, spec)
+            },
+            onDismiss = { tabToPickIcon = null }
+        )
+    }
+
+    actionZenPinned?.let { target ->
+        ItemActionBottomSheet(
+            title = target.title,
+            subtitle = OmniboxEngine.extractHost(target.url).ifBlank { target.url },
+            leadingIcon = {
+                SiteIconBadge(
+                    url = target.url,
+                    fallbackLabel = target.title,
+                    customIcon = target.customIcon,
+                    size = 40.dp,
+                    iconSize = 24.dp,
+                    shape = RoundedCornerShape(12.dp),
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    fillImageToContainer = true
+                )
+            },
+            actions = listOf(
+                SheetActionItem(
+                    label = "Edit title & URL",
+                    icon = Icons.Rounded.Edit,
+                    onClick = { zenPinnedToEdit = target }
+                ),
+                SheetActionItem(
+                    label = "Set custom icon",
+                    icon = Icons.Rounded.Palette,
+                    onClick = { zenPinnedToPickIcon = target }
+                ),
+                SheetActionItem(
+                    label = "Add to Essentials",
+                    icon = Icons.Rounded.StarOutline,
+                    onClick = { itemCallbacks.onAddZenPinnedToEssentials(target.id) }
+                ),
+                SheetActionItem(
+                    label = "Reorder synced pinned",
+                    icon = Icons.Rounded.SwapVert,
+                    enabled = state.activeSpaceZenPinned.size > 1,
+                    onClick = { reorderMode = SidebarReorderMode.ZEN_PINNED }
+                ),
+                SheetActionItem(
+                    label = "Delete",
+                    icon = Icons.Rounded.DeleteOutline,
+                    isDestructive = true,
+                    onClick = { itemCallbacks.onDeleteZenPinned(target.id) }
+                )
+            ),
+            onDismiss = { actionZenPinned = null }
+        )
+    }
+
+    zenPinnedToEdit?.let { target ->
+        EditTitleAndUrlDialog(
+            dialogTitle = "Edit Pinned Item",
+            initialTitle = target.title,
+            initialUrl = target.url,
+            onDismiss = { zenPinnedToEdit = null },
+            onConfirm = { title, url ->
+                itemCallbacks.onUpdateZenPinned(target.id, title, url)
+                zenPinnedToEdit = null
+            }
+        )
+    }
+
+    zenPinnedToPickIcon?.let { target ->
+        CustomIconPickerSheet(
+            title = "Icon for ${target.title}",
+            currentIconSpec = target.customIcon,
+            allowResetToFavicon = true,
+            previewUrl = target.url,
+            previewLabel = target.title,
+            onSelectIcon = { spec ->
+                itemCallbacks.onSetZenPinnedCustomIcon(target.id, spec)
+            },
+            onDismiss = { zenPinnedToPickIcon = null }
+        )
+    }
 }
 
 @Composable
 private fun ColumnScope.ArcExpandedSidebarContent(
     state: BrowserUiState,
     isOverlayDrawer: Boolean,
+    reorderMode: SidebarReorderMode,
+    onExitReorderMode: () -> Unit,
     onToggleExpanded: () -> Unit,
     onCloseDrawer: () -> Unit,
     onSelectSpace: (String) -> Unit,
@@ -234,7 +654,11 @@ private fun ColumnScope.ArcExpandedSidebarContent(
     onCreatePrivateTab: () -> Unit,
     onOpenEssential: (String) -> Unit,
     onRequestCreateSpace: () -> Unit,
-    onRequestDeleteSpace: (SpaceEntity) -> Unit
+    onLongPressSpace: (SpaceEntity) -> Unit,
+    onLongPressEssential: (EssentialEntity) -> Unit,
+    onLongPressTab: (BrowserTabUi) -> Unit,
+    onLongPressZenPinned: (ZenPinnedItemEntity) -> Unit,
+    itemCallbacks: WorkspaceItemCallbacks
 ) {
     val foxColors = LocalSwiftfoxColors.current
     val emblemVariant = if (state.isPrivateView) {
@@ -243,6 +667,43 @@ private fun ColumnScope.ArcExpandedSidebarContent(
         SwiftfoxEmblemVariant.ORANGE
     }
     val activeSpace = state.activeSpace
+
+    // Drag-and-drop reorder controllers per section (active only in Reorder Mode)
+    val essentials = state.activeSpaceEssentials
+    val localPinnedTabs = state.visiblePinnedTabs
+    val zenPinned = state.activeSpaceZenPinned
+    val regularTabs = state.visibleRegularTabs
+
+    val spacesReorder = rememberDragReorderController(
+        sourceItems = state.spaces,
+        keyOf = { it.id },
+        axis = DragAxis.HORIZONTAL,
+        onCommitOrder = itemCallbacks.onReorderSpaces
+    )
+    val essentialsReorder = rememberDragReorderController(
+        sourceItems = essentials,
+        keyOf = { it.id },
+        axis = DragAxis.BOTH,
+        onCommitOrder = itemCallbacks.onReorderEssentials
+    )
+    val pinnedTabsReorder = rememberDragReorderController(
+        sourceItems = localPinnedTabs,
+        keyOf = { it.id },
+        axis = DragAxis.VERTICAL,
+        onCommitOrder = { ids -> itemCallbacks.onReorderTabs(ids, true) }
+    )
+    val zenPinnedReorder = rememberDragReorderController(
+        sourceItems = zenPinned,
+        keyOf = { it.id },
+        axis = DragAxis.VERTICAL,
+        onCommitOrder = itemCallbacks.onReorderZenPinned
+    )
+    val openTabsReorder = rememberDragReorderController(
+        sourceItems = regularTabs,
+        keyOf = { it.id },
+        axis = DragAxis.VERTICAL,
+        onCommitOrder = { ids -> itemCallbacks.onReorderTabs(ids, false) }
+    )
 
     // 1. Header: emblem + active Space title + collapse/close button
     Row(
@@ -287,26 +748,49 @@ private fun ColumnScope.ArcExpandedSidebarContent(
         }
     }
 
-    // 2. Scrollable Essentials Grid + Zen pinned items + open tabs + New Tab row
-    // Keeping Essentials inside LazyColumn ensures large Zen-synced grids or landscape viewports
-    // never squeeze the open tabs list or New Tab action out of view.
-    val essentials = state.activeSpaceEssentials
-    val zenPinned = state.activeSpaceZenPinned
+    // Active reorder mode banner for list/grid sections
+    val isVerticalListReordering = reorderMode == SidebarReorderMode.ESSENTIALS ||
+        reorderMode == SidebarReorderMode.PINNED_TABS ||
+        reorderMode == SidebarReorderMode.ZEN_PINNED ||
+        reorderMode == SidebarReorderMode.OPEN_TABS
+    if (isVerticalListReordering) {
+        val bannerText = when (reorderMode) {
+            SidebarReorderMode.ESSENTIALS -> "Drag essentials to reorder"
+            SidebarReorderMode.PINNED_TABS -> "Drag pinned tabs"
+            SidebarReorderMode.ZEN_PINNED -> "Drag synced pinned"
+            SidebarReorderMode.OPEN_TABS -> "Drag tabs to reorder"
+            SidebarReorderMode.SPACES, SidebarReorderMode.NONE -> "Drag to reorder"
+        }
+        ReorderModeBanner(
+            visible = true,
+            label = bannerText,
+            onDone = onExitReorderMode
+        )
+    }
+
+    // 2. Scrollable Essentials icon grid + Pinned Tabs section + Open Tabs + New Tab row
+    val displayedEssentials = if (reorderMode == SidebarReorderMode.ESSENTIALS) essentialsReorder.items.toList() else essentials
+    val displayedPinnedTabs = if (reorderMode == SidebarReorderMode.PINNED_TABS) pinnedTabsReorder.items.toList() else localPinnedTabs
+    val displayedZenPinned = if (reorderMode == SidebarReorderMode.ZEN_PINNED) zenPinnedReorder.items.toList() else zenPinned
+    val displayedRegularTabs = if (reorderMode == SidebarReorderMode.OPEN_TABS) openTabsReorder.items.toList() else regularTabs
+
     LazyColumn(
         modifier = Modifier
             .fillMaxWidth()
             .weight(1f),
+        userScrollEnabled = !isVerticalListReordering,
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        if (!state.isPrivateView && essentials.isNotEmpty()) {
+        if (!state.isPrivateView && displayedEssentials.isNotEmpty()) {
             item(key = "sidebar_essentials_grid", contentType = "sidebar_essentials_grid") {
+                val isReorderingEss = reorderMode == SidebarReorderMode.ESSENTIALS
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(bottom = 4.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    essentials.chunked(4).forEach { rowItems ->
+                    displayedEssentials.chunked(4).forEach { rowItems ->
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -314,8 +798,20 @@ private fun ColumnScope.ArcExpandedSidebarContent(
                             rowItems.forEach { ess ->
                                 SidebarEssentialTile(
                                     essential = ess,
-                                    onClick = { onOpenEssential(ess.url) },
-                                    modifier = Modifier.weight(1f)
+                                    isReorderMode = isReorderingEss,
+                                    onClick = {
+                                        if (!isReorderingEss) onOpenEssential(ess.url)
+                                    },
+                                    onLongClick = {
+                                        if (!isReorderingEss) onLongPressEssential(ess)
+                                    },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .dragReorderItem(
+                                            key = ess.id,
+                                            enabled = isReorderingEss,
+                                            controller = essentialsReorder
+                                        )
                                 )
                             }
                             repeat(4 - rowItems.size) {
@@ -327,8 +823,9 @@ private fun ColumnScope.ArcExpandedSidebarContent(
             }
         }
 
-        if (!state.isPrivateView && zenPinned.isNotEmpty()) {
-            item(key = "zen_pinned_header", contentType = "sidebar_section_header") {
+        // Dedicated Arc/Zen-style Pinned Tabs section (local pinned tabs + Zen synced pinned items)
+        if (!state.isPrivateView && (displayedPinnedTabs.isNotEmpty() || displayedZenPinned.isNotEmpty())) {
+            item(key = "pinned_section_header", contentType = "sidebar_section_header") {
                 Text(
                     text = "Pinned",
                     style = MaterialTheme.typography.labelMedium,
@@ -337,16 +834,49 @@ private fun ColumnScope.ArcExpandedSidebarContent(
                 )
             }
             items(
-                items = zenPinned,
+                items = displayedPinnedTabs,
+                key = { "pinned_${it.id}" },
+                contentType = { "sidebar_pinned_tab_row" }
+            ) { tab ->
+                val isReorderingPinned = reorderMode == SidebarReorderMode.PINNED_TABS
+                SidebarTabRow(
+                    tab = tab,
+                    isActive = tab.id == state.activeTabId,
+                    isPinnedStyle = true,
+                    isReorderMode = isReorderingPinned,
+                    onSelect = { if (!isReorderingPinned) onSelectTab(tab.id) },
+                    onLongPress = { if (!isReorderingPinned) onLongPressTab(tab) },
+                    onClose = { onCloseTab(tab.id) },
+                    modifier = Modifier
+                        .then(if (!isReorderingPinned) Modifier.animateItem() else Modifier)
+                        .dragReorderItem(
+                            key = tab.id,
+                            enabled = isReorderingPinned,
+                            controller = pinnedTabsReorder
+                        )
+                )
+            }
+            items(
+                items = displayedZenPinned,
                 key = { "zen_${it.id}" },
                 contentType = { "sidebar_zen_pinned_row" }
             ) { item ->
+                val isReorderingZen = reorderMode == SidebarReorderMode.ZEN_PINNED
                 SidebarZenPinnedRow(
                     item = item,
-                    onClick = { onOpenEssential(item.url) }
+                    isReorderMode = isReorderingZen,
+                    onClick = { if (!isReorderingZen) onOpenEssential(item.url) },
+                    onLongPress = { if (!isReorderingZen) onLongPressZenPinned(item) },
+                    modifier = Modifier
+                        .then(if (!isReorderingZen) Modifier.animateItem() else Modifier)
+                        .dragReorderItem(
+                            key = item.id,
+                            enabled = isReorderingZen,
+                            controller = zenPinnedReorder
+                        )
                 )
             }
-            item(key = "zen_pinned_divider", contentType = "sidebar_divider") {
+            item(key = "pinned_section_divider", contentType = "sidebar_divider") {
                 HorizontalDivider(
                     modifier = Modifier.padding(vertical = 4.dp),
                     color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
@@ -354,16 +884,28 @@ private fun ColumnScope.ArcExpandedSidebarContent(
             }
         }
 
+        // Open Tabs list
         items(
-            items = state.visibleTabs,
+            items = displayedRegularTabs,
             key = { it.id },
             contentType = { "sidebar_tab_row" }
         ) { tab ->
+            val isReorderingTabs = reorderMode == SidebarReorderMode.OPEN_TABS
             SidebarTabRow(
                 tab = tab,
                 isActive = tab.id == state.activeTabId,
-                onSelect = { onSelectTab(tab.id) },
-                onClose = { onCloseTab(tab.id) }
+                isPinnedStyle = false,
+                isReorderMode = isReorderingTabs,
+                onSelect = { if (!isReorderingTabs) onSelectTab(tab.id) },
+                onLongPress = { if (!isReorderingTabs) onLongPressTab(tab) },
+                onClose = { onCloseTab(tab.id) },
+                modifier = Modifier
+                    .then(if (!isReorderingTabs) Modifier.animateItem() else Modifier)
+                    .dragReorderItem(
+                        key = tab.id,
+                        enabled = isReorderingTabs,
+                        controller = openTabsReorder
+                    )
             )
         }
 
@@ -432,153 +974,202 @@ private fun ColumnScope.ArcExpandedSidebarContent(
         }
     }
 
-    // 4. Bottom Space Switcher & Private Toggle pinned at bottom in thumb reach
+    // 4. Bottom Icon-Only Workspace Switcher & Private Toggle pinned in thumb reach
     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
+
+    if (reorderMode == SidebarReorderMode.SPACES) {
+        ReorderModeBanner(
+            visible = true,
+            label = "Drag workspaces",
+            onDone = onExitReorderMode
+        )
+    }
+
+    val isReorderingSpaces = reorderMode == SidebarReorderMode.SPACES
+    val displayedSpaces = if (isReorderingSpaces) spacesReorder.items.toList() else state.spaces
 
     LazyRow(
         modifier = Modifier.fillMaxWidth(),
+        userScrollEnabled = !isReorderingSpaces,
         contentPadding = PaddingValues(vertical = 2.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         items(
-            items = state.spaces,
+            items = displayedSpaces,
             key = { it.id },
-            contentType = { "sidebar_bottom_space" }
+            contentType = { "sidebar_bottom_space_icon" }
         ) { space ->
             val selected = !state.isPrivateView && state.activeSpaceId == space.id
-            SidebarBottomSpaceChip(
+            SidebarBottomSpaceIconTile(
                 space = space,
                 selected = selected,
-                onClick = { onSelectSpace(space.id) },
-                onLongClick = if (state.spaces.size > 1) {
-                    { onRequestDeleteSpace(space) }
-                } else {
-                    null
-                }
+                isReorderMode = isReorderingSpaces,
+                onClick = { if (!isReorderingSpaces) onSelectSpace(space.id) },
+                onLongClick = { if (!isReorderingSpaces) onLongPressSpace(space) },
+                modifier = Modifier
+                    .then(if (!isReorderingSpaces) Modifier.animateItem() else Modifier)
+                    .dragReorderItem(
+                        key = space.id,
+                        enabled = isReorderingSpaces,
+                        controller = spacesReorder
+                    )
             )
         }
 
-        item(key = "sidebar_bottom_private", contentType = "sidebar_bottom_private") {
-            Surface(
-                onClick = { onTogglePrivate(!state.isPrivateView) },
-                shape = RoundedCornerShape(20.dp),
-                color = if (state.isPrivateView) {
-                    foxColors.privateContainer
-                } else {
-                    MaterialTheme.colorScheme.surfaceContainerHigh
-                },
-                border = if (state.isPrivateView) {
-                    BorderStroke(1.5.dp, foxColors.privateAccent)
-                } else {
-                    null
-                },
-                modifier = Modifier.heightIn(min = 48.dp)
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+        if (!isReorderingSpaces) {
+            item(key = "sidebar_bottom_private", contentType = "sidebar_bottom_private") {
+                Surface(
+                    onClick = { onTogglePrivate(!state.isPrivateView) },
+                    shape = RoundedCornerShape(16.dp),
+                    color = if (state.isPrivateView) {
+                        foxColors.privateContainer
+                    } else {
+                        MaterialTheme.colorScheme.surfaceContainerHigh
+                    },
+                    border = if (state.isPrivateView) {
+                        BorderStroke(1.5.dp, foxColors.privateAccent)
+                    } else {
+                        null
+                    },
+                    modifier = Modifier.size(48.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Shield,
-                        contentDescription = "Private Space",
-                        tint = if (state.isPrivateView) foxColors.privateAccent else MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Text(
-                        text = "Private",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = if (state.isPrivateView) foxColors.onPrivateContainer else MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1
-                    )
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Rounded.Shield,
+                            contentDescription = "Private Space",
+                            tint = if (state.isPrivateView) foxColors.privateAccent else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
                 }
             }
-        }
 
-        item(key = "sidebar_bottom_add_space", contentType = "sidebar_bottom_add_space") {
-            Surface(
-                onClick = onRequestCreateSpace,
-                shape = CircleShape,
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                modifier = Modifier.size(48.dp)
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        imageVector = Icons.Rounded.Add,
-                        contentDescription = "Create Space",
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(20.dp)
-                    )
+            item(key = "sidebar_bottom_add_space", contentType = "sidebar_bottom_add_space") {
+                Surface(
+                    onClick = onRequestCreateSpace,
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    modifier = Modifier.size(48.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Rounded.Add,
+                            contentDescription = "Create Space",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
                 }
             }
         }
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun SidebarEssentialTile(
     essential: EssentialEntity,
+    isReorderMode: Boolean,
     onClick: () -> Unit,
+    onLongClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Surface(
-        onClick = onClick,
         shape = RoundedCornerShape(14.dp),
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)),
+        border = BorderStroke(
+            width = if (isReorderMode) 1.5.dp else 1.dp,
+            color = if (isReorderMode) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
+            }
+        ),
         modifier = modifier
-            .heightIn(min = 52.dp)
+            .height(48.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .then(
+                if (!isReorderMode) {
+                    Modifier.combinedClickable(
+                        onClick = onClick,
+                        onLongClick = onLongClick
+                    )
+                } else {
+                    Modifier
+                }
+            )
             .semantics {
                 contentDescription = "Open ${essential.title} (${essential.domain})"
             }
     ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 4.dp, vertical = 7.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(2.dp)
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
         ) {
-            Text(
-                text = firstDisplaySymbol(essential.title),
-                style = MaterialTheme.typography.titleSmall,
-                color = MaterialTheme.colorScheme.primary,
-                maxLines = 1
-            )
-            Text(
-                text = essential.title,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+            SiteIconBadge(
+                url = essential.url,
+                fallbackLabel = essential.title,
+                customIcon = essential.customIcon,
+                size = 48.dp,
+                iconSize = 24.dp,
+                shape = RoundedCornerShape(14.dp),
+                tint = MaterialTheme.colorScheme.primary,
+                fillImageToContainer = true
             )
         }
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun SidebarZenPinnedRow(
     item: ZenPinnedItemEntity,
-    onClick: () -> Unit
+    isReorderMode: Boolean,
+    onClick: () -> Unit,
+    onLongPress: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     Surface(
-        onClick = onClick,
         shape = RoundedCornerShape(14.dp),
         color = MaterialTheme.colorScheme.surfaceContainer,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)),
-        modifier = Modifier
+        border = BorderStroke(
+            width = if (isReorderMode) 1.5.dp else 1.dp,
+            color = if (isReorderMode) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
+            }
+        ),
+        modifier = modifier
             .fillMaxWidth()
             .heightIn(min = 48.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .then(
+                if (!isReorderMode) {
+                    Modifier.combinedClickable(
+                        onClick = onClick,
+                        onLongClick = onLongPress
+                    )
+                } else {
+                    Modifier
+                }
+            )
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Icon(
-                imageVector = if (item.isPinned) Icons.Rounded.PushPin else Icons.Rounded.Tab,
-                contentDescription = if (item.isPinned) "Pinned item" else "Remote tab",
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(16.dp)
+            SiteIconBadge(
+                url = item.url,
+                fallbackLabel = item.title,
+                customIcon = item.customIcon,
+                size = 28.dp,
+                iconSize = 18.dp,
+                shape = RoundedCornerShape(8.dp),
+                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                fillImageToContainer = true
             )
             Column(modifier = Modifier.weight(1f)) {
                 Text(
@@ -587,9 +1178,11 @@ private fun SidebarZenPinnedRow(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                if (!item.folderName.isNullOrBlank()) {
+                val subtitle = item.folderName?.takeIf { it.isNotBlank() }
+                    ?: OmniboxEngine.extractHost(item.url)
+                if (subtitle.isNotBlank()) {
                     Text(
-                        text = item.folderName,
+                        text = subtitle,
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
@@ -597,16 +1190,31 @@ private fun SidebarZenPinnedRow(
                     )
                 }
             }
+            Icon(
+                imageVector = when {
+                    isReorderMode -> Icons.Rounded.DragIndicator
+                    item.isPinned -> Icons.Rounded.PushPin
+                    else -> Icons.Rounded.Tab
+                },
+                contentDescription = if (isReorderMode) "Drag to reorder" else "Pinned item",
+                tint = MaterialTheme.colorScheme.primary.copy(alpha = if (isReorderMode) 1f else 0.72f),
+                modifier = Modifier.size(16.dp)
+            )
         }
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun SidebarTabRow(
     tab: BrowserTabUi,
     isActive: Boolean,
+    isPinnedStyle: Boolean,
+    isReorderMode: Boolean,
     onSelect: () -> Unit,
-    onClose: () -> Unit
+    onLongPress: () -> Unit,
+    onClose: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val foxColors = LocalSwiftfoxColors.current
     val isPrivate = tab.isPrivate
@@ -621,8 +1229,10 @@ private fun SidebarTabRow(
         else -> MaterialTheme.colorScheme.onSurface
     }
     val border = when {
+        isReorderMode -> BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
         isActive && isPrivate -> BorderStroke(1.dp, foxColors.privateAccent.copy(alpha = 0.65f))
         isActive -> BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.55f))
+        isPinnedStyle -> BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
         else -> null
     }
     val badgeBg = when {
@@ -633,42 +1243,64 @@ private fun SidebarTabRow(
     val badgeTint = if (isPrivate) foxColors.privateAccent else MaterialTheme.colorScheme.primary
 
     Surface(
-        onClick = onSelect,
         shape = RoundedCornerShape(16.dp),
         color = containerColor,
         border = border,
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .heightIn(min = 52.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .then(
+                if (!isReorderMode) {
+                    Modifier.combinedClickable(
+                        onClick = onSelect,
+                        onLongClick = onLongPress
+                    )
+                } else {
+                    Modifier
+                }
+            )
     ) {
         Row(
-            modifier = Modifier.padding(start = 10.dp, end = 2.dp, top = 4.dp, bottom = 4.dp),
+            modifier = Modifier.padding(
+                start = 10.dp,
+                end = if (isPinnedStyle || isReorderMode) 12.dp else 2.dp,
+                top = 4.dp,
+                bottom = 4.dp
+            ),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Box(
-                modifier = Modifier
-                    .size(28.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(badgeBg),
-                contentAlignment = Alignment.Center
-            ) {
-                if (tab.isStartPage) {
+            if (tab.isStartPage && tab.customIcon == null) {
+                Box(
+                    modifier = Modifier
+                        .size(28.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(badgeBg),
+                    contentAlignment = Alignment.Center
+                ) {
                     SwiftfoxEmblem(
                         size = 16.dp,
                         variant = if (isPrivate) SwiftfoxEmblemVariant.PURPLE else SwiftfoxEmblemVariant.ORANGE
                     )
-                } else {
-                    Text(
-                        text = firstDisplaySymbol(tab.displayHost, fallback = "S"),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = badgeTint
-                    )
                 }
+            } else {
+                SiteIconBadge(
+                    url = tab.url,
+                    fallbackLabel = tab.displayHost.ifBlank { tab.displayTitle },
+                    customIcon = if (isPrivate) null else tab.customIcon,
+                    privateTabId = if (isPrivate) tab.id else null,
+                    size = 28.dp,
+                    iconSize = 18.dp,
+                    shape = RoundedCornerShape(8.dp),
+                    containerColor = badgeBg,
+                    tint = badgeTint,
+                    fillImageToContainer = true
+                )
             }
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = tab.title.ifBlank { "New Tab" },
+                    text = tab.displayTitle,
                     style = MaterialTheme.typography.labelLarge,
                     color = contentColor,
                     maxLines = 1,
@@ -708,15 +1340,96 @@ private fun SidebarTabRow(
                     }
                 }
             }
-            IconButton(
-                onClick = onClose,
-                modifier = Modifier.size(48.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.Close,
-                    contentDescription = "Close ${tab.title}",
-                    tint = contentColor,
-                    modifier = Modifier.size(18.dp)
+            when {
+                isReorderMode -> {
+                    Icon(
+                        imageVector = Icons.Rounded.DragIndicator,
+                        contentDescription = "Drag to reorder",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                isPinnedStyle -> {
+                    Icon(
+                        imageVector = Icons.Rounded.PushPin,
+                        contentDescription = "Pinned tab",
+                        tint = badgeTint.copy(alpha = 0.75f),
+                        modifier = Modifier.size(15.dp)
+                    )
+                }
+                else -> {
+                    IconButton(
+                        onClick = onClose,
+                        modifier = Modifier.size(48.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Close,
+                            contentDescription = "Close ${tab.displayTitle}",
+                            tint = contentColor,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun SidebarBottomSpaceIconTile(
+    space: SpaceEntity,
+    selected: Boolean,
+    isReorderMode: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = if (selected) {
+            MaterialTheme.colorScheme.primaryContainer
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerHigh
+        },
+        border = when {
+            isReorderMode -> BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
+            selected -> BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
+            else -> null
+        },
+        modifier = modifier
+            .size(48.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .then(
+                if (!isReorderMode) {
+                    Modifier.combinedClickable(
+                        onClick = onClick,
+                        onLongClick = onLongClick
+                    )
+                } else {
+                    Modifier
+                }
+            )
+            .semantics {
+                contentDescription = "${space.name} workspace"
+            }
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            SpaceIconGlyph(
+                iconKey = space.iconKey,
+                tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                contentDescription = space.name,
+                size = 20.dp
+            )
+            val dotColor = parseHexColorOrNull(space.themeColorHex)
+            if (dotColor != null) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(6.dp)
+                        .size(7.dp)
+                        .clip(CircleShape)
+                        .background(dotColor)
                 )
             }
         }
@@ -725,64 +1438,6 @@ private fun SidebarTabRow(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun SidebarBottomSpaceChip(
-    space: SpaceEntity,
-    selected: Boolean,
-    onClick: () -> Unit,
-    onLongClick: (() -> Unit)? = null
-) {
-    Surface(
-        shape = RoundedCornerShape(20.dp),
-        color = if (selected) {
-            MaterialTheme.colorScheme.primaryContainer
-        } else {
-            MaterialTheme.colorScheme.surfaceContainerHigh
-        },
-        border = if (selected) {
-            BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
-        } else {
-            null
-        },
-        modifier = Modifier
-            .heightIn(min = 48.dp)
-            .clip(RoundedCornerShape(20.dp))
-            .combinedClickable(
-                onClick = onClick,
-                onLongClick = onLongClick
-            )
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            val dotColor = parseHexColorOrNull(space.themeColorHex)
-            if (dotColor != null) {
-                Box(
-                    modifier = Modifier
-                        .size(8.dp)
-                        .clip(CircleShape)
-                        .background(dotColor)
-                )
-            }
-            Icon(
-                imageVector = spaceIconFor(space.iconKey),
-                contentDescription = null,
-                tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(16.dp)
-            )
-            Text(
-                text = space.name,
-                style = MaterialTheme.typography.labelMedium,
-                color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-    }
-}
-
-@Composable
 private fun ColumnScope.ArcCollapsedSidebarRail(
     state: BrowserUiState,
     onToggleExpanded: () -> Unit,
@@ -790,7 +1445,9 @@ private fun ColumnScope.ArcCollapsedSidebarRail(
     onTogglePrivate: (Boolean) -> Unit,
     onSelectTab: (String) -> Unit,
     onCreateTab: () -> Unit,
-    onCreatePrivateTab: () -> Unit
+    onCreatePrivateTab: () -> Unit,
+    onLongPressSpace: (SpaceEntity) -> Unit,
+    onLongPressTab: (BrowserTabUi) -> Unit
 ) {
     val foxColors = LocalSwiftfoxColors.current
     val emblemVariant = if (state.isPrivateView) {
@@ -830,17 +1487,23 @@ private fun ColumnScope.ArcCollapsedSidebarRail(
         state.spaces.forEach { space ->
             val selected = !state.isPrivateView && state.activeSpaceId == space.id
             Surface(
-                onClick = { onSelectSpace(space.id) },
                 shape = RoundedCornerShape(16.dp),
                 color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
-                modifier = Modifier.size(48.dp)
+                border = if (selected) BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary) else null,
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .combinedClickable(
+                        onClick = { onSelectSpace(space.id) },
+                        onLongClick = { onLongPressSpace(space) }
+                    )
             ) {
                 Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        imageVector = spaceIconFor(space.iconKey),
-                        contentDescription = space.name,
+                    SpaceIconGlyph(
+                        iconKey = space.iconKey,
                         tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(20.dp)
+                        contentDescription = space.name,
+                        size = 20.dp
                     )
                     val dotColor = parseHexColorOrNull(space.themeColorHex)
                     if (dotColor != null) {
@@ -893,29 +1556,63 @@ private fun ColumnScope.ArcCollapsedSidebarRail(
         ) { tab ->
             val isActive = tab.id == state.activeTabId
             Surface(
-                onClick = { onSelectTab(tab.id) },
                 shape = RoundedCornerShape(14.dp),
                 color = when {
                     isActive && tab.isPrivate -> foxColors.privateContainer
                     isActive -> MaterialTheme.colorScheme.primaryContainer
                     else -> MaterialTheme.colorScheme.surfaceContainerHigh
                 },
+                border = when {
+                    isActive && tab.isPrivate -> BorderStroke(1.5.dp, foxColors.privateAccent)
+                    isActive -> BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
+                    tab.isPinned -> BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f))
+                    else -> null
+                },
                 modifier = Modifier
+                    .animateItem()
                     .size(48.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .combinedClickable(
+                        onClick = { onSelectTab(tab.id) },
+                        onLongClick = { onLongPressTab(tab) }
+                    )
                     .semantics {
-                        contentDescription = "Switch to ${tab.title.ifBlank { "New Tab" }} (${tab.displayHost.ifBlank { "Start Page" }})"
+                        contentDescription = "Switch to ${tab.displayTitle} (${tab.displayHost.ifBlank { "Start Page" }})"
                     }
             ) {
                 Box(contentAlignment = Alignment.Center) {
-                    Text(
-                        text = firstDisplaySymbol(tab.displayHost.ifBlank { tab.title }, fallback = "S"),
-                        style = MaterialTheme.typography.titleSmall,
-                        color = when {
-                            isActive && tab.isPrivate -> foxColors.privateAccent
-                            isActive -> MaterialTheme.colorScheme.primary
-                            else -> MaterialTheme.colorScheme.onSurface
-                        }
-                    )
+                    if (tab.isStartPage && tab.customIcon == null) {
+                        SwiftfoxEmblem(
+                            size = 22.dp,
+                            variant = if (tab.isPrivate) SwiftfoxEmblemVariant.PURPLE else SwiftfoxEmblemVariant.ORANGE
+                        )
+                    } else {
+                        SiteIconBadge(
+                            url = tab.url,
+                            fallbackLabel = tab.displayHost.ifBlank { tab.displayTitle },
+                            customIcon = if (tab.isPrivate) null else tab.customIcon,
+                            privateTabId = if (tab.isPrivate) tab.id else null,
+                            size = 48.dp,
+                            iconSize = 24.dp,
+                            shape = RoundedCornerShape(14.dp),
+                            tint = when {
+                                isActive && tab.isPrivate -> foxColors.privateAccent
+                                isActive -> MaterialTheme.colorScheme.primary
+                                else -> MaterialTheme.colorScheme.onSurface
+                            },
+                            fillImageToContainer = true
+                        )
+                    }
+                    if (tab.isPinned && !tab.isPrivate) {
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(5.dp)
+                                .size(6.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.primary)
+                        )
+                    }
                 }
             }
         }

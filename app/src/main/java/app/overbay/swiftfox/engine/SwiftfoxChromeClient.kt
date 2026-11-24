@@ -1,6 +1,7 @@
 package app.overbay.swiftfox.engine
 
 import android.content.Intent
+import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Message
 import android.view.View
@@ -24,6 +25,7 @@ data class SitePermissionPrompt(
 interface WebChromeCallbacks {
     fun onProgressChanged(tabId: String, progress: Int)
     fun onTitleChanged(tabId: String, title: String)
+    fun onFaviconReceived(tabId: String, url: String?, icon: Bitmap) {}
     fun onShowCustomView(view: View, callback: WebChromeClient.CustomViewCallback)
     fun onHideCustomView()
     fun onShowFileChooser(
@@ -48,6 +50,12 @@ class SwiftfoxChromeClient(
     override fun onReceivedTitle(view: WebView?, title: String?) {
         if (!title.isNullOrBlank()) {
             callbacks.onTitleChanged(tabId, title)
+        }
+    }
+
+    override fun onReceivedIcon(view: WebView?, icon: Bitmap?) {
+        if (icon != null && icon.width > 0 && icon.height > 0) {
+            callbacks.onFaviconReceived(tabId, view?.url, icon)
         }
     }
 

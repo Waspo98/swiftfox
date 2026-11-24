@@ -49,6 +49,7 @@ import app.overbay.swiftfox.features.omnibox.OmniboxEngine
 import app.overbay.swiftfox.features.sync.RemoteDeviceTabsGroup
 import app.overbay.swiftfox.features.sync.SyncAccountState
 import app.overbay.swiftfox.ui.browser.BrowserUiState
+import app.overbay.swiftfox.ui.components.SiteIconBadge
 import java.util.Locale
 
 private data class SyncedTabRowItem(
@@ -329,8 +330,18 @@ private fun RemoteTabItemRow(
                     .clickable { onOpenUrl(item.tab.url) }
                     .heightIn(min = 56.dp)
                     .padding(horizontal = 6.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
+                SiteIconBadge(
+                    url = item.tab.url,
+                    fallbackLabel = item.tab.title.ifBlank { item.displayHost },
+                    size = 30.dp,
+                    iconSize = 18.dp,
+                    shape = RoundedCornerShape(9.dp),
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    fillImageToContainer = true
+                )
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = item.tab.title,

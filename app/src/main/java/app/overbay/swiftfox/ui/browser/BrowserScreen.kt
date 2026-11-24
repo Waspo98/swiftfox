@@ -4,7 +4,6 @@ import android.view.ViewGroup
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.ContentTransform
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.SizeTransform
@@ -13,6 +12,8 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
@@ -120,11 +121,14 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
@@ -145,6 +149,7 @@ import app.overbay.swiftfox.engine.SitePermissionPrompt
 import app.overbay.swiftfox.engine.SwiftfoxWebView
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
 import app.overbay.swiftfox.features.omnibox.OmniboxSuggestion
+import app.overbay.swiftfox.features.reader.ReaderArticle
 import app.overbay.swiftfox.ui.reader.ReaderModeOverlay
 import app.overbay.swiftfox.ui.settings.BookmarksOverlay
 import app.overbay.swiftfox.ui.settings.DownloadsOverlay
@@ -159,6 +164,7 @@ import app.overbay.swiftfox.ui.sync.SyncOverlay
 import app.overbay.swiftfox.ui.sync.SyncedTabsOverlay
 import app.overbay.swiftfox.ui.tabs.ArcSpacesSidebar
 import app.overbay.swiftfox.ui.tabs.SpacesTabSwitcher
+import app.overbay.swiftfox.ui.tabs.WorkspaceItemCallbacks
 import app.overbay.swiftfox.ui.theme.LocalSwiftfoxColors
 import app.overbay.swiftfox.ui.theme.rememberReduceMotion
 import app.overbay.swiftfox.ui.zapper.ZappedRulesOverlay
@@ -345,6 +351,47 @@ fun BrowserScreen(
         }
     }
 
+    val workspaceItemCallbacks = remember(viewModel) {
+        WorkspaceItemCallbacks(
+            onRenameSpace = { id, name -> viewModel.renameSpace(id, name) },
+            onSetSpaceIcon = { id, iconKey -> viewModel.setSpaceIcon(id, iconKey) },
+            onReorderSpaces = { ids -> viewModel.reorderSpaces(ids) },
+            onDeleteSpace = { id -> viewModel.deleteSpace(id) },
+            onAddEssential = { title, url -> viewModel.addEssential(title, url) },
+            onUpdateEssential = { id, title, url -> viewModel.updateEssential(id, title, url) },
+            onSetEssentialCustomIcon = { id, spec -> viewModel.setEssentialCustomIcon(id, spec) },
+            onReorderEssentials = { ids -> viewModel.reorderEssentials(ids) },
+            onRemoveEssential = { id -> viewModel.removeEssential(id) },
+            onSetTabPinned = { tabId, pinned -> viewModel.setTabPinned(tabId, pinned) },
+            onEditTabTitleAndUrl = { tabId, title, url -> viewModel.editTabTitleAndUrl(tabId, title, url) },
+            onSetTabCustomIcon = { tabId, spec -> viewModel.setTabCustomIcon(tabId, spec) },
+            onAddTabToEssentials = { tabId -> viewModel.addTabToEssentials(tabId) },
+            onReorderTabs = { ids, pinnedSection -> viewModel.reorderTabs(ids, pinnedSection) },
+            onUpdateZenPinned = { id, title, url -> viewModel.updateZenPinnedItem(id, title, url) },
+            onSetZenPinnedCustomIcon = { id, spec -> viewModel.setZenPinnedCustomIcon(id, spec) },
+            onAddZenPinnedToEssentials = { id -> viewModel.addZenPinnedToEssentials(id) },
+            onDeleteZenPinned = { id -> viewModel.deleteZenPinnedItem(id) },
+            onReorderZenPinned = { ids -> viewModel.reorderZenPinnedItems(ids) }
+        )
+    }
+
+    var omniboxSourceRect by remember { mutableStateOf<Rect?>(null) }
+    val omniboxProgress = remember { Animatable(if (state.isOmniboxFocused) 1f else 0f) }
+    LaunchedEffect(state.isOmniboxFocused, reduceMotion) {
+        val target = if (state.isOmniboxFocused) 1f else 0f
+        if (reduceMotion) {
+            omniboxProgress.snapTo(target)
+        } else {
+            omniboxProgress.animateTo(
+                targetValue = target,
+                animationSpec = tween(
+                    durationMillis = if (state.isOmniboxFocused) 270 else 210,
+                    easing = if (state.isOmniboxFocused) EmphasizedDecelerateEasing else EmphasizedAccelerateEasing
+                )
+            )
+        }
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         BrowserShellLayout(
             state = state,
@@ -353,8 +400,19 @@ fun BrowserScreen(
             onChromeHeightsMeasured = { topPx, bottomPx ->
                 collapseBridge.onChromeHeightsMeasured(topPx, bottomPx)
             },
-            onFocusOmnibox = { viewModel.focusOmnibox(prefillCurrentUrl = true) },
-            onFocusSearchFresh = { viewModel.focusOmnibox(prefillCurrentUrl = false) },
+            onFocusOmnibox = {
+                omniboxSourceRect = null
+                viewModel.focusOmnibox(prefillCurrentUrl = true)
+            },
+            onFocusOmniboxFromRect = { rect, prefillCurrentUrl ->
+                omniboxSourceRect = rect
+                viewModel.focusOmnibox(prefillCurrentUrl = prefillCurrentUrl)
+            },
+            onFocusSearchFresh = {
+                omniboxSourceRect = null
+                viewModel.focusOmnibox(prefillCurrentUrl = false)
+            },
+            itemCallbacks = workspaceItemCallbacks,
             onGoBack = { viewModel.goBack() },
             onGoForward = { viewModel.goForward() },
             onReloadOrStop = { viewModel.reloadOrStop() },
@@ -620,194 +678,257 @@ fun BrowserScreen(
             }
         )
 
-        // Fullscreen overlays with smooth bottom-up slide transitions (clip = false avoids top-left clip bug)
-        AnimatedContent(
-            targetState = state.activeOverlay,
-            modifier = Modifier.fillMaxSize(),
-            transitionSpec = {
-                if (reduceMotion) {
-                    (EnterTransition.None togetherWith ExitTransition.None) using SizeTransform(clip = false)
-                } else if (targetState == BrowserOverlay.NONE) {
-                    ContentTransform(
-                        targetContentEnter = EnterTransition.None,
-                        initialContentExit = fadeOut(tween(160)) +
-                            slideOutVertically(tween(210, easing = EmphasizedAccelerateEasing)) { (it * 0.25f).toInt() },
-                        targetContentZIndex = -1f,
-                        sizeTransform = SizeTransform(clip = false)
-                    )
-                } else if (initialState == BrowserOverlay.NONE) {
-                    (fadeIn(tween(180)) +
-                        slideInVertically(tween(280, easing = EmphasizedDecelerateEasing)) { (it * 0.32f).toInt() }
-                    ) togetherWith ExitTransition.None using SizeTransform(clip = false)
-                } else {
-                    (fadeIn(tween(160)) togetherWith fadeOut(tween(120))) using SizeTransform(clip = false)
-                }
-            },
-            label = "browser_overlay_transition"
-        ) { overlay ->
-            when (overlay) {
-            BrowserOverlay.TAB_SWITCHER -> {
-                val thumbnails by thumbnailsFlow.collectAsStateWithLifecycle()
-                SpacesTabSwitcher(
-                    state = state,
-                    thumbnails = thumbnails,
-                    onClose = { viewModel.navigateBackFromOverlay() },
-                    onSelectTab = { viewModel.selectTab(it) },
-                    onCloseTab = { viewModel.closeTab(it) },
-                    onCreateTab = { priv -> viewModel.createTab(isPrivate = priv) },
-                    onSelectSpace = { viewModel.selectSpace(it) },
-                    onTogglePrivate = { viewModel.togglePrivateView(it) },
-                    onCreateSpace = { name, icon, isolated ->
-                        viewModel.createSpace(name, icon, isolated)
-                    },
-                    onDeleteSpace = { spaceId ->
-                        viewModel.deleteSpace(spaceId)
-                    },
-                    onOpenEssential = { url ->
-                        viewModel.setOverlay(BrowserOverlay.NONE)
-                        viewModel.navigateActiveTab(url)
-                    },
-                    onOpenSyncedTabs = { viewModel.setOverlay(BrowserOverlay.SYNCED_TABS) },
-                    onOpenZenPinnedUrl = { url ->
-                        viewModel.setOverlay(BrowserOverlay.NONE)
-                        viewModel.navigateActiveTab(url)
-                    }
-                )
-            }
-            BrowserOverlay.SETTINGS -> {
-                SettingsScreen(
-                    state = state,
-                    viewModel = viewModel,
-                    primaryAccentHex = primaryAccentHex,
-                    onShareCleanUrl = {
-                        viewModel.getCleanSharePayload()?.let { (clean, count) ->
-                            onShareUrl(clean, count)
-                        }
-                    },
-                    onPrintPage = onPrintPage,
-                    onEnterPip = onEnterPip,
-                    onBack = { viewModel.navigateBackFromOverlay() },
-                    onOpenDefaultBrowserSettings = onOpenDefaultBrowserSettings
-                )
-            }
-            BrowserOverlay.BOOKMARKS -> {
-                BookmarksOverlay(
-                    bookmarks = state.bookmarks,
-                    onBack = { viewModel.navigateBackFromOverlay() },
-                    onOpenUrl = { viewModel.navigateActiveTab(it) },
-                    onDeleteBookmark = { viewModel.deleteBookmark(it) },
-                    onImportBookmarksHtml = { viewModel.triggerImportBookmarksHtml() },
-                    onExportBookmarksHtml = { viewModel.triggerExportBookmarksHtml() }
-                )
-            }
-            BrowserOverlay.HISTORY -> {
-                HistoryOverlay(
-                    history = state.history,
-                    onBack = { viewModel.navigateBackFromOverlay() },
-                    onOpenUrl = { viewModel.navigateActiveTab(it) },
-                    onDeleteEntry = { viewModel.deleteHistoryEntry(it) },
-                    onClearAll = { viewModel.clearHistory() }
-                )
-            }
-            BrowserOverlay.DOWNLOADS -> {
-                DownloadsOverlay(
-                    downloads = state.downloads,
-                    onBack = { viewModel.navigateBackFromOverlay() },
-                    onOpenDownload = { viewModel.openDownload(it) },
-                    onDeleteDownload = { viewModel.deleteDownloadRecord(it) },
-                    onClearAll = { viewModel.clearAllDownloads() }
-                )
-            }
-            BrowserOverlay.FILTER_LISTS -> {
-                FilterListsOverlay(
-                    filterLists = state.filterLists,
-                    adblockStatus = state.adblockStatus,
-                    isUpdating = state.isUpdatingFilterLists,
-                    onBack = { viewModel.navigateBackFromOverlay() },
-                    onUpdateAll = { viewModel.updateAllFilterLists() },
-                    onToggleList = { id, enabled -> viewModel.toggleFilterList(id, enabled) },
-                    onAddCustomList = { name, url -> viewModel.addCustomFilterList(name, url) },
-                    onDeleteList = { id -> viewModel.deleteCustomFilterList(id) }
-                )
-            }
-            BrowserOverlay.USERSCRIPTS -> {
-                UserscriptsOverlay(
-                    scripts = state.userscripts,
-                    onBack = { viewModel.navigateBackFromOverlay() },
-                    onToggleScript = { id, enabled -> viewModel.toggleUserscript(id, enabled) },
-                    onInstallFromUrl = { url -> viewModel.installUserscriptFromUrl(url) },
-                    onImportLocalFile = { viewModel.triggerImportUserscriptFile() },
-                    onSaveScriptCode = { existingId, code -> viewModel.saveUserscriptCode(existingId, code) },
-                    onDeleteScript = { id -> viewModel.deleteUserscript(id) },
-                    userscriptsEnabled = state.settings.userscriptsEnabled,
-                    onEnableUserscripts = { viewModel.setUserscriptsEnabled(true) }
-                )
-            }
-            BrowserOverlay.ZAPPED_RULES -> {
-                ZappedRulesOverlay(
-                    rules = state.zappedRules,
-                    onBack = { viewModel.navigateBackFromOverlay() },
-                    onToggleRule = { id, enabled -> viewModel.toggleZappedRule(id, enabled) },
-                    onDeleteRule = { id -> viewModel.deleteZappedRule(id) },
-                    onClearHost = { host -> viewModel.clearZappedRulesForHost(host) }
-                )
-            }
-            BrowserOverlay.SYNC -> {
-                SyncOverlay(
-                    state = state,
-                    onBack = { viewModel.navigateBackFromOverlay() },
-                    onSignIn = { viewModel.startMozillaSignIn() },
-                    onPairQr = { viewModel.openQrPairing() },
-                    onSyncNow = { viewModel.triggerManualSync() },
-                    onSignOut = { viewModel.signOutMozillaSync() },
-                    onOpenSyncedTabs = { viewModel.setOverlay(BrowserOverlay.SYNCED_TABS) },
-                    onToggleSyncBookmarks = { viewModel.setSyncBookmarksEnabled(it) },
-                    onToggleSyncHistory = { viewModel.setSyncHistoryEnabled(it) },
-                    onToggleSyncTabs = { viewModel.setSyncTabsEnabled(it) },
-                    onToggleSyncZenSpaces = { viewModel.setSyncZenSpacesEnabled(it) },
-                    onChangeSyncInterval = { viewModel.setSyncPeriodicIntervalMinutes(it) },
-                    onImportBookmarksHtml = { viewModel.triggerImportBookmarksHtml() },
-                    onExportBookmarksHtml = { viewModel.triggerExportBookmarksHtml() }
-                )
-            }
-            BrowserOverlay.SYNCED_TABS -> {
-                SyncedTabsOverlay(
-                    state = state,
-                    onBack = { viewModel.navigateBackFromOverlay() },
-                    onOpenUrl = { url -> viewModel.navigateActiveTab(url) },
-                    onSyncNow = { viewModel.triggerManualSync() },
-                    onOpenSyncSettings = { viewModel.setOverlay(BrowserOverlay.SYNC) }
-                )
-            }
-            BrowserOverlay.NONE -> Unit
+        // Fullscreen overlays: clean full-height straight-up / straight-down vertical slide on
+        // open & dismiss (no SizeTransform shrink or early fade-out), plus directional horizontal
+        // push/pop slides when navigating between sub-overlays (e.g. Settings -> Bookmarks / Sync).
+        var lastVisibleOverlay by remember { mutableStateOf(BrowserOverlay.SETTINGS) }
+        var lastOverlayDepth by remember { mutableStateOf(0) }
+        val isOverlayShowing = state.activeOverlay != BrowserOverlay.NONE
+        val currentDepth = state.overlayBackStack.size
+        val overlayPushDirection = when {
+            !isOverlayShowing -> 0
+            currentDepth > lastOverlayDepth -> 1
+            currentDepth < lastOverlayDepth -> -1
+            else -> 0
+        }
+        if (isOverlayShowing) {
+            lastVisibleOverlay = state.activeOverlay
+        }
+        SideEffect {
+            if (isOverlayShowing) {
+                lastOverlayDepth = currentDepth
+            } else {
+                lastOverlayDepth = 0
             }
         }
 
-        // QR Code Pairing Overlay (CameraX + ZXing)
-        if (state.isQrPairingOpen) {
+        AnimatedVisibility(
+            visible = isOverlayShowing,
+            enter = if (reduceMotion) {
+                EnterTransition.None
+            } else {
+                slideInVertically(tween(280, easing = EmphasizedDecelerateEasing)) { it }
+            },
+            exit = if (reduceMotion) {
+                ExitTransition.None
+            } else {
+                slideOutVertically(tween(240, easing = EmphasizedAccelerateEasing)) { it }
+            },
+            modifier = Modifier.fillMaxSize(),
+            label = "browser_overlay_sheet_slide"
+        ) {
+            AnimatedContent(
+                targetState = lastVisibleOverlay,
+                modifier = Modifier.fillMaxSize(),
+                transitionSpec = {
+                    when {
+                        reduceMotion ->
+                            (EnterTransition.None togetherWith ExitTransition.None) using null
+                        overlayPushDirection > 0 ->
+                            (slideInHorizontally(tween(260, easing = EmphasizedDecelerateEasing)) { (it * 0.28f).toInt() } +
+                                fadeIn(tween(180)) togetherWith
+                                slideOutHorizontally(tween(220, easing = EmphasizedAccelerateEasing)) { -(it * 0.14f).toInt() } +
+                                fadeOut(tween(140))) using null
+                        overlayPushDirection < 0 ->
+                            (slideInHorizontally(tween(240, easing = EmphasizedDecelerateEasing)) { -(it * 0.14f).toInt() } +
+                                fadeIn(tween(180)) togetherWith
+                                slideOutHorizontally(tween(220, easing = EmphasizedAccelerateEasing)) { (it * 0.28f).toInt() } +
+                                fadeOut(tween(140))) using null
+                        else ->
+                            (fadeIn(tween(150)) togetherWith fadeOut(tween(110))) using null
+                    }
+                },
+                label = "browser_overlay_subpage_transition"
+            ) { overlay ->
+                when (overlay) {
+                BrowserOverlay.TAB_SWITCHER -> {
+                    val thumbnails by thumbnailsFlow.collectAsStateWithLifecycle()
+                    SpacesTabSwitcher(
+                        state = state,
+                        thumbnails = thumbnails,
+                        onClose = { viewModel.navigateBackFromOverlay() },
+                        onSelectTab = { viewModel.selectTab(it) },
+                        onCloseTab = { viewModel.closeTab(it) },
+                        onCreateTab = { priv -> viewModel.createTab(isPrivate = priv) },
+                        onSelectSpace = { viewModel.selectSpace(it) },
+                        onTogglePrivate = { viewModel.togglePrivateView(it) },
+                        onCreateSpace = { name, icon, isolated ->
+                            viewModel.createSpace(name, icon, isolated)
+                        },
+                        onDeleteSpace = { spaceId ->
+                            viewModel.deleteSpace(spaceId)
+                        },
+                        onOpenEssential = { url ->
+                            viewModel.setOverlay(BrowserOverlay.NONE)
+                            viewModel.navigateActiveTab(url)
+                        },
+                        onOpenSyncedTabs = { viewModel.setOverlay(BrowserOverlay.SYNCED_TABS) },
+                        onOpenZenPinnedUrl = { url ->
+                            viewModel.setOverlay(BrowserOverlay.NONE)
+                            viewModel.navigateActiveTab(url)
+                        },
+                        itemCallbacks = workspaceItemCallbacks
+                    )
+                }
+                BrowserOverlay.SETTINGS -> {
+                    SettingsScreen(
+                        state = state,
+                        viewModel = viewModel,
+                        primaryAccentHex = primaryAccentHex,
+                        onShareCleanUrl = {
+                            viewModel.getCleanSharePayload()?.let { (clean, count) ->
+                                onShareUrl(clean, count)
+                            }
+                        },
+                        onPrintPage = onPrintPage,
+                        onEnterPip = onEnterPip,
+                        onBack = { viewModel.navigateBackFromOverlay() },
+                        onOpenDefaultBrowserSettings = onOpenDefaultBrowserSettings
+                    )
+                }
+                BrowserOverlay.BOOKMARKS -> {
+                    BookmarksOverlay(
+                        bookmarks = state.bookmarks,
+                        onBack = { viewModel.navigateBackFromOverlay() },
+                        onOpenUrl = { viewModel.navigateActiveTab(it) },
+                        onDeleteBookmark = { viewModel.deleteBookmark(it) },
+                        onImportBookmarksHtml = { viewModel.triggerImportBookmarksHtml() },
+                        onExportBookmarksHtml = { viewModel.triggerExportBookmarksHtml() }
+                    )
+                }
+                BrowserOverlay.HISTORY -> {
+                    HistoryOverlay(
+                        history = state.history,
+                        onBack = { viewModel.navigateBackFromOverlay() },
+                        onOpenUrl = { viewModel.navigateActiveTab(it) },
+                        onDeleteEntry = { viewModel.deleteHistoryEntry(it) },
+                        onClearAll = { viewModel.clearHistory() }
+                    )
+                }
+                BrowserOverlay.DOWNLOADS -> {
+                    DownloadsOverlay(
+                        downloads = state.downloads,
+                        onBack = { viewModel.navigateBackFromOverlay() },
+                        onOpenDownload = { viewModel.openDownload(it) },
+                        onDeleteDownload = { viewModel.deleteDownloadRecord(it) },
+                        onClearAll = { viewModel.clearAllDownloads() }
+                    )
+                }
+                BrowserOverlay.FILTER_LISTS -> {
+                    FilterListsOverlay(
+                        filterLists = state.filterLists,
+                        adblockStatus = state.adblockStatus,
+                        isUpdating = state.isUpdatingFilterLists,
+                        onBack = { viewModel.navigateBackFromOverlay() },
+                        onUpdateAll = { viewModel.updateAllFilterLists() },
+                        onToggleList = { id, enabled -> viewModel.toggleFilterList(id, enabled) },
+                        onAddCustomList = { name, url -> viewModel.addCustomFilterList(name, url) },
+                        onDeleteList = { id -> viewModel.deleteCustomFilterList(id) }
+                    )
+                }
+                BrowserOverlay.USERSCRIPTS -> {
+                    UserscriptsOverlay(
+                        scripts = state.userscripts,
+                        onBack = { viewModel.navigateBackFromOverlay() },
+                        onToggleScript = { id, enabled -> viewModel.toggleUserscript(id, enabled) },
+                        onInstallFromUrl = { url -> viewModel.installUserscriptFromUrl(url) },
+                        onImportLocalFile = { viewModel.triggerImportUserscriptFile() },
+                        onSaveScriptCode = { existingId, code -> viewModel.saveUserscriptCode(existingId, code) },
+                        onDeleteScript = { id -> viewModel.deleteUserscript(id) },
+                        userscriptsEnabled = state.settings.userscriptsEnabled,
+                        onEnableUserscripts = { viewModel.setUserscriptsEnabled(true) }
+                    )
+                }
+                BrowserOverlay.ZAPPED_RULES -> {
+                    ZappedRulesOverlay(
+                        rules = state.zappedRules,
+                        onBack = { viewModel.navigateBackFromOverlay() },
+                        onToggleRule = { id, enabled -> viewModel.toggleZappedRule(id, enabled) },
+                        onDeleteRule = { id -> viewModel.deleteZappedRule(id) },
+                        onClearHost = { host -> viewModel.clearZappedRulesForHost(host) }
+                    )
+                }
+                BrowserOverlay.SYNC -> {
+                    SyncOverlay(
+                        state = state,
+                        onBack = { viewModel.navigateBackFromOverlay() },
+                        onSignIn = { viewModel.startMozillaSignIn() },
+                        onPairQr = { viewModel.openQrPairing() },
+                        onSyncNow = { viewModel.triggerManualSync() },
+                        onSignOut = { viewModel.signOutMozillaSync() },
+                        onOpenSyncedTabs = { viewModel.setOverlay(BrowserOverlay.SYNCED_TABS) },
+                        onToggleSyncBookmarks = { viewModel.setSyncBookmarksEnabled(it) },
+                        onToggleSyncHistory = { viewModel.setSyncHistoryEnabled(it) },
+                        onToggleSyncTabs = { viewModel.setSyncTabsEnabled(it) },
+                        onToggleSyncZenSpaces = { viewModel.setSyncZenSpacesEnabled(it) },
+                        onChangeSyncInterval = { viewModel.setSyncPeriodicIntervalMinutes(it) },
+                        onImportBookmarksHtml = { viewModel.triggerImportBookmarksHtml() },
+                        onExportBookmarksHtml = { viewModel.triggerExportBookmarksHtml() }
+                    )
+                }
+                BrowserOverlay.SYNCED_TABS -> {
+                    SyncedTabsOverlay(
+                        state = state,
+                        onBack = { viewModel.navigateBackFromOverlay() },
+                        onOpenUrl = { url -> viewModel.navigateActiveTab(url) },
+                        onSyncNow = { viewModel.triggerManualSync() },
+                        onOpenSyncSettings = { viewModel.setOverlay(BrowserOverlay.SYNC) }
+                    )
+                }
+                BrowserOverlay.NONE -> Unit
+                }
+            }
+        }
+
+        // QR Code Pairing Overlay (CameraX + ZXing) — straight-up / straight-down slide
+        AnimatedVisibility(
+            visible = state.isQrPairingOpen,
+            enter = if (reduceMotion) EnterTransition.None else slideInVertically(tween(280, easing = EmphasizedDecelerateEasing)) { it },
+            exit = if (reduceMotion) ExitTransition.None else slideOutVertically(tween(240, easing = EmphasizedAccelerateEasing)) { it },
+            modifier = Modifier.fillMaxSize(),
+            label = "qr_pairing_slide"
+        ) {
             QrPairingOverlay(
                 onPairingUrlDetected = { url -> viewModel.submitPairingUrl(url) },
                 onClose = { viewModel.closeQrPairing() }
             )
         }
 
-        // Mozilla Account OAuth WebView Flow
-        state.fxaAuthUrl?.let { authUrl ->
-            FxAAuthWebViewOverlay(
-                authUrl = authUrl,
-                isRedirectUrl = { url -> viewModel.isFxAOAuthRedirectUrl(url) },
-                onRedirectCaptured = { redirect -> viewModel.handleFxAAuthRedirect(redirect) },
-                onCancel = { viewModel.cancelFxAAuth() }
-            )
+        // Mozilla Account OAuth WebView Flow — straight-up / straight-down slide
+        var cachedFxaAuthUrl by remember { mutableStateOf<String?>(null) }
+        if (state.fxaAuthUrl != null) {
+            cachedFxaAuthUrl = state.fxaAuthUrl
+        }
+        AnimatedVisibility(
+            visible = state.fxaAuthUrl != null,
+            enter = if (reduceMotion) EnterTransition.None else slideInVertically(tween(280, easing = EmphasizedDecelerateEasing)) { it },
+            exit = if (reduceMotion) ExitTransition.None else slideOutVertically(tween(240, easing = EmphasizedAccelerateEasing)) { it },
+            modifier = Modifier.fillMaxSize(),
+            label = "fxa_auth_slide"
+        ) {
+            cachedFxaAuthUrl?.let { authUrl ->
+                FxAAuthWebViewOverlay(
+                    authUrl = authUrl,
+                    isRedirectUrl = { url -> viewModel.isFxAOAuthRedirectUrl(url) },
+                    onRedirectCaptured = { redirect -> viewModel.handleFxAAuthRedirect(redirect) },
+                    onCancel = { viewModel.cancelFxAAuth() }
+                )
+            }
         }
 
-        // Native Reader Mode Overlay
+        // Native Reader Mode Overlay — straight-up / straight-down slide (article cached through exit)
+        var cachedReaderArticle by remember { mutableStateOf<ReaderArticle?>(null) }
+        if (state.readerArticle != null) {
+            cachedReaderArticle = state.readerArticle
+        }
         AnimatedVisibility(
             visible = state.readerArticle != null,
-            enter = if (reduceMotion) EnterTransition.None else (fadeIn(tween(180)) + slideInVertically(tween(200)) { it / 24 }),
-            exit = if (reduceMotion) ExitTransition.None else (fadeOut(tween(140)) + slideOutVertically(tween(160)) { it / 24 })
+            enter = if (reduceMotion) EnterTransition.None else slideInVertically(tween(280, easing = EmphasizedDecelerateEasing)) { it },
+            exit = if (reduceMotion) ExitTransition.None else slideOutVertically(tween(240, easing = EmphasizedAccelerateEasing)) { it },
+            modifier = Modifier.fillMaxSize(),
+            label = "reader_mode_slide"
         ) {
-            state.readerArticle?.let { article ->
+            cachedReaderArticle?.let { article ->
                 val tabIsPrivate = activeTab?.isPrivate == true
                 ReaderModeOverlay(
                     article = article,
@@ -841,14 +962,12 @@ fun BrowserScreen(
             }
         }
 
-        // Focused Omnibox overlay
-        AnimatedVisibility(
-            visible = state.isOmniboxFocused,
-            enter = if (reduceMotion) EnterTransition.None else fadeIn(),
-            exit = if (reduceMotion) ExitTransition.None else fadeOut()
-        ) {
+        // Focused Omnibox overlay with smooth bounds-anchored morph expand from whichever search bar was tapped
+        if (state.isOmniboxFocused || omniboxProgress.value > 0.001f) {
             OmniboxOverlay(
                 isVisible = state.isOmniboxFocused,
+                expandProgress = omniboxProgress.value,
+                sourceRect = omniboxSourceRect,
                 query = state.omniboxQuery,
                 searchEngineLabel = state.settings.searchEngine.label,
                 suggestions = state.omniboxSuggestions,
@@ -1010,6 +1129,9 @@ fun BrowserShellLayout(
     state: BrowserUiState,
     onFocusOmnibox: () -> Unit,
     onFocusSearchFresh: () -> Unit,
+    onFocusOmniboxFromRect: (Rect?, Boolean) -> Unit = { _, prefill ->
+        if (prefill) onFocusOmnibox() else onFocusSearchFresh()
+    },
     onGoBack: () -> Unit,
     onGoForward: () -> Unit,
     onReloadOrStop: () -> Unit,
@@ -1043,6 +1165,11 @@ fun BrowserShellLayout(
     onUndoTemporaryZap: () -> Unit,
     onStopZapper: () -> Unit,
     tabWebContent: @Composable (tab: BrowserTabUi, isExiting: Boolean) -> Unit,
+    itemCallbacks: WorkspaceItemCallbacks = WorkspaceItemCallbacks(
+        onDeleteSpace = onDeleteSpace,
+        onAddEssential = onAddEssential,
+        onRemoveEssential = onRemoveEssential
+    ),
     toolbarsCollapsed: Boolean = false,
     toolbarCollapseProgressProvider: () -> Float = { 0f },
     onChromeHeightsMeasured: (topBarPx: Int, bottomBarPx: Int) -> Unit = { _, _ -> }
@@ -1150,7 +1277,8 @@ fun BrowserShellLayout(
                     onCreatePrivateTab = onCreatePrivateTab,
                     onOpenEssential = onOpenUrl,
                     onCreateSpace = onCreateSpace,
-                    onDeleteSpace = onDeleteSpace
+                    onDeleteSpace = onDeleteSpace,
+                    itemCallbacks = itemCallbacks
                 )
             }
 
@@ -1206,7 +1334,7 @@ fun BrowserShellLayout(
                                     showSidebarToggle = posture == DevicePosture.FOLDED,
                                     isSidebarOpen = state.isFoldedSidebarOpen,
                                     onToggleSidebar = onToggleWorkspaceSidebar,
-                                    onFocusOmnibox = onFocusOmnibox,
+                                    onFocusOmnibox = { rect -> onFocusOmniboxFromRect(rect, true) },
                                     onGoBack = onGoBack,
                                     onGoForward = onGoForward,
                                     onReloadOrStop = onReloadOrStop,
@@ -1222,7 +1350,7 @@ fun BrowserShellLayout(
                                     isTop = true,
                                     showInlineNav = false,
                                     showTrailingActions = false,
-                                    onFocusOmnibox = onFocusOmnibox,
+                                    onFocusOmnibox = { rect -> onFocusOmniboxFromRect(rect, true) },
                                     onGoBack = onGoBack,
                                     onGoForward = onGoForward,
                                     onReloadOrStop = onReloadOrStop,
@@ -1264,7 +1392,7 @@ fun BrowserShellLayout(
                                     showSidebarToggle = posture == DevicePosture.FOLDED,
                                     isSidebarOpen = state.isFoldedSidebarOpen,
                                     onToggleSidebar = onToggleWorkspaceSidebar,
-                                    onFocusOmnibox = onFocusOmnibox,
+                                    onFocusOmnibox = { rect -> onFocusOmniboxFromRect(rect, true) },
                                     onGoBack = onGoBack,
                                     onGoForward = onGoForward,
                                     onReloadOrStop = onReloadOrStop,
@@ -1310,11 +1438,13 @@ fun BrowserShellLayout(
                             StartPageContent(
                                 state = state,
                                 onFocusOmnibox = onFocusSearchFresh,
+                                onFocusOmniboxFromRect = { rect -> onFocusOmniboxFromRect(rect, false) },
                                 onOpenUrl = onOpenUrl,
                                 onSelectSpace = onSelectSpace,
                                 onSelectTab = onSelectTab,
                                 onAddEssential = onAddEssential,
                                 onRemoveEssential = onRemoveEssential,
+                                itemCallbacks = itemCallbacks,
                                 addBottomNavInset = !hasBottomToolbar && !hideChrome,
                                 modifier = Modifier.insetByChromeHeights(chromeHeights)
                             )
@@ -1338,8 +1468,9 @@ fun BrowserShellLayout(
 
                         // Compact top domain badge when Side Rail placement is active on unfolded display
                         if (!hideChrome && placement == ToolbarPlacement.SIDE_RAIL && activeTab != null && !activeTab.isStartPage) {
+                            var sideRailBadgeRect by remember { mutableStateOf<Rect?>(null) }
                             Surface(
-                                onClick = onFocusOmnibox,
+                                onClick = { onFocusOmniboxFromRect(sideRailBadgeRect, true) },
                                 enabled = !toolbarsCollapsed,
                                 shape = RoundedCornerShape(24.dp),
                                 color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.94f),
@@ -1348,6 +1479,9 @@ fun BrowserShellLayout(
                                     .align(Alignment.TopCenter)
                                     .padding(top = 8.dp)
                                     .heightIn(min = 48.dp)
+                                    .onGloballyPositioned { coords ->
+                                        if (coords.isAttached) sideRailBadgeRect = coords.boundsInRoot()
+                                    }
                                     .graphicsLayer {
                                         val progress = toolbarCollapseProgressProvider().coerceIn(0f, 1f)
                                         translationY = -(size.height + 24f) * progress
@@ -1375,14 +1509,26 @@ fun BrowserShellLayout(
                             }
                         }
 
-                        if (state.isReaderLoading) {
+                        androidx.compose.animation.AnimatedVisibility(
+                            visible = state.isReaderLoading,
+                            enter = if (reduceMotion) {
+                                EnterTransition.None
+                            } else {
+                                fadeIn(tween(150)) + scaleIn(tween(180, easing = EmphasizedDecelerateEasing), initialScale = 0.92f)
+                            },
+                            exit = if (reduceMotion) {
+                                ExitTransition.None
+                            } else {
+                                fadeOut(tween(120)) + scaleOut(tween(140, easing = EmphasizedAccelerateEasing), targetScale = 0.94f)
+                            },
+                            modifier = Modifier.align(Alignment.Center),
+                            label = "reader_loading_pill"
+                        ) {
                             Surface(
                                 shape = RoundedCornerShape(24.dp),
                                 color = MaterialTheme.colorScheme.surfaceContainerHigh,
                                 tonalElevation = 4.dp,
-                                modifier = Modifier
-                                    .align(Alignment.Center)
-                                    .padding(20.dp)
+                                modifier = Modifier.padding(20.dp)
                             ) {
                                 Row(
                                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp),
@@ -1395,9 +1541,29 @@ fun BrowserShellLayout(
                             }
                         }
 
-                        if (state.zapper.isActive && !hideChrome) {
-                            val dockTop = state.zapper.selectedSelector != null &&
-                                state.zapper.selectedViewportCenterY > 0.55f
+                        val dockZapperTop = state.zapper.selectedSelector != null &&
+                            state.zapper.selectedViewportCenterY > 0.55f
+                        androidx.compose.animation.AnimatedVisibility(
+                            visible = state.zapper.isActive && !hideChrome,
+                            enter = if (reduceMotion) {
+                                EnterTransition.None
+                            } else {
+                                fadeIn(tween(180)) + slideInVertically(tween(220, easing = EmphasizedDecelerateEasing)) {
+                                    if (dockZapperTop) -it else it
+                                }
+                            },
+                            exit = if (reduceMotion) {
+                                ExitTransition.None
+                            } else {
+                                fadeOut(tween(150)) + slideOutVertically(tween(180, easing = EmphasizedAccelerateEasing)) {
+                                    if (dockZapperTop) -it else it
+                                }
+                            },
+                            modifier = Modifier
+                                .align(if (dockZapperTop) Alignment.TopCenter else Alignment.BottomCenter)
+                                .then(if (!dockZapperTop && !hasBottomToolbar) Modifier.navigationBarsPadding() else Modifier),
+                            label = "zapper_hud_visibility"
+                        ) {
                             ZapperHudOverlay(
                                 state = state.zapper,
                                 onAdjustScope = onAdjustZapperScope,
@@ -1406,10 +1572,7 @@ fun BrowserShellLayout(
                                 onZapOnce = onZapOnce,
                                 onBlockPermanently = onBlockPermanently,
                                 onUndoTemporaryZap = onUndoTemporaryZap,
-                                onDone = onStopZapper,
-                                modifier = Modifier
-                                    .align(if (dockTop) Alignment.TopCenter else Alignment.BottomCenter)
-                                    .then(if (!dockTop && !hasBottomToolbar) Modifier.navigationBarsPadding() else Modifier)
+                                onDone = onStopZapper
                             )
                         }
                     }
@@ -1430,7 +1593,8 @@ fun BrowserShellLayout(
                                 onCreatePrivateTab = onCreatePrivateTab,
                                 onOpenUrl = onOpenUrl,
                                 onCreateSpace = onCreateSpace,
-                                onDeleteSpace = onDeleteSpace
+                                onDeleteSpace = onDeleteSpace,
+                                itemCallbacks = itemCallbacks
                             )
                         }
                     }
@@ -1441,7 +1605,7 @@ fun BrowserShellLayout(
             if (!hideChrome && placement == ToolbarPlacement.SIDE_RAIL) {
                 ErgonomicSideRail(
                     state = state,
-                    onFocusOmnibox = onFocusOmnibox,
+                    onFocusOmnibox = { rect -> onFocusOmniboxFromRect(rect, true) },
                     onGoBack = onGoBack,
                     onGoForward = onGoForward,
                     onReloadOrStop = onReloadOrStop,
@@ -1469,7 +1633,8 @@ private fun BoxScope.FoldedSidebarDrawerOverlay(
     onCreatePrivateTab: () -> Unit,
     onOpenUrl: (String) -> Unit,
     onCreateSpace: (String, String, Boolean) -> Unit,
-    onDeleteSpace: (String) -> Unit
+    onDeleteSpace: (String) -> Unit,
+    itemCallbacks: WorkspaceItemCallbacks
 ) {
     AnimatedVisibility(
         visible = state.isFoldedSidebarOpen,
@@ -1579,7 +1744,8 @@ private fun BoxScope.FoldedSidebarDrawerOverlay(
                 onCreatePrivateTab = onCreatePrivateTab,
                 onOpenEssential = onOpenUrl,
                 onCreateSpace = onCreateSpace,
-                onDeleteSpace = onDeleteSpace
+                onDeleteSpace = onDeleteSpace,
+                itemCallbacks = itemCallbacks
             )
         }
     }
@@ -1596,7 +1762,7 @@ private fun FullOmniboxToolbar(
     isTop: Boolean,
     showInlineNav: Boolean,
     showTrailingActions: Boolean,
-    onFocusOmnibox: () -> Unit,
+    onFocusOmnibox: (Rect?) -> Unit,
     onGoBack: () -> Unit,
     onGoForward: () -> Unit,
     onReloadOrStop: () -> Unit,
@@ -1734,9 +1900,10 @@ private fun FullOmniboxToolbar(
                     }
                 }
 
-                // Rounded Omnibox Capsule Pill (26dp radius + swipe tab switch)
+                // Rounded Omnibox Capsule Pill (26dp radius + swipe tab switch + bounds tracking for morph expand)
+                var urlPillRect by remember { mutableStateOf<Rect?>(null) }
                 Surface(
-                    onClick = onFocusOmnibox,
+                    onClick = { onFocusOmnibox(urlPillRect) },
                     shape = RoundedCornerShape(26.dp),
                     color = if (isPrivate) {
                         foxColors.privateContainer
@@ -1754,6 +1921,9 @@ private fun FullOmniboxToolbar(
                     modifier = Modifier
                         .weight(1f)
                         .heightIn(min = 48.dp)
+                        .onGloballyPositioned { coords ->
+                            if (coords.isAttached) urlPillRect = coords.boundsInRoot()
+                        }
                         .then(swipeModifier)
                 ) {
                     Row(
@@ -2039,7 +2209,7 @@ private fun SplitBottomActionBar(
 @Composable
 private fun ErgonomicSideRail(
     state: BrowserUiState,
-    onFocusOmnibox: () -> Unit,
+    onFocusOmnibox: (Rect?) -> Unit,
     onGoBack: () -> Unit,
     onGoForward: () -> Unit,
     onReloadOrStop: () -> Unit,
@@ -2051,6 +2221,7 @@ private fun ErgonomicSideRail(
     val activeTab = state.activeTab
     val isPrivate = activeTab?.isPrivate == true || state.isPrivateView
     val tabCount = state.visibleTabs.size.coerceAtLeast(1)
+    var searchButtonRect by remember { mutableStateOf<Rect?>(null) }
 
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -2073,10 +2244,14 @@ private fun ErgonomicSideRail(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Surface(
-                    onClick = onFocusOmnibox,
+                    onClick = { onFocusOmnibox(searchButtonRect) },
                     shape = CircleShape,
                     color = MaterialTheme.colorScheme.primaryContainer,
-                    modifier = Modifier.size(48.dp)
+                    modifier = Modifier
+                        .size(48.dp)
+                        .onGloballyPositioned { coords ->
+                            if (coords.isAttached) searchButtonRect = coords.boundsInRoot()
+                        }
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
@@ -2164,6 +2339,7 @@ private fun TabCountBadgeButton(
     onClick: () -> Unit
 ) {
     val foxColors = LocalSwiftfoxColors.current
+    val reduceMotion = rememberReduceMotion()
     IconButton(
         onClick = onClick,
         modifier = Modifier.size(48.dp)
@@ -2185,11 +2361,32 @@ private fun TabCountBadgeButton(
                 contentAlignment = Alignment.Center,
                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
             ) {
-                Text(
-                    text = if (count > 99) "99+" else count.toString(),
-                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                    color = if (isPrivate) foxColors.onPrivateContainer else MaterialTheme.colorScheme.onPrimaryContainer
-                )
+                AnimatedContent(
+                    targetState = count,
+                    transitionSpec = {
+                        when {
+                            reduceMotion ->
+                                (EnterTransition.None togetherWith ExitTransition.None) using null
+                            targetState > initialState ->
+                                (slideInVertically(tween(180, easing = EmphasizedDecelerateEasing)) { it / 2 } +
+                                    fadeIn(tween(140)) togetherWith
+                                    slideOutVertically(tween(140, easing = EmphasizedAccelerateEasing)) { -it / 2 } +
+                                    fadeOut(tween(100))) using null
+                            else ->
+                                (slideInVertically(tween(180, easing = EmphasizedDecelerateEasing)) { -it / 2 } +
+                                    fadeIn(tween(140)) togetherWith
+                                    slideOutVertically(tween(140, easing = EmphasizedAccelerateEasing)) { it / 2 } +
+                                    fadeOut(tween(100))) using null
+                        }
+                    },
+                    label = "tab_count_roll"
+                ) { displayedCount ->
+                    Text(
+                        text = if (displayedCount > 99) "99+" else displayedCount.toString(),
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                        color = if (isPrivate) foxColors.onPrivateContainer else MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                }
             }
         }
     }

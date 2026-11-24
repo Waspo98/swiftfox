@@ -30,6 +30,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.core.content.ContextCompat
@@ -44,6 +45,7 @@ import app.overbay.swiftfox.data.prefs.ThemeMode
 import app.overbay.swiftfox.features.foldable.PostureObserver
 import app.overbay.swiftfox.ui.browser.BrowserScreen
 import app.overbay.swiftfox.ui.browser.BrowserViewModel
+import app.overbay.swiftfox.ui.components.LocalFaviconRepository
 import app.overbay.swiftfox.ui.theme.SwiftfoxTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -190,40 +192,44 @@ class MainActivity : ComponentActivity() {
                 accentPreset = state.settings.accentPreset,
                 useDynamicColor = state.settings.useDynamicColor
             ) {
-                BrowserScreen(
-                    state = state,
-                    thumbnailsFlow = viewModel.thumbnails,
-                    viewModel = viewModel,
-                    onShareUrl = { cleanUrl, strippedCount ->
-                        val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                            type = "text/plain"
-                            putExtra(Intent.EXTRA_TEXT, cleanUrl)
-                            state.activeTab?.title?.takeIf { it.isNotBlank() }?.let {
-                                putExtra(Intent.EXTRA_SUBJECT, it)
+                CompositionLocalProvider(
+                    LocalFaviconRepository provides (application as SwiftfoxApp).faviconRepository
+                ) {
+                    BrowserScreen(
+                        state = state,
+                        thumbnailsFlow = viewModel.thumbnails,
+                        viewModel = viewModel,
+                        onShareUrl = { cleanUrl, strippedCount ->
+                            val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(Intent.EXTRA_TEXT, cleanUrl)
+                                state.activeTab?.title?.takeIf { it.isNotBlank() }?.let {
+                                    putExtra(Intent.EXTRA_SUBJECT, it)
+                                }
                             }
-                        }
-                        startActivity(Intent.createChooser(shareIntent, "Share clean link"))
-                        if (strippedCount > 0) {
-                            viewModel.showSnackbar("Stripped $strippedCount tracking params before sharing")
-                        }
-                    },
-                    onCopyText = { text ->
-                        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        val clip = ClipData.newPlainText("Swiftfox Link", text)
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-                            (state.activeTab?.isPrivate == true || state.isPrivateView)
-                        ) {
-                            clip.description.extras = PersistableBundle().apply {
-                                putBoolean(ClipDescription.EXTRA_IS_SENSITIVE, true)
+                            startActivity(Intent.createChooser(shareIntent, "Share clean link"))
+                            if (strippedCount > 0) {
+                                viewModel.showSnackbar("Stripped $strippedCount tracking params before sharing")
                             }
-                        }
-                        cm.setPrimaryClip(clip)
-                    },
-                    onPrintPage = { printCurrentPage() },
-                    onEnterPip = { enterSwiftfoxPip() },
-                    onOpenDefaultBrowserSettings = { requestDefaultBrowserRole() },
-                    onExitFullscreenVideo = { exitFullscreenVideo() }
-                )
+                        },
+                        onCopyText = { text ->
+                            val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            val clip = ClipData.newPlainText("Swiftfox Link", text)
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                                (state.activeTab?.isPrivate == true || state.isPrivateView)
+                            ) {
+                                clip.description.extras = PersistableBundle().apply {
+                                    putBoolean(ClipDescription.EXTRA_IS_SENSITIVE, true)
+                                }
+                            }
+                            cm.setPrimaryClip(clip)
+                        },
+                        onPrintPage = { printCurrentPage() },
+                        onEnterPip = { enterSwiftfoxPip() },
+                        onOpenDefaultBrowserSettings = { requestDefaultBrowserRole() },
+                        onExitFullscreenVideo = { exitFullscreenVideo() }
+                    )
+                }
             }
         }
     }

@@ -54,6 +54,7 @@ import app.overbay.swiftfox.features.darkreader.DarkReaderConfig
 import app.overbay.swiftfox.features.darkreader.ResolvedWebDarkState
 import app.overbay.swiftfox.features.foldable.FoldableWindowState
 import app.overbay.swiftfox.features.foldable.SiteModeResolver
+import app.overbay.swiftfox.features.icons.CustomIconSpec
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
 import app.overbay.swiftfox.features.omnibox.OmniboxSuggestion
 import app.overbay.swiftfox.features.omnibox.SuggestionKind
@@ -556,6 +557,20 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 lastRecordedHistoryUrlByTab[tabId] == tab.url
             ) {
                 maybeUpdateRecordedHistoryTitle(tabId, tab.url, title)
+            }
+        }
+
+        override fun onFaviconReceived(tabId: String, url: String?, icon: android.graphics.Bitmap) {
+            val tab = _uiState.value.tabs.firstOrNull { it.id == tabId } ?: return
+            val targetUrl = url?.takeIf { it.isNotBlank() } ?: tab.url
+            if (targetUrl.isBlank() || targetUrl == OmniboxEngine.NEW_TAB_URL) return
+            viewModelScope.launch {
+                app.faviconRepository.recordWebViewFavicon(
+                    url = targetUrl,
+                    bitmap = icon,
+                    isPrivate = tab.isPrivate,
+                    tabId = tabId
+                )
             }
         }
 
@@ -1391,6 +1406,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                             title = entity.title,
                             url = entity.url,
                             isPrivate = false,
+                            isPinned = entity.isPinned,
+                            customIcon = entity.customIcon,
+                            customTitle = entity.customTitle,
+                            sortOrder = entity.sortOrder,
                             siteModeOverride = tabOverride,
                             resolvedSiteMode = SiteModeResolver.resolve(tabOverride, siteOverride, profile),
                             lastAccessedAt = entity.lastAccessedAt
@@ -1738,13 +1757,18 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     db.tabDao().deleteById(tabId)
                 }
             }
-        } else if (clearAllPrivateState) {
-            synchronized(privateUserscriptStorageLock) {
-                privateSessionGeneration.incrementAndGet()
-                privateUserscriptStorage.clear()
-                privateDeletedUserscriptKeys.clear()
+            cleanupUnusedCustomImage(closing.customIcon)
+        } else {
+            app.faviconRepository.clearPrivateTabIcon(tabId)
+            if (clearAllPrivateState) {
+                app.faviconRepository.clearAllPrivateIcons()
+                synchronized(privateUserscriptStorageLock) {
+                    privateSessionGeneration.incrementAndGet()
+                    privateUserscriptStorage.clear()
+                    privateDeletedUserscriptKeys.clear()
+                }
+                pool.clearPrivateProfileData()
             }
-            pool.clearPrivateProfileData()
         }
 
         val visibleRemaining = if (closing.isPrivate) {
@@ -1984,9 +2008,53 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             selectSpace(fallback.id)
         }
         showSnackbar("Deleted Space \"${spaceToDelete.name}\"")
+        cleanupUnusedCustomImage(spaceToDelete.iconKey)
     }
 
-    fun addEssential(title: String, rawUrl: String) {
+    fun renameSpace(spaceId: String, newName: String) {
+        val trimmed = newName.trim()
+        if (trimmed.isEmpty()) return
+        val existing = _uiState.value.spaces.firstOrNull { it.id == spaceId } ?: return
+        val updated = existing.copy(name = trimmed)
+        _uiState.update { state ->
+            state.copy(spaces = state.spaces.map { if (it.id == spaceId) updated else it })
+        }
+        viewModelScope.launch { db.spaceDao().upsert(updated) }
+        showSnackbar("Renamed workspace to \"$trimmed\"")
+    }
+
+    fun setSpaceIcon(spaceId: String, iconKey: String) {
+        val existing = _uiState.value.spaces.firstOrNull { it.id == spaceId } ?: return
+        val oldIcon = existing.iconKey
+        val nextKey = iconKey.trim().ifEmpty { "layers" }
+        val updated = existing.copy(iconKey = nextKey)
+        _uiState.update { state ->
+            state.copy(spaces = state.spaces.map { if (it.id == spaceId) updated else it })
+        }
+        viewModelScope.launch { db.spaceDao().upsert(updated) }
+        if (oldIcon != nextKey) cleanupUnusedCustomImage(oldIcon)
+    }
+
+    fun reorderSpaces(orderedIds: List<String>) {
+        if (orderedIds.isEmpty()) return
+        val current = _uiState.value.spaces
+        val byId = current.associateBy { it.id }
+        val seen = mutableSetOf<String>()
+        val reordered = buildList {
+            for (id in orderedIds) {
+                val space = byId[id]
+                if (space != null && seen.add(id)) add(space)
+            }
+            for (space in current) {
+                if (seen.add(space.id)) add(space)
+            }
+        }.mapIndexed { idx, space -> space.copy(sortOrder = idx) }
+
+        _uiState.update { it.copy(spaces = reordered) }
+        viewModelScope.launch { db.spaceDao().upsertAll(reordered) }
+    }
+
+    fun addEssential(title: String, rawUrl: String, customIcon: String? = null) {
         val resolved = OmniboxEngine.resolveInput(rawUrl, _uiState.value.settings)
         val host = OmniboxEngine.extractHost(resolved)
         val essential = EssentialEntity(
@@ -1994,7 +2062,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             title = title.trim().ifBlank { host.ifBlank { "Site" } },
             url = resolved,
             domain = host.ifBlank { resolved },
-            sortOrder = _uiState.value.essentials.size
+            sortOrder = _uiState.value.essentials.size,
+            customIcon = customIcon
         )
         viewModelScope.launch {
             db.essentialDao().upsert(essential)
@@ -2002,14 +2071,239 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun updateEssential(id: String, title: String, rawUrl: String) {
+        val existing = _uiState.value.essentials.firstOrNull { it.id == id } ?: return
+        val resolved = OmniboxEngine.resolveInput(rawUrl, _uiState.value.settings)
+        val host = OmniboxEngine.extractHost(resolved)
+        val updated = existing.copy(
+            title = title.trim().ifBlank { host.ifBlank { existing.title } },
+            url = resolved,
+            domain = host.ifBlank { resolved }
+        )
+        _uiState.update { state ->
+            state.copy(essentials = state.essentials.map { if (it.id == id) updated else it })
+        }
+        viewModelScope.launch { db.essentialDao().upsert(updated) }
+        showSnackbar("Updated ${updated.title}")
+    }
+
+    fun setEssentialCustomIcon(id: String, customIcon: String?) {
+        val existing = _uiState.value.essentials.firstOrNull { it.id == id } ?: return
+        val oldIcon = existing.customIcon
+        val updated = existing.copy(customIcon = customIcon)
+        _uiState.update { state ->
+            state.copy(essentials = state.essentials.map { if (it.id == id) updated else it })
+        }
+        viewModelScope.launch { db.essentialDao().upsert(updated) }
+        if (oldIcon != customIcon) cleanupUnusedCustomImage(oldIcon)
+    }
+
+    fun reorderEssentials(orderedIds: List<String>) {
+        if (orderedIds.isEmpty()) return
+        val current = _uiState.value.essentials
+        val byId = current.associateBy { it.id }
+        val targetSet = orderedIds.toSet()
+        val orderedSubset = orderedIds.mapNotNull { byId[it] }
+        if (orderedSubset.isEmpty()) return
+
+        // Place reordered visible essentials back into the slots they occupied so hidden container essentials keep relative order
+        var subsetCursor = 0
+        val merged = current.map { ess ->
+            if (ess.id in targetSet && subsetCursor < orderedSubset.size) {
+                orderedSubset[subsetCursor++]
+            } else {
+                ess
+            }
+        }.mapIndexed { idx, ess -> ess.copy(sortOrder = idx) }
+
+        _uiState.update { it.copy(essentials = merged) }
+        viewModelScope.launch { db.essentialDao().upsertAll(merged) }
+    }
+
     fun removeEssential(id: String) {
+        val existing = _uiState.value.essentials.firstOrNull { it.id == id }
+        _uiState.update { state ->
+            state.copy(essentials = state.essentials.filterNot { it.id == id })
+        }
         viewModelScope.launch { db.essentialDao().deleteById(id) }
+        cleanupUnusedCustomImage(existing?.customIcon)
     }
 
     fun pinCurrentTabToEssentials() {
         val tab = _uiState.value.activeTab ?: return
         if (tab.isStartPage) return
-        addEssential(tab.title.take(18), tab.url)
+        addEssential(tab.displayTitle.take(24), tab.url, tab.customIcon)
+    }
+
+    fun addTabToEssentials(tabId: String) {
+        val tab = _uiState.value.tabs.firstOrNull { it.id == tabId } ?: return
+        if (tab.isPrivate || tab.isStartPage) return
+        addEssential(tab.displayTitle.take(24), tab.url, tab.customIcon)
+    }
+
+    fun setTabPinned(tabId: String, pinned: Boolean) {
+        val target = _uiState.value.tabs.firstOrNull { it.id == tabId } ?: return
+        if (target.isPrivate || target.isPinned == pinned) return
+        val updatedTab = target.copy(isPinned = pinned)
+        _uiState.update { state ->
+            val otherTabs = state.tabs.filterNot { it.id == tabId }
+            val reordered = if (pinned) {
+                val spacePinned = otherTabs.filter { !it.isPrivate && it.spaceId == target.spaceId && it.isPinned }
+                val insertAfterId = spacePinned.lastOrNull()?.id
+                if (insertAfterId != null) {
+                    val idx = otherTabs.indexOfFirst { it.id == insertAfterId } + 1
+                    otherTabs.toMutableList().apply { add(idx, updatedTab) }
+                } else {
+                    listOf(updatedTab) + otherTabs
+                }
+            } else {
+                otherTabs + updatedTab
+            }
+            state.copy(tabs = reordered)
+        }
+        persistTabsForSpace(target.spaceId)
+        showSnackbar(if (pinned) "Pinned ${updatedTab.displayTitle}" else "Unpinned ${updatedTab.displayTitle}")
+    }
+
+    fun editTabTitleAndUrl(tabId: String, title: String, rawUrl: String) {
+        val target = _uiState.value.tabs.firstOrNull { it.id == tabId } ?: return
+        val resolvedUrl = OmniboxEngine.resolveInput(rawUrl, _uiState.value.settings)
+        val urlChanged = !resolvedUrl.equals(target.url, ignoreCase = false)
+        val host = OmniboxEngine.extractHost(resolvedUrl)
+        val cleanTitle = title.trim().ifBlank { host.ifBlank { target.title } }
+        val updatedTab = target.copy(
+            title = if (urlChanged) cleanTitle else target.title,
+            customTitle = cleanTitle,
+            url = resolvedUrl
+        )
+        updateTab(tabId) { updatedTab }
+        if (urlChanged) {
+            pool.discardHibernatedState(tabId)
+            val existingSession = pool.getExisting(tabId)
+            if (existingSession != null && !existingSession.isDestroyed) {
+                val effective = resolveHttpsOnlyForProgrammaticLoad(tabId, resolvedUrl, existingSession)
+                existingSession.loadUrl(effective)
+            }
+        }
+        if (!target.isPrivate) {
+            persistTab(updatedTab)
+        }
+        showSnackbar("Updated $cleanTitle")
+    }
+
+    fun setTabCustomIcon(tabId: String, customIcon: String?) {
+        val target = _uiState.value.tabs.firstOrNull { it.id == tabId } ?: return
+        if (target.isPrivate) return
+        val oldIcon = target.customIcon
+        val updatedTab = target.copy(customIcon = customIcon)
+        updateTab(tabId) { updatedTab }
+        persistTab(updatedTab)
+        if (oldIcon != customIcon) cleanupUnusedCustomImage(oldIcon)
+    }
+
+    fun reorderTabs(orderedIds: List<String>, pinnedSection: Boolean) {
+        if (orderedIds.isEmpty()) return
+        val state = _uiState.value
+        val isPrivate = state.isPrivateView
+        val activeSpace = state.activeSpaceId
+        val targetSet = orderedIds.toSet()
+        val byId = state.tabs.associateBy { it.id }
+        val orderedSubset = orderedIds.mapNotNull { byId[it] }
+        if (orderedSubset.isEmpty()) return
+
+        var cursor = 0
+        val updatedTabs = state.tabs.map { tab ->
+            val belongsToSection = if (isPrivate) {
+                tab.isPrivate
+            } else {
+                !tab.isPrivate && tab.spaceId == activeSpace && tab.isPinned == pinnedSection
+            }
+            if (belongsToSection && tab.id in targetSet && cursor < orderedSubset.size) {
+                orderedSubset[cursor++]
+            } else {
+                tab
+            }
+        }
+        _uiState.update { it.copy(tabs = updatedTabs) }
+        if (!isPrivate) {
+            persistTabsForSpace(activeSpace)
+        }
+    }
+
+    fun updateZenPinnedItem(id: String, title: String, rawUrl: String) {
+        val existing = _uiState.value.zenPinnedItems.firstOrNull { it.id == id } ?: return
+        val resolved = OmniboxEngine.resolveInput(rawUrl, _uiState.value.settings)
+        val host = OmniboxEngine.extractHost(resolved)
+        val updated = existing.copy(
+            title = title.trim().ifBlank { host.ifBlank { existing.title } },
+            url = resolved
+        )
+        _uiState.update { state ->
+            state.copy(zenPinnedItems = state.zenPinnedItems.map { if (it.id == id) updated else it })
+        }
+        viewModelScope.launch { db.zenPinnedItemDao().upsert(updated) }
+        showSnackbar("Updated ${updated.title}")
+    }
+
+    fun setZenPinnedCustomIcon(id: String, customIcon: String?) {
+        val existing = _uiState.value.zenPinnedItems.firstOrNull { it.id == id } ?: return
+        val oldIcon = existing.customIcon
+        val updated = existing.copy(customIcon = customIcon)
+        _uiState.update { state ->
+            state.copy(zenPinnedItems = state.zenPinnedItems.map { if (it.id == id) updated else it })
+        }
+        viewModelScope.launch { db.zenPinnedItemDao().upsert(updated) }
+        if (oldIcon != customIcon) cleanupUnusedCustomImage(oldIcon)
+    }
+
+    fun addZenPinnedToEssentials(id: String) {
+        val item = _uiState.value.zenPinnedItems.firstOrNull { it.id == id } ?: return
+        addEssential(item.title.take(24), item.url, item.customIcon)
+    }
+
+    fun deleteZenPinnedItem(id: String) {
+        val existing = _uiState.value.zenPinnedItems.firstOrNull { it.id == id }
+        _uiState.update { state ->
+            state.copy(zenPinnedItems = state.zenPinnedItems.filterNot { it.id == id })
+        }
+        viewModelScope.launch { db.zenPinnedItemDao().deleteById(id) }
+        cleanupUnusedCustomImage(existing?.customIcon)
+    }
+
+    fun reorderZenPinnedItems(orderedIds: List<String>) {
+        if (orderedIds.isEmpty()) return
+        val current = _uiState.value.zenPinnedItems
+        val byId = current.associateBy { it.id }
+        val targetSet = orderedIds.toSet()
+        val orderedSubset = orderedIds.mapNotNull { byId[it] }
+        if (orderedSubset.isEmpty()) return
+
+        var cursor = 0
+        val merged = current.map { item ->
+            if (item.id in targetSet && cursor < orderedSubset.size) {
+                orderedSubset[cursor++]
+            } else {
+                item
+            }
+        }.mapIndexed { idx, item -> item.copy(sortOrder = idx) }
+
+        _uiState.update { it.copy(zenPinnedItems = merged) }
+        viewModelScope.launch { db.zenPinnedItemDao().upsertAll(merged) }
+    }
+
+    private fun cleanupUnusedCustomImage(oldSpec: String?) {
+        if (oldSpec.isNullOrBlank() || !oldSpec.startsWith(CustomIconSpec.IMAGE_PREFIX)) {
+            return
+        }
+        val state = _uiState.value
+        val stillReferenced = state.spaces.any { it.iconKey == oldSpec } ||
+            state.essentials.any { it.customIcon == oldSpec } ||
+            state.tabs.any { it.customIcon == oldSpec } ||
+            state.zenPinnedItems.any { it.customIcon == oldSpec } ||
+            state.recentlyClosedTab?.customIcon == oldSpec
+        if (!stillReferenced) {
+            app.faviconRepository.deleteCustomImageIfUnused(oldSpec)
+        }
     }
 
     fun submitOmnibox(rawInput: String) {
@@ -3958,7 +4252,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private fun persistTab(tab: BrowserTabUi) {
         if (tab.isPrivate) return
         val orderIdx = _uiState.value.tabs
-            .filter { !it.isPrivate && it.spaceId == tab.spaceId }
+            .filter { !it.isPrivate && it.spaceId == tab.spaceId && it.isPinned == tab.isPinned }
             .indexOfFirst { it.id == tab.id }
             .coerceAtLeast(0)
         viewModelScope.launch {
@@ -3972,12 +4266,59 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                         title = tab.title,
                         url = tab.url,
                         isPrivate = false,
-                        isPinned = false,
+                        isPinned = tab.isPinned,
                         siteModeOverride = tab.siteModeOverride?.name,
                         lastAccessedAt = tab.lastAccessedAt,
-                        sortOrder = orderIdx
+                        sortOrder = orderIdx,
+                        customIcon = tab.customIcon,
+                        customTitle = tab.customTitle
                     )
                 )
+            }
+        }
+    }
+
+    private fun persistTabsForSpace(spaceId: String) {
+        val spaceTabs = _uiState.value.tabs.filter { !it.isPrivate && it.spaceId == spaceId }
+        val pinnedEntities = spaceTabs.filter { it.isPinned }.mapIndexed { idx, tab ->
+            TabEntity(
+                id = tab.id,
+                spaceId = tab.spaceId,
+                title = tab.title,
+                url = tab.url,
+                isPrivate = false,
+                isPinned = true,
+                siteModeOverride = tab.siteModeOverride?.name,
+                lastAccessedAt = tab.lastAccessedAt,
+                sortOrder = idx,
+                customIcon = tab.customIcon,
+                customTitle = tab.customTitle
+            )
+        }
+        val regularEntities = spaceTabs.filter { !it.isPinned }.mapIndexed { idx, tab ->
+            TabEntity(
+                id = tab.id,
+                spaceId = tab.spaceId,
+                title = tab.title,
+                url = tab.url,
+                isPrivate = false,
+                isPinned = false,
+                siteModeOverride = tab.siteModeOverride?.name,
+                lastAccessedAt = tab.lastAccessedAt,
+                sortOrder = idx,
+                customIcon = tab.customIcon,
+                customTitle = tab.customTitle
+            )
+        }
+        val all = pinnedEntities + regularEntities
+        if (all.isEmpty()) return
+        viewModelScope.launch {
+            tabDbMutex.withLock {
+                val liveIds = _uiState.value.tabs.mapTo(mutableSetOf()) { it.id }
+                val liveEntities = all.filter { it.id in liveIds }
+                if (liveEntities.isNotEmpty()) {
+                    db.tabDao().upsertAll(liveEntities)
+                }
             }
         }
     }

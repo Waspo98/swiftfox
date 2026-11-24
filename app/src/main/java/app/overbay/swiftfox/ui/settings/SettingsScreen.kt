@@ -4,8 +4,11 @@ import android.app.role.RoleManager
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
@@ -76,6 +79,8 @@ import app.overbay.swiftfox.features.sync.SyncAccountState
 import app.overbay.swiftfox.ui.browser.BrowserOverlay
 import app.overbay.swiftfox.ui.browser.BrowserUiState
 import app.overbay.swiftfox.ui.browser.BrowserViewModel
+import app.overbay.swiftfox.ui.browser.EmphasizedAccelerateEasing
+import app.overbay.swiftfox.ui.browser.EmphasizedDecelerateEasing
 import app.overbay.swiftfox.ui.browser.SettingsCategory
 import app.overbay.swiftfox.ui.theme.BetaChannelPill
 import app.overbay.swiftfox.ui.theme.SwiftfoxAppIcon
@@ -160,10 +165,21 @@ fun SettingsScreen(
         AnimatedContent(
             targetState = activeCategory,
             transitionSpec = {
-                if (reduceMotion) {
-                    EnterTransition.None togetherWith ExitTransition.None
-                } else {
-                    fadeIn() togetherWith fadeOut()
+                when {
+                    reduceMotion ->
+                        (EnterTransition.None togetherWith ExitTransition.None) using null
+                    initialState == null && targetState != null ->
+                        (slideInHorizontally(tween(260, easing = EmphasizedDecelerateEasing)) { (it * 0.28f).toInt() } +
+                            fadeIn(tween(180)) togetherWith
+                            slideOutHorizontally(tween(220, easing = EmphasizedAccelerateEasing)) { -(it * 0.14f).toInt() } +
+                            fadeOut(tween(140))) using null
+                    initialState != null && targetState == null ->
+                        (slideInHorizontally(tween(240, easing = EmphasizedDecelerateEasing)) { -(it * 0.14f).toInt() } +
+                            fadeIn(tween(180)) togetherWith
+                            slideOutHorizontally(tween(220, easing = EmphasizedAccelerateEasing)) { (it * 0.28f).toInt() } +
+                            fadeOut(tween(140))) using null
+                    else ->
+                        (fadeIn(tween(160)) togetherWith fadeOut(tween(120))) using null
                 }
             },
             label = "settingsCategoryTransition"

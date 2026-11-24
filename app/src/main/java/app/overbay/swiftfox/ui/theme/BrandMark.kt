@@ -8,12 +8,37 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.AccountBalance
 import androidx.compose.material.icons.rounded.AutoStories
+import androidx.compose.material.icons.rounded.Bolt
+import androidx.compose.material.icons.rounded.Bookmark
+import androidx.compose.material.icons.rounded.Build
+import androidx.compose.material.icons.rounded.CameraAlt
+import androidx.compose.material.icons.rounded.Cloud
 import androidx.compose.material.icons.rounded.Code
+import androidx.compose.material.icons.rounded.Dns
+import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.FitnessCenter
+import androidx.compose.material.icons.rounded.Flight
+import androidx.compose.material.icons.rounded.Folder
+import androidx.compose.material.icons.rounded.Forum
 import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.Layers
+import androidx.compose.material.icons.rounded.Mail
+import androidx.compose.material.icons.rounded.Movie
+import androidx.compose.material.icons.rounded.MusicNote
+import androidx.compose.material.icons.rounded.Newspaper
+import androidx.compose.material.icons.rounded.Palette
+import androidx.compose.material.icons.rounded.Public
+import androidx.compose.material.icons.rounded.Restaurant
+import androidx.compose.material.icons.rounded.RocketLaunch
+import androidx.compose.material.icons.rounded.School
+import androidx.compose.material.icons.rounded.Science
+import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.ShoppingBag
+import androidx.compose.material.icons.rounded.SportsEsports
 import androidx.compose.material.icons.rounded.Star
+import androidx.compose.material.icons.rounded.Terminal
 import androidx.compose.material.icons.rounded.WorkOutline
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -327,12 +352,38 @@ fun SwiftfoxBrandLockup(
     }
 }
 
-fun spaceIconFor(key: String): ImageVector = when (key) {
+fun spaceIconFor(key: String): ImageVector = when (key.lowercase()) {
     "home" -> Icons.Rounded.Home
     "work" -> Icons.Rounded.WorkOutline
     "book" -> Icons.Rounded.AutoStories
     "code" -> Icons.Rounded.Code
     "shop" -> Icons.Rounded.ShoppingBag
     "star" -> Icons.Rounded.Star
+    "layers" -> Icons.Rounded.Layers
+    "rocket" -> Icons.Rounded.RocketLaunch
+    "bolt" -> Icons.Rounded.Bolt
+    "globe" -> Icons.Rounded.Public
+    "music" -> Icons.Rounded.MusicNote
+    "video" -> Icons.Rounded.Movie
+    "games" -> Icons.Rounded.SportsEsports
+    "news" -> Icons.Rounded.Newspaper
+    "mail" -> Icons.Rounded.Mail
+    "chat" -> Icons.Rounded.Forum
+    "cloud" -> Icons.Rounded.Cloud
+    "server" -> Icons.Rounded.Dns
+    "terminal" -> Icons.Rounded.Terminal
+    "finance" -> Icons.Rounded.AccountBalance
+    "fitness" -> Icons.Rounded.FitnessCenter
+    "food" -> Icons.Rounded.Restaurant
+    "travel" -> Icons.Rounded.Flight
+    "school" -> Icons.Rounded.School
+    "science" -> Icons.Rounded.Science
+    "camera" -> Icons.Rounded.CameraAlt
+    "palette" -> Icons.Rounded.Palette
+    "heart" -> Icons.Rounded.Favorite
+    "bookmark" -> Icons.Rounded.Bookmark
+    "shield" -> Icons.Rounded.Shield
+    "wrench" -> Icons.Rounded.Build
+    "folder" -> Icons.Rounded.Folder
     else -> Icons.Rounded.Layers
 }

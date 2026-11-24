@@ -1405,10 +1405,19 @@ class MozillaSyncCoordinator(
                 val prev = existingBySyncGuid[zenSpace.uuid] ?: existingById["zen_${zenSpace.uuid}"]
                 val localId = prev?.id ?: "zen_${zenSpace.uuid}"
                 zenSpaceIdMap[zenSpace.uuid] = localId
+                val prevIconKey = prev?.iconKey
+                val resolvedIconKey = if (
+                    prevIconKey != null &&
+                    (prevIconKey.startsWith("emoji:") || prevIconKey.startsWith("image:"))
+                ) {
+                    prevIconKey
+                } else {
+                    ZenSpacesCodec.mapZenIconToSwiftfoxKey(zenSpace.icon, zenSpace.name)
+                }
                 syncedSpaceEntities += SpaceEntity(
                     id = localId,
                     name = zenSpace.name,
-                    iconKey = ZenSpacesCodec.mapZenIconToSwiftfoxKey(zenSpace.icon, zenSpace.name),
+                    iconKey = resolvedIconKey,
                     containerProfileName = prev?.containerProfileName,
                     sortOrder = idx,
                     createdAt = prev?.createdAt ?: System.currentTimeMillis(),
@@ -1475,7 +1484,8 @@ class MozillaSyncCoordinator(
                         domain = host,
                         sortOrder = essIndex++,
                         syncGuid = entry.tabId,
-                        zenContainerGuid = bucket
+                        zenContainerGuid = bucket,
+                        customIcon = prev?.customIcon
                     )
                 }
             }
@@ -1492,20 +1502,24 @@ class MozillaSyncCoordinator(
                 db.essentialDao().deleteById(oldEss.id)
             }
 
-            // Replace Zen Pinned items per space
+            // Replace Zen Pinned items per space while preserving local custom icons
+            val existingPinnedById = db.zenPinnedItemDao().getAll().associateBy { it.id }
             val pinnedEntities = mutableListOf<ZenPinnedItemEntity>()
             for ((workspaceUuid, entries) in snapshot.pinnedBySpace) {
                 val spaceId = zenSpaceIdMap[workspaceUuid] ?: continue
                 entries.forEachIndexed { idx, entry ->
+                    val pinnedId = "${workspaceUuid}_${entry.tabId}"
+                    val prevPinned = existingPinnedById[pinnedId]
                     pinnedEntities += ZenPinnedItemEntity(
-                        id = "${workspaceUuid}_${entry.tabId}",
+                        id = pinnedId,
                         spaceId = spaceId,
                         zenWorkspaceUuid = workspaceUuid,
                         title = entry.title,
                         url = entry.url,
                         folderName = entry.folderName,
                         isPinned = entry.isPinned,
-                        sortOrder = idx
+                        sortOrder = idx,
+                        customIcon = prevPinned?.customIcon
                     )
                 }
             }

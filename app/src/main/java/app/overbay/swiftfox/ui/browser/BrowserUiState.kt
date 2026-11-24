@@ -57,6 +57,10 @@ data class BrowserTabUi(
     val title: String,
     val url: String,
     val isPrivate: Boolean = false,
+    val isPinned: Boolean = false,
+    val customIcon: String? = null,
+    val customTitle: String? = null,
+    val sortOrder: Int = 0,
     val isPopupWindow: Boolean = false,
     val isLoading: Boolean = false,
     val progress: Int = 0,
@@ -77,6 +81,9 @@ data class BrowserTabUi(
 
     val displayHost: String
         get() = if (isStartPage) "" else OmniboxEngine.extractHost(url).ifBlank { url }
+
+    val displayTitle: String
+        get() = customTitle?.takeIf { it.isNotBlank() } ?: title.ifBlank { "New Tab" }
 
     val isSecureHttps: Boolean
         get() = url.startsWith("https://", ignoreCase = true)
@@ -147,7 +154,24 @@ data class BrowserUiState(
         get() = if (isPrivateView) {
             tabs.filter { it.isPrivate }
         } else {
-            tabs.filter { !it.isPrivate && it.spaceId == activeSpaceId }
+            val spaceTabs = tabs.filter { !it.isPrivate && it.spaceId == activeSpaceId }
+            val pinned = spaceTabs.filter { it.isPinned }
+            val regular = spaceTabs.filter { !it.isPinned }
+            pinned + regular
+        }
+
+    val visiblePinnedTabs: List<BrowserTabUi>
+        get() = if (isPrivateView) {
+            emptyList()
+        } else {
+            tabs.filter { !it.isPrivate && it.spaceId == activeSpaceId && it.isPinned }
+        }
+
+    val visibleRegularTabs: List<BrowserTabUi>
+        get() = if (isPrivateView) {
+            tabs.filter { it.isPrivate }
+        } else {
+            tabs.filter { !it.isPrivate && it.spaceId == activeSpaceId && !it.isPinned }
         }
 
     val activeSpace: SpaceEntity?

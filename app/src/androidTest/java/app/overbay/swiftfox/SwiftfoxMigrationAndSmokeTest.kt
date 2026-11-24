@@ -107,7 +107,11 @@ class SwiftfoxMigrationAndSmokeTest {
         v1Helper.close()
 
         val migrated = Room.databaseBuilder(context, SwiftfoxDatabase::class.java, dbName)
-            .addMigrations(SwiftfoxDatabase.MIGRATION_1_2, SwiftfoxDatabase.MIGRATION_2_3)
+            .addMigrations(
+                SwiftfoxDatabase.MIGRATION_1_2,
+                SwiftfoxDatabase.MIGRATION_2_3,
+                SwiftfoxDatabase.MIGRATION_3_4
+            )
             .build()
         try {
             val spaces = migrated.spaceDao().getAll()
@@ -274,7 +278,11 @@ class SwiftfoxMigrationAndSmokeTest {
         v2Helper.close()
 
         val migrated = Room.databaseBuilder(context, SwiftfoxDatabase::class.java, dbName)
-            .addMigrations(SwiftfoxDatabase.MIGRATION_1_2, SwiftfoxDatabase.MIGRATION_2_3)
+            .addMigrations(
+                SwiftfoxDatabase.MIGRATION_1_2,
+                SwiftfoxDatabase.MIGRATION_2_3,
+                SwiftfoxDatabase.MIGRATION_3_4
+            )
             .build()
         try {
             val workSpace = migrated.spaceDao().getAll().single()
@@ -319,6 +327,149 @@ class SwiftfoxMigrationAndSmokeTest {
                 )
             )
             assertEquals("GitHub", migrated.zenPinnedItemDao().observeAll().first().single().title)
+        } finally {
+            migrated.close()
+            context.deleteDatabase(dbName)
+        }
+    }
+
+    @Test
+    fun roomDatabaseMigratesCleanlyFromV3ToV4() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val dbName = "swiftfox_migration_v3_v4_test.db"
+        context.deleteDatabase(dbName)
+
+        val v3Helper = object : SQLiteOpenHelper(context, dbName, null, 3) {
+            override fun onCreate(db: SQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `spaces` (" +
+                        "`id` TEXT NOT NULL, `name` TEXT NOT NULL, `iconKey` TEXT NOT NULL, " +
+                        "`containerProfileName` TEXT, `sortOrder` INTEGER NOT NULL, " +
+                        "`createdAt` INTEGER NOT NULL, `syncGuid` TEXT, `themeColorHex` TEXT, " +
+                        "`zenContainerGuid` TEXT, PRIMARY KEY(`id`))"
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `essentials` (" +
+                        "`id` TEXT NOT NULL, `spaceId` TEXT, `title` TEXT NOT NULL, " +
+                        "`url` TEXT NOT NULL, `domain` TEXT NOT NULL, `sortOrder` INTEGER NOT NULL, " +
+                        "`syncGuid` TEXT, `zenContainerGuid` TEXT, PRIMARY KEY(`id`))"
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `tabs` (" +
+                        "`id` TEXT NOT NULL, `spaceId` TEXT NOT NULL, `title` TEXT NOT NULL, " +
+                        "`url` TEXT NOT NULL, `isPrivate` INTEGER NOT NULL, `isPinned` INTEGER NOT NULL, " +
+                        "`siteModeOverride` TEXT, `lastAccessedAt` INTEGER NOT NULL, " +
+                        "`sortOrder` INTEGER NOT NULL, PRIMARY KEY(`id`))"
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `bookmarks` (" +
+                        "`id` TEXT NOT NULL, `title` TEXT NOT NULL, `url` TEXT NOT NULL, " +
+                        "`folder` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `syncGuid` TEXT, " +
+                        "`parentGuid` TEXT, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`id`))"
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `history` (" +
+                        "`url` TEXT NOT NULL, `title` TEXT NOT NULL, `visitCount` INTEGER NOT NULL, " +
+                        "`lastVisitedAt` INTEGER NOT NULL, PRIMARY KEY(`url`))"
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `site_overrides` (" +
+                        "`host` TEXT NOT NULL, `siteModeOverride` TEXT, `httpsOnlyBypass` INTEGER NOT NULL, " +
+                        "`externalAppPolicyOverride` TEXT, `allowCamera` INTEGER, `allowMic` INTEGER, " +
+                        "`allowLocation` INTEGER, `allowNotifications` INTEGER, `allowProtectedMedia` INTEGER, " +
+                        "`javascriptEnabled` INTEGER NOT NULL, `webDarkModeOverride` INTEGER, " +
+                        "`adblockDisabled` INTEGER NOT NULL, `cookiesEnabled` INTEGER NOT NULL, " +
+                        "`customUserAgent` TEXT, PRIMARY KEY(`host`))"
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `downloads` (" +
+                        "`id` TEXT NOT NULL, `fileName` TEXT NOT NULL, `url` TEXT NOT NULL, " +
+                        "`mimeType` TEXT NOT NULL, `systemDownloadId` INTEGER NOT NULL, " +
+                        "`status` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, PRIMARY KEY(`id`))"
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `filter_lists` (" +
+                        "`id` TEXT NOT NULL, `name` TEXT NOT NULL, `url` TEXT NOT NULL, " +
+                        "`enabled` INTEGER NOT NULL, `isBuiltIn` INTEGER NOT NULL, " +
+                        "`ruleCount` INTEGER NOT NULL, `lastUpdatedAt` INTEGER NOT NULL, " +
+                        "`etag` TEXT, `lastError` TEXT, PRIMARY KEY(`id`))"
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `zapped_rules` (" +
+                        "`id` TEXT NOT NULL, `host` TEXT NOT NULL, `selector` TEXT NOT NULL, " +
+                        "`label` TEXT NOT NULL, `enabled` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`id`))"
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `userscripts` (" +
+                        "`id` TEXT NOT NULL, `name` TEXT NOT NULL, `namespace` TEXT NOT NULL, " +
+                        "`version` TEXT NOT NULL, `description` TEXT NOT NULL, `sourceUrl` TEXT, " +
+                        "`code` TEXT NOT NULL, `matchesJson` TEXT NOT NULL, `excludesJson` TEXT NOT NULL, " +
+                        "`runAt` TEXT NOT NULL, `grantsJson` TEXT NOT NULL, `enabled` INTEGER NOT NULL, " +
+                        "`installedAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`id`))"
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `userscript_storage` (" +
+                        "`scriptId` TEXT NOT NULL, `storageKey` TEXT NOT NULL, `valueJson` TEXT NOT NULL, " +
+                        "`updatedAt` INTEGER NOT NULL, PRIMARY KEY(`scriptId`, `storageKey`))"
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `synced_remote_tabs` (" +
+                        "`id` TEXT NOT NULL, `deviceId` TEXT NOT NULL, `deviceName` TEXT NOT NULL, " +
+                        "`deviceType` TEXT NOT NULL, `title` TEXT NOT NULL, `url` TEXT NOT NULL, " +
+                        "`iconUrl` TEXT, `lastUsedAt` INTEGER NOT NULL, `position` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`id`))"
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `zen_pinned_items` (" +
+                        "`id` TEXT NOT NULL, `spaceId` TEXT NOT NULL, `zenWorkspaceUuid` TEXT NOT NULL, " +
+                        "`title` TEXT NOT NULL, `url` TEXT NOT NULL, `folderName` TEXT, " +
+                        "`isPinned` INTEGER NOT NULL, `sortOrder` INTEGER NOT NULL, PRIMARY KEY(`id`))"
+                )
+                db.execSQL(
+                    "INSERT INTO `essentials` (`id`, `spaceId`, `title`, `url`, `domain`, `sortOrder`, `syncGuid`, `zenContainerGuid`) " +
+                        "VALUES ('ess_1', NULL, 'Overbay', 'https://overbay.app', 'overbay.app', 0, NULL, NULL)"
+                )
+                db.execSQL(
+                    "INSERT INTO `tabs` (`id`, `spaceId`, `title`, `url`, `isPrivate`, `isPinned`, `siteModeOverride`, `lastAccessedAt`, `sortOrder`) " +
+                        "VALUES ('tab_1', 'space_personal', 'Overbay', 'https://overbay.app', 0, 1, NULL, 3000, 0)"
+                )
+                db.execSQL(
+                    "INSERT INTO `zen_pinned_items` (`id`, `spaceId`, `zenWorkspaceUuid`, `title`, `url`, `folderName`, `isPinned`, `sortOrder`) " +
+                        "VALUES ('zp_v3', 'space_personal', 'ws_1', 'Docs', 'https://kotlinlang.org', NULL, 1, 0)"
+                )
+            }
+
+            override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+        }
+        v3Helper.writableDatabase.close()
+        v3Helper.close()
+
+        val migrated = Room.databaseBuilder(context, SwiftfoxDatabase::class.java, dbName)
+            .addMigrations(
+                SwiftfoxDatabase.MIGRATION_1_2,
+                SwiftfoxDatabase.MIGRATION_2_3,
+                SwiftfoxDatabase.MIGRATION_3_4
+            )
+            .build()
+        try {
+            val ess = migrated.essentialDao().getAll().single()
+            assertEquals("Overbay", ess.title)
+            assertEquals(null, ess.customIcon)
+
+            val tab = migrated.tabDao().getNormalTabs().single()
+            assertEquals(true, tab.isPinned)
+            assertEquals(null, tab.customIcon)
+            assertEquals(null, tab.customTitle)
+
+            val updatedTab = tab.copy(customIcon = "emoji:🦊", customTitle = "Home")
+            migrated.tabDao().upsert(updatedTab)
+            val reloaded = migrated.tabDao().getNormalTabs().single()
+            assertEquals("emoji:🦊", reloaded.customIcon)
+            assertEquals("Home", reloaded.customTitle)
+
+            val zp = migrated.zenPinnedItemDao().getAll().single()
+            assertEquals(null, zp.customIcon)
         } finally {
             migrated.close()
             context.deleteDatabase(dbName)

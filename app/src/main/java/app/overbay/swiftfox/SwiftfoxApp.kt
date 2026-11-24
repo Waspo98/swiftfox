@@ -13,6 +13,7 @@ import app.overbay.swiftfox.features.adblock.FilterListUpdateWorker
 import app.overbay.swiftfox.features.adblock.FilterListWorkerBridge
 import app.overbay.swiftfox.features.darkreader.DarkReaderInjector
 import app.overbay.swiftfox.features.downloads.DownloadCoordinator
+import app.overbay.swiftfox.features.icons.FaviconRepository
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
 import app.overbay.swiftfox.features.reader.ReaderExtractor
 import app.overbay.swiftfox.features.sync.MozillaSyncCoordinator
@@ -76,12 +77,16 @@ class SwiftfoxApp : Application() {
     lateinit var mozillaSyncCoordinator: MozillaSyncCoordinator
         private set
 
+    lateinit var faviconRepository: FaviconRepository
+        private set
+
     val tabSessionPool = TabSessionPool(maxWarmSessions = 5)
 
     override fun onCreate() {
         super.onCreate()
         database = SwiftfoxDatabase.getInstance(this)
         preferencesRepository = PreferencesRepository(this)
+        faviconRepository = FaviconRepository(this, httpClient)
         OmniboxEngine.configureHttpClient(httpClient)
         downloadCoordinator = DownloadCoordinator(this, database.downloadRecordDao(), httpClient)
         downloadCoordinator.registerCompletionReceiver(appScope)

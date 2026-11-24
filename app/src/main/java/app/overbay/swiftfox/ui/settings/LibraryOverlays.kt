@@ -56,6 +56,7 @@ import app.overbay.swiftfox.data.db.BookmarkEntity
 import app.overbay.swiftfox.data.db.DownloadRecordEntity
 import app.overbay.swiftfox.data.db.HistoryEntity
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
+import app.overbay.swiftfox.ui.components.SiteIconBadge
 import app.overbay.swiftfox.ui.components.SwiftfoxSelectablePill
 import java.util.Locale
 
@@ -279,6 +280,7 @@ fun BookmarksOverlay(
                             LibraryItemRow(
                                 title = item.title,
                                 subtitle = sub,
+                                faviconUrl = item.url,
                                 onClick = { onOpenUrl(item.url) },
                                 onDelete = { onDeleteBookmark(item.id) }
                             )
@@ -351,6 +353,7 @@ fun HistoryOverlay(
                     LibraryItemRow(
                         title = entry.title,
                         subtitle = OmniboxEngine.extractHost(entry.url),
+                        faviconUrl = entry.url,
                         onClick = { onOpenUrl(entry.url) },
                         onDelete = { onDeleteEntry(entry.url) }
                     )
@@ -492,6 +495,7 @@ fun DownloadsOverlay(
 private fun LibraryItemRow(
     title: String,
     subtitle: String,
+    faviconUrl: String? = null,
     onClick: () -> Unit,
     onDelete: () -> Unit
 ) {
@@ -504,9 +508,21 @@ private fun LibraryItemRow(
             .heightIn(min = 58.dp)
     ) {
         Row(
-            modifier = Modifier.padding(start = 16.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
-            verticalAlignment = Alignment.CenterVertically
+            modifier = Modifier.padding(start = 14.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            if (!faviconUrl.isNullOrBlank()) {
+                SiteIconBadge(
+                    url = faviconUrl,
+                    fallbackLabel = title.ifBlank { subtitle },
+                    size = 32.dp,
+                    iconSize = 20.dp,
+                    shape = RoundedCornerShape(10.dp),
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    fillImageToContainer = true
+                )
+            }
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = title,

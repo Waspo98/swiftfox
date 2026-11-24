@@ -437,6 +437,7 @@ fun BrowserScreen(
             onGoBack = { viewModel.goBack() },
             onGoForward = { viewModel.goForward() },
             onReloadOrStop = { viewModel.reloadOrStop() },
+            onDismissLoadError = { viewModel.dismissActiveLoadError() },
             onOpenReaderMode = { viewModel.openReaderMode() },
             onOpenTabSwitcher = { viewModel.setOverlay(BrowserOverlay.TAB_SWITCHER) },
             onOpenSettings = { viewModel.setOverlay(BrowserOverlay.SETTINGS) },
@@ -550,6 +551,7 @@ fun BrowserScreen(
                                     swipeLayout.setProgressBackgroundColorSchemeColor(surfaceArgb)
                                     webContainer.lastSurfaceArgb = surfaceArgb
                                 }
+                                webContainer.syncSurfaceBackground(session.surfaceBackgroundColor)
 
                                 val targetWebView = session.webView
                                 if (targetWebView.parent !== webContainer) {
@@ -991,6 +993,7 @@ fun BrowserScreen(
                 query = state.omniboxQuery,
                 searchEngineLabel = state.settings.searchEngine.label,
                 suggestions = state.omniboxSuggestions,
+                inlineAutocomplete = state.omniboxInlineAutocomplete,
                 onQueryChange = { viewModel.onOmniboxQueryChanged(it) },
                 onSubmit = { viewModel.submitOmnibox(it) },
                 onSelectSuggestion = { suggestion: OmniboxSuggestion ->
@@ -1164,6 +1167,7 @@ fun BrowserShellLayout(
     onGoBack: () -> Unit,
     onGoForward: () -> Unit,
     onReloadOrStop: () -> Unit,
+    onDismissLoadError: () -> Unit = {},
     onOpenReaderMode: () -> Unit,
     onOpenTabSwitcher: () -> Unit,
     onOpenSettings: () -> Unit,
@@ -1567,6 +1571,24 @@ fun BrowserShellLayout(
                                     Text("Preparing Reader Mode", style = MaterialTheme.typography.labelLarge)
                                 }
                             }
+                        }
+
+                        val loadError = activeTab?.loadError
+                        if (!hideChrome &&
+                            loadError != null &&
+                            !activeTab.isStartPage &&
+                            !activeTab.isLoading &&
+                            !state.zapper.isActive
+                        ) {
+                            MainFrameLoadErrorCard(
+                                error = loadError,
+                                onRetry = onReloadOrStop,
+                                onDismiss = onDismissLoadError,
+                                modifier = Modifier
+                                    .align(Alignment.BottomCenter)
+                                    .then(if (!hasBottomToolbar) Modifier.navigationBarsPadding() else Modifier)
+                                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                            )
                         }
 
                         val dockZapperTop = state.zapper.selectedSelector != null &&
@@ -2190,10 +2212,8 @@ private fun SplitBottomActionBar(
                 }
 
                 // 3. Center: New Tab (+) — tap for Start Page tab, long-press for Private tab
-                Surface(
-                    shape = CircleShape,
-                    color = accentContainer,
-                    border = BorderStroke(1.dp, accentTint.copy(alpha = 0.45f)),
+                Box(
+                    contentAlignment = Alignment.Center,
                     modifier = Modifier
                         .size(48.dp)
                         .clip(CircleShape)
@@ -2204,14 +2224,12 @@ private fun SplitBottomActionBar(
                             onLongClickLabel = "New private tab"
                         )
                 ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            imageVector = Icons.Rounded.Add,
-                            contentDescription = "New tab",
-                            tint = accentTint,
-                            modifier = Modifier.size(24.dp)
-                        )
-                    }
+                    Icon(
+                        imageVector = Icons.Rounded.Add,
+                        contentDescription = "New tab",
+                        tint = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.size(24.dp)
+                    )
                 }
 
                 // 4. Tab switcher count badge

@@ -3,6 +3,7 @@ package app.overbay.swiftfox.ui.tabs
 import app.overbay.swiftfox.data.db.EssentialEntity
 import app.overbay.swiftfox.data.db.SpaceEntity
 import app.overbay.swiftfox.data.prefs.BrowserSettings
+import app.overbay.swiftfox.engine.BrowserSession
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
 import app.overbay.swiftfox.ui.browser.BrowserTabUi
 import app.overbay.swiftfox.ui.browser.BrowserUiState
@@ -75,6 +76,46 @@ object WorkspaceTabResolver {
     }
 
     /**
+     * Resolves the WebView container profile name for [tab]. When [BrowserTabUi.profileOverride] is
+     * set (e.g., an OAuth / `window.open` popup inheriting its parent tab's profile), that explicit
+     * profile takes precedence over the tab's Space container so `WebViewTransport` always shares
+     * the parent's profile—even when every Space has container isolation enabled.
+     */
+    fun resolveSessionContainerProfile(
+        tab: BrowserTabUi,
+        spaces: List<SpaceEntity>
+    ): String? {
+        val explicit = tab.profileOverride
+        if (explicit != null) {
+            return explicit.takeUnless { it.isBlank() || it == BrowserSession.DEFAULT_PROFILE_NAME }
+        }
+        return spaces.firstOrNull { it.id == tab.spaceId }?.containerProfileName
+    }
+
+    /**
+     * Finds an existing blank Start Page tab in the target browsing scope so tapping "New tab"
+     * jumps to or stays on that blank tab instead of creating duplicate blank tabs.
+     */
+    fun findReusableBlankTab(
+        tabs: List<BrowserTabUi>,
+        activeTabId: String?,
+        spaceId: String,
+        isPrivate: Boolean
+    ): BrowserTabUi? {
+        val matching = tabs.filter { tab ->
+            tab.isStartPage &&
+                !tab.isUnloaded &&
+                !tab.isPinned &&
+                !tab.isBoundWorkspaceTab &&
+                tab.isPrivate == isPrivate &&
+                (isPrivate || tab.spaceId == spaceId)
+        }
+        if (matching.isEmpty()) return null
+        return matching.firstOrNull { it.id == activeTabId }
+            ?: matching.maxByOrNull { it.lastAccessedAt }
+    }
+
+    /**
      * Resets a local pinned tab to its unloaded ("sleeping") representation at its pinned URL.
      */
     fun toUnloadedPinnedTab(tab: BrowserTabUi): BrowserTabUi {
@@ -92,19 +133,29 @@ object WorkspaceTabResolver {
             isPlayingVideo = false,
             blockedCount = 0,
             isReaderAvailable = false,
-            darkReaderSkippedNative = false
+            darkReaderSkippedNative = false,
+            loadError = null
         )
     }
 
     /**
      * Picks the best fallback active tab after closing or unloading one or more tabs.
+     * When [preferredTabId] is provided (e.g., closing an OAuth popup whose parent tab is still
+     * loaded in the same browsing mode), returns directly to that parent tab.
      * Returns null when the active Space has no remaining loaded tab (caller should open a Start Page).
      */
     fun resolveFallbackTabId(
         remainingTabs: List<BrowserTabUi>,
         activeSpaceId: String,
-        isPrivateView: Boolean
+        isPrivateView: Boolean,
+        preferredTabId: String? = null
     ): String? {
+        if (!preferredTabId.isNullOrBlank()) {
+            val preferred = remainingTabs.firstOrNull {
+                it.id == preferredTabId && !it.isUnloaded && it.isPrivate == isPrivateView
+            }
+            if (preferred != null) return preferred.id
+        }
         if (isPrivateView) {
             return remainingTabs
                 .filter { it.isPrivate }

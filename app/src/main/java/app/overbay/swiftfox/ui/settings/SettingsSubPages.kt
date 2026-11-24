@@ -617,7 +617,7 @@ internal fun LazyListScope.privacyMediaSettingsItems(
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
             SettingsSwitchRow(
                 title = "Block third-party cookies",
-                subtitle = "Stop cross-site trackers from following you across websites",
+                subtitle = "Block cross-site cookies (may break Sign in with Google or SSO; adblock still blocks trackers)",
                 checked = settings.blockThirdPartyCookies,
                 onCheckedChange = { viewModel.setBlockThirdPartyCookies(it) }
             )

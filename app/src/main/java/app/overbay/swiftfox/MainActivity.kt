@@ -257,6 +257,11 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onStop() {
+        super.onStop()
+        (application as SwiftfoxApp).tabSessionPool.flushPersistentCookies()
+    }
+
     override fun onDestroy() {
         pendingFileCallback?.onReceiveValue(null)
         pendingFileCallback = null

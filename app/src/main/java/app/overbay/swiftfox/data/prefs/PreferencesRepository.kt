@@ -126,7 +126,7 @@ class PreferencesRepository(private val context: Context) {
                 hideToolbarsOnScroll = prefs[Keys.HIDE_TOOLBARS_ON_SCROLL] ?: true,
                 confirmClosePinnedOnSecondTap = prefs[Keys.CONFIRM_CLOSE_PINNED_SECOND_TAP] ?: true,
                 backgroundMediaEnabled = prefs[Keys.BACKGROUND_MEDIA] ?: true,
-                blockThirdPartyCookies = prefs[Keys.BLOCK_THIRD_PARTY_COOKIES] ?: true,
+                blockThirdPartyCookies = prefs[Keys.BLOCK_THIRD_PARTY_COOKIES] ?: false,
                 syncBookmarksEnabled = prefs[Keys.SYNC_BOOKMARKS] ?: true,
                 syncHistoryEnabled = prefs[Keys.SYNC_HISTORY] ?: true,
                 syncTabsEnabled = prefs[Keys.SYNC_TABS] ?: true,

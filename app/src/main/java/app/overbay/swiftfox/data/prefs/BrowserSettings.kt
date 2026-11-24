@@ -148,7 +148,7 @@ data class BrowserSettings(
     val hideToolbarsOnScroll: Boolean = true,
     val confirmClosePinnedOnSecondTap: Boolean = true,
     val backgroundMediaEnabled: Boolean = true,
-    val blockThirdPartyCookies: Boolean = true,
+    val blockThirdPartyCookies: Boolean = false,
     val syncBookmarksEnabled: Boolean = true,
     val syncHistoryEnabled: Boolean = true,
     val syncTabsEnabled: Boolean = true,

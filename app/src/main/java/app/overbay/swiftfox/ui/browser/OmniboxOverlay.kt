@@ -20,6 +20,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.input.InputTransformation
+import androidx.compose.foundation.text.input.OutputTransformation
 import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
@@ -41,8 +43,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -61,11 +65,14 @@ import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import app.overbay.swiftfox.features.omnibox.InlineUrlAutocomplete
+import app.overbay.swiftfox.features.omnibox.OmniboxAutocompleteGate
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
 import app.overbay.swiftfox.features.omnibox.OmniboxSuggestion
 import app.overbay.swiftfox.features.omnibox.SuggestionKind
@@ -80,6 +87,7 @@ fun OmniboxOverlay(
     query: String,
     searchEngineLabel: String,
     suggestions: List<OmniboxSuggestion>,
+    inlineAutocomplete: InlineUrlAutocomplete? = null,
     onQueryChange: (String) -> Unit,
     onSubmit: (String) -> Unit,
     onSelectSuggestion: (OmniboxSuggestion) -> Unit,
@@ -100,12 +108,17 @@ fun OmniboxOverlay(
     val currentText = textFieldState.text.toString()
     val activeBang = remember(currentText) { OmniboxEngine.detectBang(currentText) }
     var lastSyncedExternalQuery by remember { mutableStateOf(query) }
+    val autocompleteGate = remember { OmniboxAutocompleteGate(initialSuppressed = query.isNotEmpty()) }
+    var gateVersion by remember { mutableIntStateOf(0) }
 
     LaunchedEffect(textFieldState) {
         snapshotFlow { textFieldState.text.toString() }
             .distinctUntilChanged()
             .collect { typed ->
                 if (typed != lastSyncedExternalQuery) {
+                    val prev = lastSyncedExternalQuery
+                    autocompleteGate.onUserTextCommitted(prev, typed)
+                    gateVersion++
                     lastSyncedExternalQuery = typed
                     onQueryChange(typed)
                 }
@@ -115,6 +128,8 @@ fun OmniboxOverlay(
     LaunchedEffect(query) {
         if (query != lastSyncedExternalQuery) {
             lastSyncedExternalQuery = query
+            autocompleteGate.onExternalQuerySynced(query)
+            gateVersion++
             if (textFieldState.text.toString() != query) {
                 textFieldState.setTextAndPlaceCursorAtEnd(query)
             }
@@ -123,16 +138,73 @@ fun OmniboxOverlay(
 
     LaunchedEffect(isVisible) {
         if (isVisible) {
+            autocompleteGate.onOverlayOpened(query)
+            gateVersion++
             if (query.isNotEmpty()) {
                 textFieldState.edit {
                     replace(0, length, query)
                     selection = TextRange(0, query.length)
                 }
                 lastSyncedExternalQuery = query
+            } else if (textFieldState.text.isNotEmpty()) {
+                textFieldState.setTextAndPlaceCursorAtEnd("")
+                lastSyncedExternalQuery = ""
             }
             focusRequester.requestFocus()
         } else {
             focusManager.clearFocus(force = true)
+        }
+    }
+
+    val isCursorAtEnd = textFieldState.selection.collapsed &&
+        textFieldState.selection.end == currentText.length
+    val isAutocompleteSuppressed = remember(gateVersion) { autocompleteGate.isSuppressed }
+    val activeAutocomplete = inlineAutocomplete?.takeIf { candidate ->
+        !isAutocompleteSuppressed &&
+            isCursorAtEnd &&
+            currentText.isNotEmpty() &&
+            candidate.typedPrefix.equals(currentText, ignoreCase = true) &&
+            candidate.completionSuffix.isNotEmpty()
+    }
+    val latestHasActiveAutocomplete = rememberUpdatedState(activeAutocomplete != null)
+    val backspaceDismissTransformation = remember(autocompleteGate) {
+        InputTransformation {
+            val collapsedAtEnd = selection.collapsed && selection.end == length
+            if (autocompleteGate.interceptBackspaceToDismiss(
+                    originalText = originalText,
+                    proposedText = asCharSequence(),
+                    proposedSelectionCollapsedAtEnd = collapsedAtEnd,
+                    hasActiveAutocomplete = latestHasActiveAutocomplete.value
+                )
+            ) {
+                revertAllChanges()
+                gateVersion++
+            }
+        }
+    }
+    val autocompleteHighlightBg = MaterialTheme.colorScheme.primary.copy(alpha = 0.26f)
+    val autocompleteHighlightFg = MaterialTheme.colorScheme.onSurface
+    val autocompleteTransformation = remember(
+        activeAutocomplete,
+        autocompleteHighlightBg,
+        autocompleteHighlightFg
+    ) {
+        val suffix = activeAutocomplete?.completionSuffix
+        if (suffix.isNullOrEmpty()) {
+            null
+        } else {
+            OutputTransformation {
+                val start = length
+                append(suffix)
+                addStyle(
+                    SpanStyle(
+                        background = autocompleteHighlightBg,
+                        color = autocompleteHighlightFg
+                    ),
+                    start = start,
+                    end = length
+                )
+            }
         }
     }
 
@@ -268,6 +340,8 @@ fun OmniboxOverlay(
                         BasicTextField(
                             state = textFieldState,
                             lineLimits = TextFieldLineLimits.SingleLine,
+                            inputTransformation = backspaceDismissTransformation,
+                            outputTransformation = autocompleteTransformation,
                             textStyle = MaterialTheme.typography.bodyLarge.copy(
                                 color = MaterialTheme.colorScheme.onSurface
                             ),
@@ -277,8 +351,13 @@ fun OmniboxOverlay(
                                 imeAction = ImeAction.Go
                             ),
                             onKeyboardAction = {
+                                val completion = activeAutocomplete
                                 val text = textFieldState.text.toString()
-                                if (text.isNotBlank()) onSubmit(text)
+                                if (completion != null) {
+                                    onSubmit(completion.targetUrl)
+                                } else if (text.isNotBlank()) {
+                                    onSubmit(text)
+                                }
                             },
                             decorator = { inner ->
                                 if (currentText.isEmpty()) {
@@ -300,6 +379,8 @@ fun OmniboxOverlay(
                         if (currentText.isNotEmpty()) {
                             IconButton(
                                 onClick = {
+                                    autocompleteGate.onCleared()
+                                    gateVersion++
                                     textFieldState.setTextAndPlaceCursorAtEnd("")
                                     lastSyncedExternalQuery = ""
                                     onQueryChange("")
@@ -342,6 +423,8 @@ fun OmniboxOverlay(
                         Surface(
                             onClick = {
                                 val bangPrefix = "${bang.triggers.first()} "
+                                autocompleteGate.onExternalQuerySynced(bangPrefix)
+                                gateVersion++
                                 textFieldState.setTextAndPlaceCursorAtEnd(bangPrefix)
                                 lastSyncedExternalQuery = bangPrefix
                                 onQueryChange(bangPrefix)

@@ -2,10 +2,13 @@ package app.overbay.swiftfox
 
 import app.overbay.swiftfox.data.prefs.BrowserSettings
 import app.overbay.swiftfox.data.prefs.SearchEngineId
+import app.overbay.swiftfox.features.omnibox.AutocompleteCandidate
+import app.overbay.swiftfox.features.omnibox.OmniboxAutocompleteGate
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -122,5 +125,150 @@ class OmniboxEngineTest {
         assertTrue(OmniboxEngine.isLocalOrPrivateInetAddress(java.net.InetAddress.getByName("169.254.10.20")))
         assertTrue(OmniboxEngine.isLocalOrPrivateInetAddress(java.net.InetAddress.getByName("fc00::1")))
         assertFalse(OmniboxEngine.isLocalOrPrivateInetAddress(java.net.InetAddress.getByName("93.184.216.34")))
+    }
+
+    @Test
+    fun resolveInputLowercasesHostWhilePreservingPathCase() {
+        val settings = BrowserSettings()
+        assertEquals("https://overbay.app", OmniboxEngine.resolveInput("Overbay.app", settings))
+        assertEquals("https://overbay.app/Swiftfox/Docs", OmniboxEngine.resolveInput("Overbay.app/Swiftfox/Docs", settings))
+    }
+
+    @Test
+    fun inlineAutocompleteMatchesDomainsAndPathsWithPriorityAndFrecency() {
+        val candidates = listOf(
+            AutocompleteCandidate(
+                url = "https://www.bleachernation.com/cubs/2026/11/24/article-one/",
+                priority = 10,
+                visitCount = 5,
+                lastVisitedAt = 1000L
+            ),
+            AutocompleteCandidate(
+                url = "https://www.bleachernation.com/bears/2026/11/24/article-two/",
+                priority = 10,
+                visitCount = 4,
+                lastVisitedAt = 2000L
+            ),
+            AutocompleteCandidate(
+                url = "https://overbay.app/swiftfox/",
+                priority = 20,
+                visitCount = 1,
+                lastVisitedAt = 500L
+            ),
+            AutocompleteCandidate(
+                url = "https://github.com/Waspo98/swiftfox",
+                priority = 40,
+                visitCount = 1,
+                lastVisitedAt = 3000L
+            )
+        )
+
+        val bn = OmniboxEngine.findInlineAutocomplete("bleacherna", candidates)
+        assertNotNull(bn)
+        assertEquals("bleacherna", bn?.typedPrefix)
+        assertEquals("tion.com", bn?.completionSuffix)
+        assertEquals("bleachernation.com", bn?.displayText)
+        assertEquals("https://www.bleachernation.com/", bn?.targetUrl)
+
+        val bnWww = OmniboxEngine.findInlineAutocomplete("www.bleach", candidates)
+        assertNotNull(bnWww)
+        assertEquals("ernation.com", bnWww?.completionSuffix)
+        assertEquals("www.bleachernation.com", bnWww?.displayText)
+        assertEquals("https://www.bleachernation.com/", bnWww?.targetUrl)
+
+        val overbay = OmniboxEngine.findInlineAutocomplete("Overb", candidates)
+        assertNotNull(overbay)
+        assertEquals("Overb", overbay?.typedPrefix)
+        assertEquals("ay.app", overbay?.completionSuffix)
+        assertEquals("Overbay.app", overbay?.displayText)
+        assertEquals("https://overbay.app/", overbay?.targetUrl)
+
+        val pathSeg = OmniboxEngine.findInlineAutocomplete("github.com/Wa", candidates)
+        assertNotNull(pathSeg)
+        assertEquals("spo98/", pathSeg?.completionSuffix)
+        assertEquals("https://github.com/Waspo98/", pathSeg?.targetUrl)
+
+        val deepPath = OmniboxEngine.findInlineAutocomplete("github.com/Waspo98/sw", candidates)
+        assertNotNull(deepPath)
+        assertEquals("iftfox", deepPath?.completionSuffix)
+        assertEquals("https://github.com/Waspo98/swiftfox", deepPath?.targetUrl)
+    }
+
+    @Test
+    fun inlineAutocompleteSuppressesSpacesBangsSingleCharAndExactHost() {
+        val candidates = listOf(
+            AutocompleteCandidate(url = "https://www.bleachernation.com/", priority = 10, visitCount = 10)
+        )
+        assertNull(OmniboxEngine.findInlineAutocomplete("b", candidates))
+        assertNull(OmniboxEngine.findInlineAutocomplete("bleacherna ", candidates))
+        assertNull(OmniboxEngine.findInlineAutocomplete("bleacher nation", candidates))
+        assertNull(OmniboxEngine.findInlineAutocomplete("!g", candidates))
+        assertNull(OmniboxEngine.findInlineAutocomplete("bleachernation.com", candidates))
+        assertNull(OmniboxEngine.findInlineAutocomplete("https://", candidates))
+    }
+
+    @Test
+    fun inlineAutocompleteDoesNotUpgradeLocalIpv6AndDeduplicatesVisits() {
+        val ipv6Local = listOf(
+            AutocompleteCandidate(url = "http://[::1]:8080/admin", priority = 10, visitCount = 5)
+        )
+        assertNull(OmniboxEngine.findInlineAutocomplete("https://[::", ipv6Local))
+        val httpIpv6 = OmniboxEngine.findInlineAutocomplete("http://[::", ipv6Local)
+        assertNotNull(httpIpv6)
+        assertEquals("http://[::1]:8080/", httpIpv6?.targetUrl)
+
+        // Duplicate entries from in-memory state + Room search must not double-count visits
+        val duplicatedCandidates = listOf(
+            AutocompleteCandidate(url = "https://alpha.example.com/", priority = 10, visitCount = 6, lastVisitedAt = 100L),
+            AutocompleteCandidate(url = "https://alpha.example.com/", priority = 10, visitCount = 6, lastVisitedAt = 100L),
+            AutocompleteCandidate(url = "https://albatross.example.com/", priority = 10, visitCount = 9, lastVisitedAt = 100L)
+        )
+        val best = OmniboxEngine.findInlineAutocomplete("al", duplicatedCandidates)
+        assertNotNull(best)
+        assertEquals("https://albatross.example.com/", best?.targetUrl)
+    }
+
+    @Test
+    fun autocompleteGateDismissesSuffixOnBackspaceWithoutTrappingPartialSearches() {
+        val gate = OmniboxAutocompleteGate(initialSuppressed = false)
+        assertFalse(gate.isSuppressed)
+
+        // Typing "bleach" keeps autocomplete enabled
+        gate.onUserTextCommitted("bleac", "bleach")
+        assertFalse(gate.isSuppressed)
+
+        // Pressing Backspace while completion is highlighted intercepts deletion and suppresses "bleach"
+        val intercepted = gate.interceptBackspaceToDismiss(
+            originalText = "bleach",
+            proposedText = "bleac",
+            proposedSelectionCollapsedAtEnd = true,
+            hasActiveAutocomplete = true
+        )
+        assertTrue(intercepted)
+        assertTrue(gate.isSuppressed)
+        assertEquals("bleach", gate.dismissedPrefix)
+
+        // Pressing Backspace again (no active completion) deletes normally and retyping 'h' stays suppressed
+        assertFalse(
+            gate.interceptBackspaceToDismiss(
+                originalText = "bleach",
+                proposedText = "bleac",
+                proposedSelectionCollapsedAtEnd = true,
+                hasActiveAutocomplete = false
+            )
+        )
+        gate.onUserTextCommitted("bleach", "bleac")
+        assertTrue(gate.isSuppressed)
+        gate.onUserTextCommitted("bleac", "bleach")
+        assertTrue(gate.isSuppressed)
+
+        // Typing further past the dismissed prefix re-enables autocomplete
+        gate.onUserTextCommitted("bleach", "bleache")
+        assertFalse(gate.isSuppressed)
+        assertNull(gate.dismissedPrefix)
+
+        // Clearing resets suppression
+        gate.onCleared()
+        assertFalse(gate.isSuppressed)
     }
 }

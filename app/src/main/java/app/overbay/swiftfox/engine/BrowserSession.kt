@@ -158,7 +158,7 @@ class BrowserSession(
 
     init {
         configureProfile()
-        defaultMobileUserAgent = webView.settings.userAgentString
+        defaultMobileUserAgent = sanitizeMobileUserAgent(webView.settings.userAgentString)
         configureSettings()
         configureClients()
     }
@@ -215,6 +215,7 @@ class BrowserSession(
         webView.overScrollMode = View.OVER_SCROLL_ALWAYS
 
         webView.settings.apply {
+            userAgentString = defaultMobileUserAgent
             javaScriptEnabled = true
             domStorageEnabled = true
             builtInZoomControls = true
@@ -237,7 +238,10 @@ class BrowserSession(
             val cm = cookieManagerForProfile()
             // Do not blindly call cm.setAcceptCookie(true) here because CookieManager.setAcceptCookie
             // is profile-wide and background tab creation would override an active tab's site block.
-            cm.setAcceptThirdPartyCookies(webView, false)
+            // Allow third-party cookies by default in normal tabs until applySiteOverrides() applies
+            // the user's setting so OAuth popups (Sign in with Google / SSO) receive existing session
+            // cookies cleanly, while keeping Private tabs strict by default.
+            cm.setAcceptThirdPartyCookies(webView, !isPrivate)
         }
     }
 
@@ -585,6 +589,9 @@ class BrowserSession(
         }
     }
 
+    val surfaceBackgroundColor: Int
+        get() = lastSurfaceBgColor ?: Color.WHITE
+
     fun applySurfaceBackground(isChromeDark: Boolean, isAmoled: Boolean) {
         if (isDestroyed) return
         val bgColor = when {
@@ -645,6 +652,13 @@ class BrowserSession(
         } else {
             evaluateJavascript(darkReaderInjector.buildDisableScript(curTokens.darkReaderKey))
             applyWebDarkening(false)
+        }
+    }
+
+    fun flushCookies() {
+        if (isDestroyed || isPrivate) return
+        runCatching {
+            cookieManagerForProfile().flush()
         }
     }
 
@@ -822,7 +836,23 @@ class BrowserSession(
         private const val BLOB_PENDING_TTL_MS = 60_000L
         private const val DESKTOP_USER_AGENT =
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+        private val WEBVIEW_WV_TOKEN_REGEX = Regex(""";\s*wv\b""", RegexOption.IGNORE_CASE)
+        private val WEBVIEW_VERSION_TOKEN_REGEX = Regex("""\bVersion/\d+(?:\.\d+)*\s+""", RegexOption.IGNORE_CASE)
         private val secureRandom = SecureRandom()
+
+        /**
+         * Strips Android WebView's `; wv` and `Version/4.0` markers so Google Sign-In and other
+         * OAuth providers treat Swiftfox as a standard mobile Chromium browser instead of an
+         * untrusted embedded WebView.
+         */
+        internal fun sanitizeMobileUserAgent(rawUa: String): String {
+            if (rawUa.isBlank()) return rawUa
+            return rawUa
+                .replace(WEBVIEW_WV_TOKEN_REGEX, "")
+                .replace(WEBVIEW_VERSION_TOKEN_REGEX, "")
+                .replace("  ", " ")
+                .trim()
+        }
 
         internal fun generateHexToken(): String {
             val bytes = ByteArray(16)

@@ -119,7 +119,7 @@ internal fun BrowserChromeViewportLayout(
             if (topBarH > 0) {
                 topBarPlaceable.placeRelativeWithLayer(0, viewportTop) {
                     val p = collapseProgressProvider().coerceIn(0f, 1f)
-                    translationY = topBarH * (1f - p) - topBarH
+                    translationY = computeWebViewTranslationYPx(topBarH, p) - topBarH
                 }
             }
             if (statusH > 0) {
@@ -132,7 +132,8 @@ internal fun BrowserChromeViewportLayout(
             if (bottomBarH > 0) {
                 bottomBarPlaceable.placeRelativeWithLayer(0, maxH - bottomBarH) {
                     val p = collapseProgressProvider().coerceIn(0f, 1f)
-                    translationY = bottomBarH * p
+                    val effectiveP = if (p >= FULL_COLLAPSE_EPSILON) 1f else p
+                    translationY = bottomBarH * effectiveP
                 }
             }
         }
@@ -511,9 +512,72 @@ internal class VerticalDragGestureState(private val touchSlop: Int) {
     }
 }
 
+internal enum class ViewportHeightMode {
+    /** Resting expanded: inset by both top and bottom bars so fixed web footers stay above the bottom bar. */
+    INSET_BOTH,
+    /** Actively translating with a top bar: grows behind the receding bottom bar while guaranteeing zero bottom overhang. */
+    INSET_TOP_ONLY,
+    /** Full viewport height: only active once top-bar translationY reaches 0f (or when no top bar exists). */
+    FULL
+}
+
+internal const val FULL_COLLAPSE_EPSILON = 0.999f
+
+internal fun resolveViewportHeightMode(
+    topBarHeightPx: Int,
+    collapseProgress: Float,
+    expandedViewport: Boolean
+): ViewportHeightMode {
+    if (!expandedViewport) return ViewportHeightMode.INSET_BOTH
+    val p = collapseProgress.coerceIn(0f, 1f)
+    return if (topBarHeightPx <= 0 || p >= FULL_COLLAPSE_EPSILON) {
+        ViewportHeightMode.FULL
+    } else {
+        ViewportHeightMode.INSET_TOP_ONLY
+    }
+}
+
+internal fun computeWebViewTranslationYPx(
+    topBarHeightPx: Int,
+    collapseProgress: Float
+): Float {
+    if (topBarHeightPx <= 0) return 0f
+    val p = collapseProgress.coerceIn(0f, 1f)
+    if (p >= FULL_COLLAPSE_EPSILON) return 0f
+    return topBarHeightPx * (1f - p)
+}
+
+internal fun computeWebViewHeightInsetPx(
+    topBarHeightPx: Int,
+    bottomBarHeightPx: Int,
+    mode: ViewportHeightMode
+): Int = when (mode) {
+    ViewportHeightMode.FULL -> 0
+    ViewportHeightMode.INSET_TOP_ONLY -> topBarHeightPx.coerceAtLeast(0)
+    ViewportHeightMode.INSET_BOTH -> (topBarHeightPx + bottomBarHeightPx).coerceAtLeast(0)
+}
+
+internal fun computeWebViewHeightPx(
+    containerHeightPx: Int,
+    topBarHeightPx: Int,
+    bottomBarHeightPx: Int,
+    mode: ViewportHeightMode
+): Int {
+    if (containerHeightPx <= 0) return 0
+    return (containerHeightPx - computeWebViewHeightInsetPx(topBarHeightPx, bottomBarHeightPx, mode))
+        .coerceAtLeast(1)
+}
+
 internal class WebViewContainer(context: Context) : FrameLayout(context), FrameCallbackScheduler {
     var lastPrimaryArgb: Int? = null
     var lastSurfaceArgb: Int? = null
+    private var lastContainerBgArgb: Int? = null
+
+    fun syncSurfaceBackground(colorArgb: Int) {
+        if (lastContainerBgArgb == colorArgb) return
+        lastContainerBgArgb = colorArgb
+        setBackgroundColor(colorArgb)
+    }
 
     override fun postOnNextFrame(action: Runnable) {
         postOnAnimation(action)
@@ -529,6 +593,7 @@ internal class WebViewContainer(context: Context) : FrameLayout(context), FrameC
         private set
     var isViewportExpanded: Boolean = false
         private set
+    private var viewportHeightMode: ViewportHeightMode = ViewportHeightMode.INSET_BOTH
 
     var onGestureStart: (() -> Unit)? = null
     var onGestureDragDelta: ((rawDeltaY: Float, webView: SwiftfoxWebView) -> Float)? = null
@@ -555,13 +620,28 @@ internal class WebViewContainer(context: Context) : FrameLayout(context), FrameC
         collapseProgress: Float,
         expandedViewport: Boolean
     ) {
-        val layoutChanged = this.topBarHeightPx != topBarHeightPx ||
-            this.bottomBarHeightPx != bottomBarHeightPx ||
-            this.isViewportExpanded != expandedViewport
+        val clampedProgress = collapseProgress.coerceIn(0f, 1f)
+        val nextMode = resolveViewportHeightMode(
+            topBarHeightPx = topBarHeightPx,
+            collapseProgress = clampedProgress,
+            expandedViewport = expandedViewport
+        )
+        val prevInset = computeWebViewHeightInsetPx(
+            topBarHeightPx = this.topBarHeightPx,
+            bottomBarHeightPx = this.bottomBarHeightPx,
+            mode = this.viewportHeightMode
+        )
+        val nextInset = computeWebViewHeightInsetPx(
+            topBarHeightPx = topBarHeightPx,
+            bottomBarHeightPx = bottomBarHeightPx,
+            mode = nextMode
+        )
+        val layoutChanged = prevInset != nextInset
         this.topBarHeightPx = topBarHeightPx
         this.bottomBarHeightPx = bottomBarHeightPx
-        this.currentCollapseProgress = collapseProgress.coerceIn(0f, 1f)
+        this.currentCollapseProgress = clampedProgress
         this.isViewportExpanded = expandedViewport
+        this.viewportHeightMode = nextMode
 
         syncChildTranslation()
         if (layoutChanged) {
@@ -575,11 +655,7 @@ internal class WebViewContainer(context: Context) : FrameLayout(context), FrameC
 
     private fun syncChildTranslation() {
         val child = getChildAt(0) ?: return
-        val targetTy = if (topBarHeightPx > 0) {
-            topBarHeightPx * (1f - currentCollapseProgress)
-        } else {
-            0f
-        }
+        val targetTy = computeWebViewTranslationYPx(topBarHeightPx, currentCollapseProgress)
         if (child.translationY != targetTy) {
             child.translationY = targetTy
         }
@@ -591,11 +667,12 @@ internal class WebViewContainer(context: Context) : FrameLayout(context), FrameC
         setMeasuredDimension(width, height)
 
         val child = getChildAt(0) ?: return
-        val childHeight = if (isViewportExpanded) {
-            height
-        } else {
-            (height - topBarHeightPx - bottomBarHeightPx).coerceAtLeast(1)
-        }
+        val childHeight = computeWebViewHeightPx(
+            containerHeightPx = height,
+            topBarHeightPx = topBarHeightPx,
+            bottomBarHeightPx = bottomBarHeightPx,
+            mode = viewportHeightMode
+        )
         child.measure(
             MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
             MeasureSpec.makeMeasureSpec(childHeight, MeasureSpec.EXACTLY)

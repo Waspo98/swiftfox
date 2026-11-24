@@ -53,6 +53,87 @@ data class OmniboxSuggestion(
     val tabId: String? = null
 )
 
+data class InlineUrlAutocomplete(
+    val typedPrefix: String,
+    val completionSuffix: String,
+    val displayText: String,
+    val targetUrl: String
+)
+
+data class AutocompleteCandidate(
+    val url: String,
+    val priority: Int = 0,
+    val visitCount: Int = 0,
+    val lastVisitedAt: Long = 0L
+)
+
+/**
+ * Pure state machine controlling when inline URL autocomplete is suppressed in the omnibox
+ * (prefilled URL open, active deletion, or explicit Backspace dismissal of a suggested suffix).
+ */
+class OmniboxAutocompleteGate(initialSuppressed: Boolean = false) {
+    var isSuppressed: Boolean = initialSuppressed
+        private set
+    var dismissedPrefix: String? = null
+        private set
+
+    fun onOverlayOpened(prefilledQuery: String) {
+        isSuppressed = prefilledQuery.isNotEmpty()
+        dismissedPrefix = null
+    }
+
+    fun onExternalQuerySynced(query: String) {
+        isSuppressed = query.isEmpty()
+        dismissedPrefix = null
+    }
+
+    fun onCleared() {
+        isSuppressed = false
+        dismissedPrefix = null
+    }
+
+    /**
+     * Intercepts a single trailing-character Backspace while an inline completion is highlighted so
+     * the first Backspace dismisses the completion suffix instead of deleting the user's typed
+     * character (matching Chrome/Firefox omnibox behavior).
+     */
+    fun interceptBackspaceToDismiss(
+        originalText: CharSequence,
+        proposedText: CharSequence,
+        proposedSelectionCollapsedAtEnd: Boolean,
+        hasActiveAutocomplete: Boolean
+    ): Boolean {
+        if (!hasActiveAutocomplete || !proposedSelectionCollapsedAtEnd) return false
+        val orig = originalText.toString()
+        val next = proposedText.toString()
+        if (orig.isNotEmpty() && next.length == orig.length - 1 && orig.startsWith(next)) {
+            isSuppressed = true
+            dismissedPrefix = orig
+            return true
+        }
+        return false
+    }
+
+    fun onUserTextCommitted(previousText: String, newText: String) {
+        if (newText.isEmpty()) {
+            isSuppressed = true
+            dismissedPrefix = null
+            return
+        }
+        val isDeletion = newText.length < previousText.length &&
+            previousText.startsWith(newText, ignoreCase = true)
+        val dismissed = dismissedPrefix
+        if (dismissed != null) {
+            if (isDeletion || newText.equals(dismissed, ignoreCase = true)) {
+                isSuppressed = true
+                return
+            }
+            dismissedPrefix = null
+        }
+        isSuppressed = isDeletion
+    }
+}
+
 object OmniboxEngine {
 
     const val NEW_TAB_URL = "about:blank"
@@ -202,7 +283,13 @@ object OmniboxEngine {
             } else {
                 "https://"
             }
-            return "$defaultScheme$trimmed"
+            val authorityEnd = trimmed.indexOfFirst { it == '/' || it == '?' || it == '#' }
+            val normalizedTarget = if (authorityEnd >= 0) {
+                trimmed.substring(0, authorityEnd).lowercase(Locale.ROOT) + trimmed.substring(authorityEnd)
+            } else {
+                trimmed.lowercase(Locale.ROOT)
+            }
+            return "$defaultScheme$normalizedTarget"
         }
 
         return buildSearchUrl(trimmed, settings)
@@ -234,6 +321,220 @@ object OmniboxEngine {
             hostPort.substringBefore(':')
         }
         return normalizeHost(rawHost)
+    }
+
+    private data class ParsedCandidateUrl(
+        val scheme: String,
+        val authority: String,
+        val hostNoWww: String,
+        val cleanPath: String
+    )
+
+    private fun parseCandidateUrl(rawUrl: String): ParsedCandidateUrl? {
+        val trimmed = rawUrl.trim()
+        val schemeEnd = trimmed.indexOf("://")
+        if (schemeEnd <= 0) return null
+        val scheme = trimmed.substring(0, schemeEnd).lowercase(Locale.ROOT)
+        if (scheme != "http" && scheme != "https") return null
+        val afterScheme = trimmed.substring(schemeEnd + 3)
+        if (afterScheme.isEmpty()) return null
+        val pathStart = afterScheme.indexOfFirst { it == '/' || it == '?' || it == '#' }
+        val rawAuthority = (if (pathStart >= 0) afterScheme.substring(0, pathStart) else afterScheme)
+            .substringAfterLast('@')
+            .lowercase(Locale.ROOT)
+        if (rawAuthority.isBlank() || rawAuthority.contains('\\') || rawAuthority.any { it.isWhitespace() }) {
+            return null
+        }
+        val normalizedAuthority = when {
+            scheme == "https" && rawAuthority.endsWith(":443") -> rawAuthority.removeSuffix(":443")
+            scheme == "http" && rawAuthority.endsWith(":80") -> rawAuthority.removeSuffix(":80")
+            else -> rawAuthority
+        }
+        val hostNoWww = normalizedAuthority.removePrefix("www.")
+        if (hostNoWww.isBlank()) return null
+        val rawPath = if (pathStart >= 0 && afterScheme[pathStart] == '/') {
+            afterScheme.substring(pathStart).substringBefore('?').substringBefore('#')
+        } else {
+            ""
+        }
+        return ParsedCandidateUrl(
+            scheme = scheme,
+            authority = normalizedAuthority,
+            hostNoWww = hostNoWww,
+            cleanPath = rawPath
+        )
+    }
+
+    private fun extractHostOnlyFromAuthority(authority: String): String {
+        return if (authority.startsWith("[")) {
+            val endBracket = authority.indexOf(']')
+            if (endBracket > 0) authority.substring(0, endBracket + 1) else authority
+        } else {
+            authority.substringBefore(':')
+        }
+    }
+
+    /**
+     * Deduplicates autocomplete candidates within each source priority tier by trimmed URL so
+     * combining in-memory state with Room search results never double-counts `visitCount`.
+     */
+    fun dedupeAutocompleteCandidates(
+        candidates: List<AutocompleteCandidate>
+    ): List<AutocompleteCandidate> {
+        if (candidates.size <= 1) return candidates
+        val byKey = LinkedHashMap<Pair<Int, String>, AutocompleteCandidate>(candidates.size)
+        for (candidate in candidates) {
+            val trimmedUrl = candidate.url.trim()
+            if (trimmedUrl.isEmpty()) continue
+            val key = candidate.priority to trimmedUrl
+            val existing = byKey[key]
+            if (existing == null) {
+                byKey[key] = candidate
+            } else {
+                byKey[key] = existing.copy(
+                    visitCount = maxOf(existing.visitCount, candidate.visitCount),
+                    lastVisitedAt = maxOf(existing.lastVisitedAt, candidate.lastVisitedAt)
+                )
+            }
+        }
+        return byKey.values.toList()
+    }
+
+    /**
+     * Finds the best inline URL completion for [rawQuery] across open tabs, pinned items,
+     * bookmarks, and history so pressing Enter navigates directly to the highlighted site.
+     */
+    fun findInlineAutocomplete(
+        rawQuery: String,
+        candidates: List<AutocompleteCandidate>
+    ): InlineUrlAutocomplete? {
+        if (rawQuery.length < 2 || candidates.isEmpty()) return null
+        if (rawQuery.any { it.isWhitespace() }) return null
+        if (rawQuery.startsWith("!") || rawQuery.startsWith("@")) return null
+        if (rawQuery.contains('?') || rawQuery.contains('#')) return null
+
+        val typedLower = rawQuery.lowercase(Locale.ROOT)
+        if (typedLower == "http:" || typedLower == "https:" || typedLower == "http:/" || typedLower == "https:/") {
+            return null
+        }
+
+        val typedSchemePrefix: String? = when {
+            typedLower.startsWith("https://") -> "https://"
+            typedLower.startsWith("http://") -> "http://"
+            else -> null
+        }
+        val typedRemainder = if (typedSchemePrefix != null) {
+            typedLower.removePrefix(typedSchemePrefix)
+        } else {
+            typedLower
+        }
+        if (typedRemainder.isEmpty()) return null
+
+        val typedHasWww = typedRemainder.startsWith("www.")
+        val typedHasPath = typedRemainder.contains('/')
+        val displaySchemePrefix = typedSchemePrefix.orEmpty()
+
+        data class ScoredMatch(
+            val displayKey: String,
+            var suffix: String,
+            var targetUrl: String,
+            var maxPriority: Int,
+            var totalVisits: Int,
+            var latestVisit: Long,
+            var preferHttps: Boolean
+        )
+
+        val grouped = LinkedHashMap<String, ScoredMatch>()
+        val dedupedCandidates = dedupeAutocompleteCandidates(candidates)
+
+        for (candidate in dedupedCandidates) {
+            val parsed = parseCandidateUrl(candidate.url) ?: continue
+            val bareHost = extractHostOnlyFromAuthority(parsed.hostNoWww)
+            val effectiveScheme = when (typedSchemePrefix) {
+                "http://" -> if (parsed.scheme == "http") "http" else continue
+                "https://" -> if (parsed.scheme == "https" || !isLocalHostOrLan(bareHost)) {
+                    "https"
+                } else {
+                    continue
+                }
+                else -> parsed.scheme
+            }
+            val displayHost = if (typedHasWww) parsed.authority else parsed.hostNoWww
+
+            val completedDisplay: String
+            val targetUrl: String
+            if (!typedHasPath) {
+                completedDisplay = "$displaySchemePrefix$displayHost"
+                if (!completedDisplay.startsWith(typedLower) || completedDisplay.length <= typedLower.length) {
+                    continue
+                }
+                targetUrl = "$effectiveScheme://${parsed.authority}/"
+            } else {
+                if (parsed.cleanPath.isEmpty()) continue
+                val fullDisplay = "$displaySchemePrefix$displayHost${parsed.cleanPath}"
+                val fullDisplayLower = fullDisplay.lowercase(Locale.ROOT)
+                if (!fullDisplayLower.startsWith(typedLower) || fullDisplay.length <= typedLower.length) {
+                    continue
+                }
+                val nextSlash = fullDisplay.indexOf('/', startIndex = typedLower.length)
+                completedDisplay = if (nextSlash >= 0) {
+                    fullDisplay.substring(0, nextSlash + 1)
+                } else {
+                    fullDisplay
+                }
+                val completedPath = completedDisplay.removePrefix("$displaySchemePrefix$displayHost")
+                targetUrl = "$effectiveScheme://${parsed.authority}$completedPath"
+            }
+
+            if (completedDisplay.length <= typedLower.length) continue
+            val suffix = completedDisplay.substring(typedLower.length)
+            if (suffix.isEmpty()) continue
+
+            val key = completedDisplay.lowercase(Locale.ROOT)
+            val existing = grouped[key]
+            val visits = candidate.visitCount.coerceAtLeast(1)
+            val isHttps = effectiveScheme == "https"
+            if (existing == null) {
+                grouped[key] = ScoredMatch(
+                    displayKey = key,
+                    suffix = suffix,
+                    targetUrl = targetUrl,
+                    maxPriority = candidate.priority,
+                    totalVisits = visits,
+                    latestVisit = candidate.lastVisitedAt,
+                    preferHttps = isHttps
+                )
+            } else {
+                val higherPriority = candidate.priority > existing.maxPriority
+                val upgradeToHttps = isHttps && !existing.preferHttps && candidate.priority >= existing.maxPriority
+                if (higherPriority) {
+                    existing.maxPriority = candidate.priority
+                }
+                if (higherPriority || upgradeToHttps) {
+                    existing.targetUrl = targetUrl
+                    existing.suffix = suffix
+                    existing.preferHttps = isHttps
+                }
+                existing.totalVisits += visits
+                if (candidate.lastVisitedAt > existing.latestVisit) {
+                    existing.latestVisit = candidate.lastVisitedAt
+                }
+            }
+        }
+
+        val best = grouped.values.maxWithOrNull(
+            compareBy<ScoredMatch> { it.maxPriority }
+                .thenBy { it.totalVisits }
+                .thenBy { it.latestVisit }
+                .thenByDescending { it.displayKey.length }
+        ) ?: return null
+
+        return InlineUrlAutocomplete(
+            typedPrefix = rawQuery,
+            completionSuffix = best.suffix,
+            displayText = rawQuery + best.suffix,
+            targetUrl = best.targetUrl
+        )
     }
 
     private fun parseStrictIpv4Octets(host: String): IntArray? {

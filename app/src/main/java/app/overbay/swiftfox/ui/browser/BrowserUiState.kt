@@ -22,6 +22,7 @@ import app.overbay.swiftfox.engine.HttpsUpgradeErrorPrompt
 import app.overbay.swiftfox.engine.SitePermissionPrompt
 import app.overbay.swiftfox.features.adblock.AdblockEngineStatus
 import app.overbay.swiftfox.features.foldable.FoldableWindowState
+import app.overbay.swiftfox.features.omnibox.InlineUrlAutocomplete
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
 import app.overbay.swiftfox.features.omnibox.OmniboxSuggestion
 import app.overbay.swiftfox.features.reader.ReaderArticle
@@ -52,6 +53,15 @@ enum class SettingsCategory(val title: String) {
     PRIVACY_MEDIA("Privacy, Links & Media")
 }
 
+data class MainFrameLoadError(
+    val url: String,
+    val host: String,
+    val description: String,
+    val resolvedIps: List<String>? = null,
+    val hasSinkholeOrLoopbackIp: Boolean = false,
+    val directProbeSummary: String? = null
+)
+
 data class BrowserTabUi(
     val id: String,
     val spaceId: String,
@@ -67,6 +77,8 @@ data class BrowserTabUi(
     val customTitle: String? = null,
     val sortOrder: Int = 0,
     val isPopupWindow: Boolean = false,
+    val parentTabId: String? = null,
+    val profileOverride: String? = null,
     val isLoading: Boolean = false,
     val progress: Int = 0,
     val canGoBack: Boolean = false,
@@ -78,6 +90,7 @@ data class BrowserTabUi(
     val blockedCount: Int = 0,
     val isReaderAvailable: Boolean = false,
     val darkReaderSkippedNative: Boolean = false,
+    val loadError: MainFrameLoadError? = null,
     val sessionRevision: Int = 0,
     val lastAccessedAt: Long = System.currentTimeMillis()
 ) {
@@ -122,6 +135,7 @@ data class BrowserUiState(
     val isOmniboxFocused: Boolean = false,
     val omniboxQuery: String = "",
     val omniboxSuggestions: List<OmniboxSuggestion> = emptyList(),
+    val omniboxInlineAutocomplete: InlineUrlAutocomplete? = null,
     val isSiteRulesOpen: Boolean = false,
     val activeOverlay: BrowserOverlay = BrowserOverlay.NONE,
     val activeSettingsCategory: SettingsCategory? = null,

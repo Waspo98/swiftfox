@@ -243,6 +243,29 @@ class TabSessionPool(
         deleteContainerProfile(BrowserSession.PRIVATE_PROFILE_NAME)
     }
 
+    /**
+     * Flushes persistent WebView cookies to disk for the default profile and any active
+     * non-private Space container profiles so fresh sign-in / 2FA trust cookies survive
+     * app backgrounding or process eviction. Must be called on the Main thread.
+     */
+    fun flushPersistentCookies() {
+        runCatching { CookieManager.getInstance().flush() }
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) return
+        val activeContainerProfiles = synchronized(lock) {
+            warmSessions.values
+                .asSequence()
+                .filter { !it.isPrivate && it.profileName != BrowserSession.DEFAULT_PROFILE_NAME }
+                .map { it.profileName }
+                .distinct()
+                .toList()
+        }
+        if (activeContainerProfiles.isEmpty()) return
+        val store = runCatching { ProfileStore.getInstance() }.getOrNull() ?: return
+        activeContainerProfiles.forEach { profileName ->
+            runCatching { store.getProfile(profileName)?.cookieManager?.flush() }
+        }
+    }
+
     fun deleteContainerProfile(profileName: String) {
         if (profileName.isBlank() || profileName == BrowserSession.DEFAULT_PROFILE_NAME) return
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) return

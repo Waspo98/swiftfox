@@ -54,6 +54,7 @@ interface WebNavigationCallbacks {
     fun onExternalAppPrompt(prompt: ExternalAppPrompt)
     fun onLaunchExternalIntent(intent: Intent): Boolean
     fun onHttpsOnlyFailure(prompt: HttpsUpgradeErrorPrompt)
+    fun onMainFrameLoadError(tabId: String, url: String, errorCode: Int, description: String) {}
     fun onRenderProcessGone(tabId: String, didCrash: Boolean)
 }
 
@@ -516,16 +517,33 @@ class SwiftfoxWebViewClient(
         if (!request.isForMainFrame) return
         lastRequestedMainFrameUrl = committedMainFrameUrl
         val failedUrl = request.url?.toString().orEmpty()
-        val match = consumeUpgradedOriginal(failedUrl) ?: return
-        val (host, originalHttp) = match
-        callbacks.onHttpsOnlyFailure(
-            HttpsUpgradeErrorPrompt(
-                tabId = tabId,
-                host = host,
-                originalHttpUrl = originalHttp,
-                reason = error.description?.toString().orEmpty().ifBlank { "HTTPS unavailable" }
+        val description = error.description?.toString().orEmpty()
+        val match = consumeUpgradedOriginal(failedUrl)
+        if (match != null) {
+            val (host, originalHttp) = match
+            callbacks.onHttpsOnlyFailure(
+                HttpsUpgradeErrorPrompt(
+                    tabId = tabId,
+                    host = host,
+                    originalHttpUrl = originalHttp,
+                    reason = description.ifBlank { "HTTPS unavailable" }
+                )
             )
-        )
+            return
+        }
+        if (description.contains("ERR_ABORTED", ignoreCase = true)) {
+            return
+        }
+        if (failedUrl.startsWith("http://", ignoreCase = true) ||
+            failedUrl.startsWith("https://", ignoreCase = true)
+        ) {
+            callbacks.onMainFrameLoadError(
+                tabId = tabId,
+                url = failedUrl,
+                errorCode = error.errorCode,
+                description = description
+            )
+        }
     }
 
     override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {

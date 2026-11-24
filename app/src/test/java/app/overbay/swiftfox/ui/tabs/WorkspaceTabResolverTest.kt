@@ -4,9 +4,11 @@ import app.overbay.swiftfox.data.db.EssentialEntity
 import app.overbay.swiftfox.data.db.SpaceEntity
 import app.overbay.swiftfox.data.db.ZenPinnedItemEntity
 import app.overbay.swiftfox.data.prefs.BrowserSettings
+import app.overbay.swiftfox.engine.BrowserSession
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
 import app.overbay.swiftfox.ui.browser.BrowserTabUi
 import app.overbay.swiftfox.ui.browser.BrowserUiState
+import app.overbay.swiftfox.ui.browser.MainFrameLoadError
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -273,7 +275,12 @@ class WorkspaceTabResolverTest {
             isPlayingVideo = true,
             blockedCount = 14,
             isReaderAvailable = true,
-            darkReaderSkippedNative = true
+            darkReaderSkippedNative = true,
+            loadError = MainFrameLoadError(
+                url = "https://docs.example.com/guide/step-2",
+                host = "docs.example.com",
+                description = "net::ERR_CONNECTION_REFUSED"
+            )
         )
 
         val unloaded = WorkspaceTabResolver.toUnloadedPinnedTab(loadedPin)
@@ -289,5 +296,158 @@ class WorkspaceTabResolverTest {
         assertEquals(0, unloaded.blockedCount)
         assertFalse(unloaded.isReaderAvailable)
         assertFalse(unloaded.darkReaderSkippedNative)
+        assertNull(unloaded.loadError)
+    }
+
+    @Test
+    fun findReusableBlankTab_reusesMatchingScopeBlankAndRespectsSpaceAndPrivacy() {
+        val personalPage = BrowserTabUi(
+            id = "tab_web",
+            spaceId = "space_personal",
+            title = "Bleacher Nation",
+            url = "https://www.bleachernation.com/",
+            lastAccessedAt = 100L
+        )
+        val personalBlank = BrowserTabUi(
+            id = "tab_blank_personal",
+            spaceId = "space_personal",
+            title = "New Tab",
+            url = OmniboxEngine.NEW_TAB_URL,
+            lastAccessedAt = 200L
+        )
+        val privateBlank = BrowserTabUi(
+            id = "tab_blank_private",
+            spaceId = "space_personal",
+            title = "New Tab",
+            url = OmniboxEngine.NEW_TAB_URL,
+            isPrivate = true,
+            lastAccessedAt = 300L
+        )
+        val popupBlank = BrowserTabUi(
+            id = "tab_popup",
+            spaceId = "space_work",
+            title = "New Tab",
+            url = OmniboxEngine.NEW_TAB_URL,
+            isPopupWindow = true,
+            lastAccessedAt = 400L
+        )
+        val tabs = listOf(personalPage, personalBlank, privateBlank, popupBlank)
+
+        // When on a webpage in Personal, jumps to existing Personal blank tab
+        assertEquals(
+            personalBlank,
+            WorkspaceTabResolver.findReusableBlankTab(
+                tabs = tabs,
+                activeTabId = personalPage.id,
+                spaceId = "space_personal",
+                isPrivate = false
+            )
+        )
+        // When already on Personal blank tab, stays on it
+        assertEquals(
+            personalBlank,
+            WorkspaceTabResolver.findReusableBlankTab(
+                tabs = tabs,
+                activeTabId = personalBlank.id,
+                spaceId = "space_personal",
+                isPrivate = false
+            )
+        )
+        // Work space has only a popup blank (not a Start Page), so returns null
+        assertNull(
+            WorkspaceTabResolver.findReusableBlankTab(
+                tabs = tabs,
+                activeTabId = personalPage.id,
+                spaceId = "space_work",
+                isPrivate = false
+            )
+        )
+        // Private request reuses private blank tab, not personal blank tab
+        assertEquals(
+            privateBlank,
+            WorkspaceTabResolver.findReusableBlankTab(
+                tabs = tabs,
+                activeTabId = personalPage.id,
+                spaceId = "space_work",
+                isPrivate = true
+            )
+        )
+    }
+
+    @Test
+    fun resolveSessionContainerProfile_honorsPopupProfileOverrideEvenWhenAllSpacesAreContainerized() {
+        val allContainerized = listOf(
+            SpaceEntity(id = "space_personal", name = "Personal", containerProfileName = "space_personal"),
+            SpaceEntity(id = "space_work", name = "Work", containerProfileName = "space_work")
+        )
+        val essentialPopup = BrowserTabUi(
+            id = "tab_popup_oauth",
+            spaceId = "space_work",
+            title = "Sign in",
+            url = OmniboxEngine.NEW_TAB_URL,
+            isPopupWindow = true,
+            parentTabId = "tab_ess_gmail",
+            profileOverride = BrowserSession.DEFAULT_PROFILE_NAME
+        )
+        val workPopup = BrowserTabUi(
+            id = "tab_popup_work",
+            spaceId = "space_work",
+            title = "SSO",
+            url = OmniboxEngine.NEW_TAB_URL,
+            isPopupWindow = true,
+            parentTabId = "tab_work_app",
+            profileOverride = "space_work"
+        )
+        val normalWorkTab = BrowserTabUi(
+            id = "tab_work_app",
+            spaceId = "space_work",
+            title = "Work App",
+            url = "https://work.example.com/"
+        )
+
+        // Default profile override resolves to null container (DEFAULT_PROFILE_NAME) even inside Work Space
+        assertNull(WorkspaceTabResolver.resolveSessionContainerProfile(essentialPopup, allContainerized))
+        // Explicit container override keeps the parent's container profile
+        assertEquals("space_work", WorkspaceTabResolver.resolveSessionContainerProfile(workPopup, allContainerized))
+        // Normal tabs continue to resolve from their Space container
+        assertEquals("space_work", WorkspaceTabResolver.resolveSessionContainerProfile(normalWorkTab, allContainerized))
+    }
+
+    @Test
+    fun resolveFallbackTabId_returnsToPopupParentTabIncludingEssentials() {
+        val essentialParent = BrowserTabUi(
+            id = "tab_ess_gmail",
+            spaceId = WorkspaceTabResolver.ESSENTIAL_GLOBAL_SPACE_ID,
+            title = "Gmail",
+            url = "https://mail.google.com/",
+            essentialId = "ess_gmail",
+            lastAccessedAt = 100L
+        )
+        val workTab = BrowserTabUi(
+            id = "tab_work",
+            spaceId = "space_work",
+            title = "Docs",
+            url = "https://docs.example.com/",
+            lastAccessedAt = 500L
+        )
+
+        assertEquals(
+            "tab_ess_gmail",
+            WorkspaceTabResolver.resolveFallbackTabId(
+                remainingTabs = listOf(essentialParent, workTab),
+                activeSpaceId = "space_work",
+                isPrivateView = false,
+                preferredTabId = "tab_ess_gmail"
+            )
+        )
+        // Without a preferred parent tab, regular Space fallback still picks workTab over Essential
+        assertEquals(
+            "tab_work",
+            WorkspaceTabResolver.resolveFallbackTabId(
+                remainingTabs = listOf(essentialParent, workTab),
+                activeSpaceId = "space_work",
+                isPrivateView = false
+            )
+        )
     }
 }

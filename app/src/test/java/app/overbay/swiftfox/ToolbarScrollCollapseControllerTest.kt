@@ -7,6 +7,10 @@ import app.overbay.swiftfox.ui.browser.GestureAxis
 import app.overbay.swiftfox.ui.browser.ToolbarCollapseBridge
 import app.overbay.swiftfox.ui.browser.ToolbarScrollCollapseController
 import app.overbay.swiftfox.ui.browser.VerticalDragGestureState
+import app.overbay.swiftfox.ui.browser.ViewportHeightMode
+import app.overbay.swiftfox.ui.browser.computeWebViewHeightPx
+import app.overbay.swiftfox.ui.browser.computeWebViewTranslationYPx
+import app.overbay.swiftfox.ui.browser.resolveViewportHeightMode
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
@@ -623,5 +627,86 @@ class ToolbarScrollCollapseControllerTest {
         advanceTimeBy(125)
         runCurrent()
         assertEquals(listOf(1f), animatedTargets)
+    }
+
+    @Test
+    fun webViewHeightNeverOverhangsContainerBottomAcrossAllPlacementsAndProgress() {
+        val containerH = 2206
+        val placements = listOf(
+            // Split (top + bottom)
+            182 to 264,
+            // Top-only
+            182 to 0,
+            // Bottom-only
+            0 to 264,
+            // Side-rail
+            0 to 0
+        )
+        val progressSamples = listOf(0f, 0.001f, 0.05f, 0.24f, 0.47f, 0.5f, 0.85f, 0.99f, 0.998f, 0.999f, 1f)
+
+        for ((topH, bottomH) in placements) {
+            for (expanded in listOf(false, true)) {
+                for (p in progressSamples) {
+                    val mode = resolveViewportHeightMode(
+                        topBarHeightPx = topH,
+                        collapseProgress = p,
+                        expandedViewport = expanded
+                    )
+                    val childH = computeWebViewHeightPx(
+                        containerHeightPx = containerH,
+                        topBarHeightPx = topH,
+                        bottomBarHeightPx = bottomH,
+                        mode = mode
+                    )
+                    val ty = computeWebViewTranslationYPx(
+                        topBarHeightPx = topH,
+                        collapseProgress = p
+                    )
+                    assertTrue(
+                        "WebView bottom (${childH + ty}) must never overhang container ($containerH) for top=$topH bottom=$bottomH expanded=$expanded p=$p mode=$mode",
+                        childH + ty <= containerH + 0.001f
+                    )
+                }
+            }
+        }
+    }
+
+    @Test
+    fun splitAndTopModesDeferFullViewportExpansionUntilTopBarTranslationReachesZero() {
+        val containerH = 2206
+        val topH = 182
+        val bottomH = 264
+
+        // Resting expanded: inset by both bars so fixed web footers clear the bottom bar
+        val restMode = resolveViewportHeightMode(topH, collapseProgress = 0f, expandedViewport = false)
+        assertEquals(ViewportHeightMode.INSET_BOTH, restMode)
+        assertEquals(
+            containerH - topH - bottomH,
+            computeWebViewHeightPx(containerH, topH, bottomH, restMode)
+        )
+
+        // Mid-collapse drag (ty > 0): must NOT expand to full containerH (which overhangs by ty
+        // and lets Chromium's inner visual viewport overscroll sticky headers behind status bar)
+        val midMode = resolveViewportHeightMode(topH, collapseProgress = 0.45f, expandedViewport = true)
+        assertEquals(ViewportHeightMode.INSET_TOP_ONLY, midMode)
+        assertEquals(
+            containerH - topH,
+            computeWebViewHeightPx(containerH, topH, bottomH, midMode)
+        )
+
+        // Fully collapsed (p >= 0.999f): translationY snaps to exact 0f and viewport expands to FULL
+        val fullMode = resolveViewportHeightMode(topH, collapseProgress = 0.999f, expandedViewport = true)
+        assertEquals(ViewportHeightMode.FULL, fullMode)
+        assertEquals(0f, computeWebViewTranslationYPx(topH, collapseProgress = 0.999f), 0f)
+        assertEquals(containerH, computeWebViewHeightPx(containerH, topH, bottomH, fullMode))
+
+        // Mid-drag pull-down reversal from 1f -> 0.90f immediately drops back to INSET_TOP_ONLY
+        val reverseMode = resolveViewportHeightMode(topH, collapseProgress = 0.90f, expandedViewport = true)
+        assertEquals(ViewportHeightMode.INSET_TOP_ONLY, reverseMode)
+
+        // Bottom-only mode (topH == 0): translationY is always 0f, so FULL is safe immediately
+        val bottomOnlyMode = resolveViewportHeightMode(0, collapseProgress = 0.25f, expandedViewport = true)
+        assertEquals(ViewportHeightMode.FULL, bottomOnlyMode)
+        assertEquals(0f, computeWebViewTranslationYPx(0, collapseProgress = 0.25f), 0f)
     }
 }

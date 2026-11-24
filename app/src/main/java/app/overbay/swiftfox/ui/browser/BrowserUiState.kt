@@ -28,6 +28,7 @@ import app.overbay.swiftfox.features.reader.ReaderArticle
 import app.overbay.swiftfox.features.sync.RemoteDeviceTabsGroup
 import app.overbay.swiftfox.features.sync.SyncStatusSnapshot
 import app.overbay.swiftfox.features.zapper.ZapperUiState
+import app.overbay.swiftfox.ui.tabs.PendingPinCloseTarget
 
 enum class BrowserOverlay {
     NONE,
@@ -58,6 +59,10 @@ data class BrowserTabUi(
     val url: String,
     val isPrivate: Boolean = false,
     val isPinned: Boolean = false,
+    val essentialId: String? = null,
+    val zenPinnedId: String? = null,
+    val isUnloaded: Boolean = false,
+    val pinnedUrl: String? = null,
     val customIcon: String? = null,
     val customTitle: String? = null,
     val sortOrder: Int = 0,
@@ -76,6 +81,18 @@ data class BrowserTabUi(
     val sessionRevision: Int = 0,
     val lastAccessedAt: Long = System.currentTimeMillis()
 ) {
+    val isEssentialTab: Boolean
+        get() = essentialId != null
+
+    val isZenPinnedTab: Boolean
+        get() = zenPinnedId != null
+
+    val isBoundWorkspaceTab: Boolean
+        get() = essentialId != null || zenPinnedId != null
+
+    val isLoaded: Boolean
+        get() = !isUnloaded
+
     val isStartPage: Boolean
         get() = !isPopupWindow && (url.isBlank() || url == OmniboxEngine.NEW_TAB_URL)
 
@@ -144,17 +161,20 @@ data class BrowserUiState(
     val syncStatus: SyncStatusSnapshot = SyncStatusSnapshot(),
     val syncedRemoteTabs: List<SyncedRemoteTabEntity> = emptyList(),
     val zenPinnedItems: List<ZenPinnedItemEntity> = emptyList(),
+    val pendingPinCloseTarget: PendingPinCloseTarget? = null,
     val fxaAuthUrl: String? = null,
     val isQrPairingOpen: Boolean = false
 ) {
     val activeTab: BrowserTabUi?
-        get() = tabs.firstOrNull { it.id == activeTabId } ?: visibleTabs.firstOrNull()
+        get() = tabs.firstOrNull { it.id == activeTabId && !it.isUnloaded }
+            ?: visibleRegularTabs.firstOrNull()
+            ?: visibleTabs.firstOrNull { !it.isUnloaded }
 
     val visibleTabs: List<BrowserTabUi>
         get() = if (isPrivateView) {
             tabs.filter { it.isPrivate }
         } else {
-            val spaceTabs = tabs.filter { !it.isPrivate && it.spaceId == activeSpaceId }
+            val spaceTabs = tabs.filter { !it.isPrivate && !it.isBoundWorkspaceTab && it.spaceId == activeSpaceId }
             val pinned = spaceTabs.filter { it.isPinned }
             val regular = spaceTabs.filter { !it.isPinned }
             pinned + regular
@@ -164,14 +184,48 @@ data class BrowserUiState(
         get() = if (isPrivateView) {
             emptyList()
         } else {
-            tabs.filter { !it.isPrivate && it.spaceId == activeSpaceId && it.isPinned }
+            tabs.filter { !it.isPrivate && it.isPinned && !it.isBoundWorkspaceTab && it.spaceId == activeSpaceId }
         }
 
     val visibleRegularTabs: List<BrowserTabUi>
         get() = if (isPrivateView) {
             tabs.filter { it.isPrivate }
         } else {
-            tabs.filter { !it.isPrivate && it.spaceId == activeSpaceId && !it.isPinned }
+            tabs.filter { !it.isPrivate && !it.isPinned && !it.isBoundWorkspaceTab && it.spaceId == activeSpaceId }
+        }
+
+    fun tabForEssential(essentialId: String): BrowserTabUi? =
+        tabs.firstOrNull { !it.isPrivate && it.essentialId == essentialId }
+
+    fun tabForZenPinned(zenPinnedId: String): BrowserTabUi? =
+        tabs.firstOrNull { !it.isPrivate && it.zenPinnedId == zenPinnedId }
+
+    val loadedActiveEssentials: List<BrowserTabUi>
+        get() = if (isPrivateView) {
+            emptyList()
+        } else {
+            activeSpaceEssentials.mapNotNull { ess -> tabForEssential(ess.id) }
+        }
+
+    val loadedActiveZenPinned: List<BrowserTabUi>
+        get() = if (isPrivateView) {
+            emptyList()
+        } else {
+            activeSpaceZenPinned.mapNotNull { pin -> tabForZenPinned(pin.id) }
+        }
+
+    /**
+     * All currently loaded tabs reachable in the current view (used for URL-bar swipe switching,
+     * directional tab transitions, collapsed rail, and live tab counts).
+     */
+    val loadedNavigableTabs: List<BrowserTabUi>
+        get() = if (isPrivateView) {
+            tabs.filter { it.isPrivate }
+        } else {
+            loadedActiveEssentials +
+                visiblePinnedTabs.filter { !it.isUnloaded } +
+                loadedActiveZenPinned +
+                visibleRegularTabs
         }
 
     val activeSpace: SpaceEntity?

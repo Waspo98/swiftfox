@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsBottomHeight
 import androidx.compose.foundation.lazy.LazyRow
@@ -28,11 +29,13 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Bookmark
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.DesktopWindows
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Palette
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.SwapVert
 import androidx.compose.material.icons.rounded.Tab
@@ -53,6 +56,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.style.TextAlign
@@ -388,10 +392,16 @@ fun StartPageContent(
                             ) {
                                 rowItems.forEach { item ->
                                     if (item != null) {
+                                        val boundTab = state.tabForEssential(item.id)
                                         EssentialTile(
                                             essential = item,
+                                            isLoaded = boundTab != null,
                                             isReorderMode = isReorderingEssentials,
-                                            onClick = { if (!isReorderingEssentials) onOpenUrl(item.url) },
+                                            onClick = {
+                                                if (!isReorderingEssentials) {
+                                                    itemCallbacks.onActivateEssential(item.id)
+                                                }
+                                            },
                                             onLongClick = { if (!isReorderingEssentials) actionEssential = item },
                                             modifier = Modifier
                                                 .weight(1f)
@@ -423,7 +433,7 @@ fun StartPageContent(
             val jumpTabs = if (expandedSidebarVisible) {
                 emptyList()
             } else {
-                state.visibleTabs.filter { !it.isStartPage && it.id != state.activeTabId }.take(4)
+                state.visibleTabs.filter { !it.isStartPage && !it.isUnloaded && it.id != state.activeTabId }.take(4)
             }
             val recentBookmarks = state.bookmarks.take(4)
             val recentHistory = state.history.take(4)
@@ -556,9 +566,60 @@ fun StartPageContent(
     }
 
     actionEssential?.let { target ->
+        val boundTab = state.tabForEssential(target.id)
+        val actions = buildList {
+            if (boundTab != null) {
+                add(
+                    SheetActionItem(
+                        label = "Close tab",
+                        icon = Icons.Rounded.Close,
+                        onClick = { itemCallbacks.onCloseEssentialTab(target.id) }
+                    )
+                )
+                if (!boundTab.url.equals(target.url, ignoreCase = true)) {
+                    add(
+                        SheetActionItem(
+                            label = "Reset to pinned URL",
+                            icon = Icons.Rounded.Refresh,
+                            onClick = { itemCallbacks.onResetEssentialTab(target.id) }
+                        )
+                    )
+                }
+            }
+            add(
+                SheetActionItem(
+                    label = "Edit title & URL",
+                    icon = Icons.Rounded.Edit,
+                    onClick = { essentialToEdit = target }
+                )
+            )
+            add(
+                SheetActionItem(
+                    label = "Set custom icon",
+                    icon = Icons.Rounded.Palette,
+                    onClick = { essentialToPickIcon = target }
+                )
+            )
+            add(
+                SheetActionItem(
+                    label = "Reorder",
+                    icon = Icons.Rounded.SwapVert,
+                    enabled = essentials.size > 1,
+                    onClick = { isReorderingEssentials = true }
+                )
+            )
+            add(
+                SheetActionItem(
+                    label = "Delete",
+                    icon = Icons.Rounded.DeleteOutline,
+                    isDestructive = true,
+                    onClick = { onRemoveEssential(target.id) }
+                )
+            )
+        }
         ItemActionBottomSheet(
             title = target.title,
-            subtitle = target.domain,
+            subtitle = if (boundTab != null) "${target.domain} · Open" else target.domain,
             leadingIcon = {
                 SiteIconBadge(
                     url = target.url,
@@ -571,30 +632,7 @@ fun StartPageContent(
                     fillImageToContainer = true
                 )
             },
-            actions = listOf(
-                SheetActionItem(
-                    label = "Edit title & URL",
-                    icon = Icons.Rounded.Edit,
-                    onClick = { essentialToEdit = target }
-                ),
-                SheetActionItem(
-                    label = "Set custom icon",
-                    icon = Icons.Rounded.Palette,
-                    onClick = { essentialToPickIcon = target }
-                ),
-                SheetActionItem(
-                    label = "Reorder",
-                    icon = Icons.Rounded.SwapVert,
-                    enabled = essentials.size > 1,
-                    onClick = { isReorderingEssentials = true }
-                ),
-                SheetActionItem(
-                    label = "Delete",
-                    icon = Icons.Rounded.DeleteOutline,
-                    isDestructive = true,
-                    onClick = { onRemoveEssential(target.id) }
-                )
-            ),
+            actions = actions,
             onDismiss = { actionEssential = null }
         )
     }
@@ -722,6 +760,7 @@ private data class StartJumpItem(
 @Composable
 private fun EssentialTile(
     essential: EssentialEntity,
+    isLoaded: Boolean,
     isReorderMode: Boolean,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
@@ -746,13 +785,17 @@ private fun EssentialTile(
     ) {
         Surface(
             shape = RoundedCornerShape(18.dp),
-            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            color = if (isLoaded) {
+                MaterialTheme.colorScheme.surfaceContainerHigh
+            } else {
+                MaterialTheme.colorScheme.surfaceContainer
+            },
             border = BorderStroke(
                 width = if (isReorderMode) 1.5.dp else 1.dp,
-                color = if (isReorderMode) {
-                    MaterialTheme.colorScheme.primary
-                } else {
-                    MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
+                color = when {
+                    isReorderMode -> MaterialTheme.colorScheme.primary
+                    isLoaded -> MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
+                    else -> MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
                 }
             ),
             modifier = Modifier.size(56.dp)
@@ -767,14 +810,29 @@ private fun EssentialTile(
                     shape = RoundedCornerShape(18.dp),
                     tint = MaterialTheme.colorScheme.primary,
                     monogramFontSize = 22.sp,
-                    fillImageToContainer = true
+                    fillImageToContainer = true,
+                    modifier = Modifier.graphicsLayer {
+                        alpha = if (isLoaded || isReorderMode) 1f else 0.78f
+                    }
                 )
+                if (isLoaded && !isReorderMode) {
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.primary,
+                        border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.surface.copy(alpha = 0.75f)),
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = 4.dp)
+                            .width(16.dp)
+                            .height(3.5.dp)
+                    ) {}
+                }
             }
         }
         Text(
             text = essential.title,
             style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = if (isLoaded) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center

@@ -164,6 +164,7 @@ import app.overbay.swiftfox.ui.sync.QrPairingOverlay
 import app.overbay.swiftfox.ui.sync.SyncOverlay
 import app.overbay.swiftfox.ui.sync.SyncedTabsOverlay
 import app.overbay.swiftfox.ui.tabs.ArcSpacesSidebar
+import app.overbay.swiftfox.ui.tabs.ClosePinnedTabConfirmationDialog
 import app.overbay.swiftfox.ui.tabs.SpacesTabSwitcher
 import app.overbay.swiftfox.ui.tabs.WorkspaceItemCallbacks
 import app.overbay.swiftfox.ui.theme.LocalSwiftfoxColors
@@ -363,7 +364,13 @@ fun BrowserScreen(
             onSetEssentialCustomIcon = { id, spec -> viewModel.setEssentialCustomIcon(id, spec) },
             onReorderEssentials = { ids -> viewModel.reorderEssentials(ids) },
             onRemoveEssential = { id -> viewModel.removeEssential(id) },
+            onActivateEssential = { id -> viewModel.activateEssential(id) },
+            onCloseEssentialTab = { id -> viewModel.closeEssentialTab(id) },
+            onResetEssentialTab = { id -> viewModel.resetEssentialTab(id) },
             onSetTabPinned = { tabId, pinned -> viewModel.setTabPinned(tabId, pinned) },
+            onActivatePinnedTab = { tabId -> viewModel.activatePinnedTab(tabId) },
+            onClosePinnedTab = { tabId -> viewModel.unloadPinnedTab(tabId) },
+            onResetPinnedTab = { tabId -> viewModel.resetPinnedTab(tabId) },
             onEditTabTitleAndUrl = { tabId, title, url -> viewModel.editTabTitleAndUrl(tabId, title, url) },
             onSetTabCustomIcon = { tabId, spec -> viewModel.setTabCustomIcon(tabId, spec) },
             onAddTabToEssentials = { tabId -> viewModel.addTabToEssentials(tabId) },
@@ -372,7 +379,13 @@ fun BrowserScreen(
             onSetZenPinnedCustomIcon = { id, spec -> viewModel.setZenPinnedCustomIcon(id, spec) },
             onAddZenPinnedToEssentials = { id -> viewModel.addZenPinnedToEssentials(id) },
             onDeleteZenPinned = { id -> viewModel.deleteZenPinnedItem(id) },
-            onReorderZenPinned = { ids -> viewModel.reorderZenPinnedItems(ids) }
+            onReorderZenPinned = { ids -> viewModel.reorderZenPinnedItems(ids) },
+            onActivateZenPinned = { id -> viewModel.activateZenPinned(id) },
+            onCloseZenPinnedTab = { id -> viewModel.closeZenPinnedTab(id) },
+            onResetZenPinnedTab = { id -> viewModel.resetZenPinnedTab(id) },
+            onCloseAllLoadedPinnedAndEssentials = { viewModel.closeAllLoadedEssentialsAndPins() },
+            onCloseAllOpenTabsInSpace = { viewModel.closeAllOpenTabsInActiveSpace() },
+            onCloseEverythingInSpace = { viewModel.closeEverythingInActiveSpace() }
         )
     }
 
@@ -1123,6 +1136,15 @@ fun BrowserScreen(
             )
         }
 
+        // Second-tap confirmation before closing an already-active Essential or Pinned tab
+        state.pendingPinCloseTarget?.let { target ->
+            ClosePinnedTabConfirmationDialog(
+                target = target,
+                onDismiss = { viewModel.dismissPendingPinClose() },
+                onConfirm = { dontShowAgain -> viewModel.confirmClosePendingPinTab(dontShowAgain) }
+            )
+        }
+
         // Root SnackbarHost rendered above all fullscreen overlays so Sync, Bookmarks, and Settings feedback is always visible
         val snackbarBottomPadding = when {
             state.activeOverlay == BrowserOverlay.TAB_SWITCHER -> 88.dp
@@ -1224,8 +1246,8 @@ fun BrowserShellLayout(
     val navTracker = remember { TabStripNavTracker() }
 
     val currentTabId = activeTab?.id
-    val currentVisibleIds = remember(state.tabs, state.activeSpaceId, state.isPrivateView) {
-        state.visibleTabs.map { it.id }
+    val currentVisibleIds = remember(state.tabs, state.essentials, state.zenPinnedItems, state.activeSpaceId, state.isPrivateView) {
+        state.loadedNavigableTabs.map { it.id }
     }
     val currentSpaceKey = if (state.isPrivateView) "private" else state.activeSpaceId
     val slideDirection = resolveTabSlideDirection(
@@ -1805,7 +1827,7 @@ private fun FullOmniboxToolbar(
     val activeTab = state.activeTab
     val foxColors = LocalSwiftfoxColors.current
     val isPrivate = activeTab?.isPrivate == true || state.isPrivateView
-    val tabCount = state.visibleTabs.size.coerceAtLeast(1)
+    val tabCount = state.loadedNavigableTabs.size.coerceAtLeast(1)
     val accentTint = if (isPrivate) foxColors.privateAccent else MaterialTheme.colorScheme.primary
     val accentContainer = if (isPrivate) foxColors.privateContainer else MaterialTheme.colorScheme.primaryContainer
 
@@ -1817,7 +1839,7 @@ private fun FullOmniboxToolbar(
     val currentOnOpenTabSwitcher by rememberUpdatedState(onOpenTabSwitcher)
 
     val swipeModifier = if (state.settings.swipeUrlBarSwitchTabs) {
-        Modifier.pointerInput(isTop, state.visibleTabs.size, horizontalSwipeThresholdPx, verticalSwipeThresholdPx) {
+        Modifier.pointerInput(isTop, state.loadedNavigableTabs.size, horizontalSwipeThresholdPx, verticalSwipeThresholdPx) {
             detectDragGestures(
                 onDragStart = {
                     dragAccum.x = 0f
@@ -2131,7 +2153,7 @@ private fun SplitBottomActionBar(
     val activeTab = state.activeTab
     val foxColors = LocalSwiftfoxColors.current
     val isPrivate = activeTab?.isPrivate == true || state.isPrivateView
-    val tabCount = state.visibleTabs.size.coerceAtLeast(1)
+    val tabCount = state.loadedNavigableTabs.size.coerceAtLeast(1)
     val accentTint = if (isPrivate) foxColors.privateAccent else MaterialTheme.colorScheme.primary
     val accentContainer = if (isPrivate) foxColors.privateContainer else MaterialTheme.colorScheme.primaryContainer
 
@@ -2248,7 +2270,7 @@ private fun ErgonomicSideRail(
 ) {
     val activeTab = state.activeTab
     val isPrivate = activeTab?.isPrivate == true || state.isPrivateView
-    val tabCount = state.visibleTabs.size.coerceAtLeast(1)
+    val tabCount = state.loadedNavigableTabs.size.coerceAtLeast(1)
     var searchButtonRect by remember { mutableStateOf<Rect?>(null) }
 
     Surface(

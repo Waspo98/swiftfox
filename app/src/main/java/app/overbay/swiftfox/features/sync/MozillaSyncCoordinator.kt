@@ -864,6 +864,7 @@ class MozillaSyncCoordinator(
                                 db.essentialDao().clearSyncMetadata()
                                 db.syncedRemoteTabDao().clearAll()
                                 db.zenPinnedItemDao().clearAll()
+                                db.tabDao().deleteAllZenPinnedTabs()
                             }
 
                             prefs.setSyncLastTimestampMs(0L)
@@ -1167,7 +1168,7 @@ class MozillaSyncCoordinator(
     private suspend fun pushLocalOpenTabsToPlaces() {
         val store = remoteTabsStorage ?: return
         val tabs = db.tabDao().getNormalTabs()
-            .filter { it.url.startsWith("http://") || it.url.startsWith("https://") }
+            .filter { !it.isUnloaded && (it.url.startsWith("http://") || it.url.startsWith("https://")) }
             .map { entity ->
                 MozTab(
                     history = listOf(
@@ -1497,6 +1498,7 @@ class MozillaSyncCoordinator(
                 if (shiftedLocalEss.isNotEmpty()) db.essentialDao().upsertAll(shiftedLocalEss)
             }
             for (oldEss in existingEssentials.filter { it.syncGuid != null && it.syncGuid !in seenEssSyncGuids }) {
+                db.tabDao().deleteByEssentialId(oldEss.id)
                 db.essentialDao().deleteById(oldEss.id)
             }
 
@@ -1521,6 +1523,12 @@ class MozillaSyncCoordinator(
                     )
                 }
             }
+            val newPinnedIds = pinnedEntities.mapTo(mutableSetOf()) { it.id }
+            existingPinnedById.keys
+                .filterNot { it in newPinnedIds }
+                .forEach { removedPinnedId ->
+                    db.tabDao().deleteByZenPinnedId(removedPinnedId)
+                }
             db.zenPinnedItemDao().replaceAll(pinnedEntities)
 
             syncedSpaceEntities.size

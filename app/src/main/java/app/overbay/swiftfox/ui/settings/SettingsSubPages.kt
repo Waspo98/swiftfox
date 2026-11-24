@@ -584,6 +584,13 @@ internal fun LazyListScope.searchGesturesSettingsItems(
                 checked = settings.pullToRefreshEnabled,
                 onCheckedChange = { viewModel.setPullToRefreshEnabled(it) }
             )
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+            SettingsSwitchRow(
+                title = "Confirm closing active Essentials & Pins",
+                subtitle = "Ask before closing an open Essential or pinned tab on a second tap",
+                checked = settings.confirmClosePinnedOnSecondTap,
+                onCheckedChange = { viewModel.setConfirmClosePinnedOnSecondTap(it) }
+            )
         }
     }
 }

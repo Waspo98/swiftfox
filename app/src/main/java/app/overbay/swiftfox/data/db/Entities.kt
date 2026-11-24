@@ -41,7 +41,11 @@ data class TabEntity(
     val lastAccessedAt: Long = System.currentTimeMillis(),
     val sortOrder: Int = 0,
     val customIcon: String? = null,
-    val customTitle: String? = null
+    val customTitle: String? = null,
+    val essentialId: String? = null,
+    val zenPinnedId: String? = null,
+    val isUnloaded: Boolean = false,
+    val pinnedUrl: String? = null
 )
 
 @Entity(tableName = "bookmarks")

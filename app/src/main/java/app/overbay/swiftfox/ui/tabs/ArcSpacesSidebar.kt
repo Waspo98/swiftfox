@@ -52,6 +52,7 @@ import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.PushPin
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.StarOutline
 import androidx.compose.material.icons.rounded.SwapVert
@@ -73,6 +74,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
@@ -133,6 +135,7 @@ fun ArcSpacesSidebar(
     modifier: Modifier = Modifier
 ) {
     var showCreateSpaceDialog by remember { mutableStateOf(false) }
+    var showCloseAllSheet by remember { mutableStateOf(false) }
     var reorderMode by remember { mutableStateOf(SidebarReorderMode.NONE) }
 
     // Active action-sheet & dialog targets
@@ -245,6 +248,7 @@ fun ArcSpacesSidebar(
                         onCreatePrivateTab = onCreatePrivateTab,
                         onOpenEssential = onOpenEssential,
                         onRequestCreateSpace = { showCreateSpaceDialog = true },
+                        onRequestCloseAll = { showCloseAllSheet = true },
                         onLongPressSpace = { actionSpace = it },
                         onLongPressEssential = { actionEssential = it },
                         onLongPressTab = { actionTab = it },
@@ -261,7 +265,10 @@ fun ArcSpacesSidebar(
                         onCreateTab = onCreateTab,
                         onCreatePrivateTab = onCreatePrivateTab,
                         onLongPressSpace = { actionSpace = it },
-                        onLongPressTab = { actionTab = it }
+                        onLongPressEssential = { actionEssential = it },
+                        onLongPressTab = { actionTab = it },
+                        onLongPressZenPinned = { actionZenPinned = it },
+                        itemCallbacks = itemCallbacks
                     )
                 }
             }
@@ -362,10 +369,77 @@ fun ArcSpacesSidebar(
         )
     }
 
+    if (showCloseAllSheet) {
+        CloseAllTabsSheet(
+            state = state,
+            onCloseLoadedPinnedAndEssentials = itemCallbacks.onCloseAllLoadedPinnedAndEssentials,
+            onCloseOpenTabsInSpace = itemCallbacks.onCloseAllOpenTabsInSpace,
+            onCloseEverythingInSpace = itemCallbacks.onCloseEverythingInSpace,
+            onDismiss = { showCloseAllSheet = false }
+        )
+    }
+
     actionEssential?.let { target ->
+        val boundTab = state.tabForEssential(target.id)
+        val essentialActions = buildList {
+            if (boundTab != null) {
+                add(
+                    SheetActionItem(
+                        label = "Close tab",
+                        icon = Icons.Rounded.Close,
+                        onClick = { itemCallbacks.onCloseEssentialTab(target.id) }
+                    )
+                )
+                if (!boundTab.url.equals(target.url, ignoreCase = true)) {
+                    add(
+                        SheetActionItem(
+                            label = "Reset to pinned URL",
+                            icon = Icons.Rounded.Refresh,
+                            onClick = { itemCallbacks.onResetEssentialTab(target.id) }
+                        )
+                    )
+                }
+            }
+            add(
+                SheetActionItem(
+                    label = "Edit title & URL",
+                    icon = Icons.Rounded.Edit,
+                    onClick = { essentialToEdit = target }
+                )
+            )
+            add(
+                SheetActionItem(
+                    label = "Set custom icon",
+                    icon = Icons.Rounded.Palette,
+                    onClick = { essentialToPickIcon = target }
+                )
+            )
+            add(
+                SheetActionItem(
+                    label = "Reorder essentials",
+                    icon = Icons.Rounded.SwapVert,
+                    enabled = state.activeSpaceEssentials.size > 1,
+                    onClick = { reorderMode = SidebarReorderMode.ESSENTIALS }
+                )
+            )
+            add(
+                SheetActionItem(
+                    label = "Delete",
+                    icon = Icons.Rounded.DeleteOutline,
+                    isDestructive = true,
+                    onClick = { itemCallbacks.onRemoveEssential(target.id) }
+                )
+            )
+        }
+        val subtitleText = when {
+            boundTab == null -> target.domain
+            boundTab.displayHost.isNotBlank() && !boundTab.displayHost.equals(target.domain, ignoreCase = true) ->
+                "${boundTab.displayHost} · Open"
+            else -> "${target.domain} · Open"
+        }
         ItemActionBottomSheet(
             title = target.title,
-            subtitle = target.domain,
+            subtitle = subtitleText,
             leadingIcon = {
                 SiteIconBadge(
                     url = target.url,
@@ -378,30 +452,7 @@ fun ArcSpacesSidebar(
                     fillImageToContainer = true
                 )
             },
-            actions = listOf(
-                SheetActionItem(
-                    label = "Edit title & URL",
-                    icon = Icons.Rounded.Edit,
-                    onClick = { essentialToEdit = target }
-                ),
-                SheetActionItem(
-                    label = "Set custom icon",
-                    icon = Icons.Rounded.Palette,
-                    onClick = { essentialToPickIcon = target }
-                ),
-                SheetActionItem(
-                    label = "Reorder essentials",
-                    icon = Icons.Rounded.SwapVert,
-                    enabled = state.activeSpaceEssentials.size > 1,
-                    onClick = { reorderMode = SidebarReorderMode.ESSENTIALS }
-                ),
-                SheetActionItem(
-                    label = "Delete",
-                    icon = Icons.Rounded.DeleteOutline,
-                    isDestructive = true,
-                    onClick = { itemCallbacks.onRemoveEssential(target.id) }
-                )
-            ),
+            actions = essentialActions,
             onDismiss = { actionEssential = null }
         )
     }
@@ -437,6 +488,24 @@ fun ArcSpacesSidebar(
         val isPrivate = target.isPrivate
         val tabActions = buildList {
             if (!isPrivate) {
+                if (target.isPinned && !target.isUnloaded) {
+                    add(
+                        SheetActionItem(
+                            label = "Close tab",
+                            icon = Icons.Rounded.Close,
+                            onClick = { itemCallbacks.onClosePinnedTab(target.id) }
+                        )
+                    )
+                    if (!target.pinnedUrl.isNullOrBlank() && !target.url.equals(target.pinnedUrl, ignoreCase = true)) {
+                        add(
+                            SheetActionItem(
+                                label = "Reset to pinned URL",
+                                icon = Icons.Rounded.Refresh,
+                                onClick = { itemCallbacks.onResetPinnedTab(target.id) }
+                            )
+                        )
+                    }
+                }
                 add(
                     SheetActionItem(
                         label = if (target.isPinned) "Unpin tab" else "Pin tab",
@@ -491,16 +560,22 @@ fun ArcSpacesSidebar(
             }
             add(
                 SheetActionItem(
-                    label = if (target.isPinned) "Close & delete pinned tab" else "Close tab",
+                    label = if (target.isPinned) "Delete pin" else "Close tab",
                     icon = Icons.Rounded.DeleteOutline,
                     isDestructive = true,
                     onClick = { onCloseTab(target.id) }
                 )
             )
         }
+        val tabSubtitle = buildString {
+            append(target.displayHost.ifBlank { "Start Page" })
+            if (target.isPinned && !isPrivate) {
+                append(if (target.isUnloaded) " · Unloaded" else " · Open")
+            }
+        }
         ItemActionBottomSheet(
             title = target.displayTitle,
-            subtitle = target.displayHost.ifBlank { "Start Page" },
+            subtitle = tabSubtitle,
             leadingIcon = {
                 if (target.isStartPage && target.customIcon == null) {
                     Surface(
@@ -562,9 +637,69 @@ fun ArcSpacesSidebar(
     }
 
     actionZenPinned?.let { target ->
+        val boundTab = state.tabForZenPinned(target.id)
+        val zenActions = buildList {
+            if (boundTab != null) {
+                add(
+                    SheetActionItem(
+                        label = "Close tab",
+                        icon = Icons.Rounded.Close,
+                        onClick = { itemCallbacks.onCloseZenPinnedTab(target.id) }
+                    )
+                )
+                if (!boundTab.url.equals(target.url, ignoreCase = true)) {
+                    add(
+                        SheetActionItem(
+                            label = "Reset to pinned URL",
+                            icon = Icons.Rounded.Refresh,
+                            onClick = { itemCallbacks.onResetZenPinnedTab(target.id) }
+                        )
+                    )
+                }
+            }
+            add(
+                SheetActionItem(
+                    label = "Edit title & URL",
+                    icon = Icons.Rounded.Edit,
+                    onClick = { zenPinnedToEdit = target }
+                )
+            )
+            add(
+                SheetActionItem(
+                    label = "Set custom icon",
+                    icon = Icons.Rounded.Palette,
+                    onClick = { zenPinnedToPickIcon = target }
+                )
+            )
+            add(
+                SheetActionItem(
+                    label = "Add to Essentials",
+                    icon = Icons.Rounded.StarOutline,
+                    onClick = { itemCallbacks.onAddZenPinnedToEssentials(target.id) }
+                )
+            )
+            add(
+                SheetActionItem(
+                    label = "Reorder synced pinned",
+                    icon = Icons.Rounded.SwapVert,
+                    enabled = state.activeSpaceZenPinned.size > 1,
+                    onClick = { reorderMode = SidebarReorderMode.ZEN_PINNED }
+                )
+            )
+            add(
+                SheetActionItem(
+                    label = "Delete",
+                    icon = Icons.Rounded.DeleteOutline,
+                    isDestructive = true,
+                    onClick = { itemCallbacks.onDeleteZenPinned(target.id) }
+                )
+            )
+        }
+        val hostLabel = OmniboxEngine.extractHost(target.url).ifBlank { target.url }
+        val zenSubtitle = if (boundTab != null) "$hostLabel · Open" else hostLabel
         ItemActionBottomSheet(
             title = target.title,
-            subtitle = OmniboxEngine.extractHost(target.url).ifBlank { target.url },
+            subtitle = zenSubtitle,
             leadingIcon = {
                 SiteIconBadge(
                     url = target.url,
@@ -577,35 +712,7 @@ fun ArcSpacesSidebar(
                     fillImageToContainer = true
                 )
             },
-            actions = listOf(
-                SheetActionItem(
-                    label = "Edit title & URL",
-                    icon = Icons.Rounded.Edit,
-                    onClick = { zenPinnedToEdit = target }
-                ),
-                SheetActionItem(
-                    label = "Set custom icon",
-                    icon = Icons.Rounded.Palette,
-                    onClick = { zenPinnedToPickIcon = target }
-                ),
-                SheetActionItem(
-                    label = "Add to Essentials",
-                    icon = Icons.Rounded.StarOutline,
-                    onClick = { itemCallbacks.onAddZenPinnedToEssentials(target.id) }
-                ),
-                SheetActionItem(
-                    label = "Reorder synced pinned",
-                    icon = Icons.Rounded.SwapVert,
-                    enabled = state.activeSpaceZenPinned.size > 1,
-                    onClick = { reorderMode = SidebarReorderMode.ZEN_PINNED }
-                ),
-                SheetActionItem(
-                    label = "Delete",
-                    icon = Icons.Rounded.DeleteOutline,
-                    isDestructive = true,
-                    onClick = { itemCallbacks.onDeleteZenPinned(target.id) }
-                )
-            ),
+            actions = zenActions,
             onDismiss = { actionZenPinned = null }
         )
     }
@@ -654,6 +761,7 @@ private fun ColumnScope.ArcExpandedSidebarContent(
     onCreatePrivateTab: () -> Unit,
     onOpenEssential: (String) -> Unit,
     onRequestCreateSpace: () -> Unit,
+    onRequestCloseAll: () -> Unit,
     onLongPressSpace: (SpaceEntity) -> Unit,
     onLongPressEssential: (EssentialEntity) -> Unit,
     onLongPressTab: (BrowserTabUi) -> Unit,
@@ -804,11 +912,17 @@ private fun ColumnScope.ArcExpandedSidebarContent(
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             rowItems.forEach { ess ->
+                                val boundTab = state.tabForEssential(ess.id)
+                                val isEssLoaded = boundTab != null
+                                val isEssActive = boundTab != null && boundTab.id == state.activeTabId
                                 SidebarEssentialTile(
                                     essential = ess,
+                                    isLoaded = isEssLoaded,
+                                    isActive = isEssActive,
+                                    isPlayingMedia = boundTab?.isPlayingMedia == true,
                                     isReorderMode = isReorderingEss,
                                     onClick = {
-                                        if (!isReorderingEss) onOpenEssential(ess.url)
+                                        if (!isReorderingEss) itemCallbacks.onActivateEssential(ess.id)
                                     },
                                     onLongClick = {
                                         if (!isReorderingEss) onLongPressEssential(ess)
@@ -850,10 +964,11 @@ private fun ColumnScope.ArcExpandedSidebarContent(
                 val isReorderingPinned = reorderMode == SidebarReorderMode.PINNED_TABS
                 SidebarTabRow(
                     tab = tab,
-                    isActive = tab.id == state.activeTabId,
+                    isActive = !tab.isUnloaded && tab.id == state.activeTabId,
                     isPinnedStyle = true,
+                    isLoaded = !tab.isUnloaded,
                     isReorderMode = isReorderingPinned,
-                    onSelect = { if (!isReorderingPinned) onSelectTab(tab.id) },
+                    onSelect = { if (!isReorderingPinned) itemCallbacks.onActivatePinnedTab(tab.id) },
                     onLongPress = { if (!isReorderingPinned) onLongPressTab(tab) },
                     onClose = { onCloseTab(tab.id) },
                     modifier = Modifier
@@ -871,10 +986,13 @@ private fun ColumnScope.ArcExpandedSidebarContent(
                 contentType = { "sidebar_zen_pinned_row" }
             ) { item ->
                 val isReorderingZen = reorderMode == SidebarReorderMode.ZEN_PINNED
+                val boundTab = state.tabForZenPinned(item.id)
                 SidebarZenPinnedRow(
                     item = item,
+                    boundTab = boundTab,
+                    isActive = boundTab != null && boundTab.id == state.activeTabId,
                     isReorderMode = isReorderingZen,
-                    onClick = { if (!isReorderingZen) onOpenEssential(item.url) },
+                    onClick = { if (!isReorderingZen) itemCallbacks.onActivateZenPinned(item.id) },
                     onLongPress = { if (!isReorderingZen) onLongPressZenPinned(item) },
                     modifier = Modifier
                         .then(if (!isReorderingZen) Modifier.animateItem() else Modifier)
@@ -893,6 +1011,19 @@ private fun ColumnScope.ArcExpandedSidebarContent(
             }
         }
 
+        // Open Tabs header with Close all button
+        val canCloseAll = !isVerticalListReordering && WorkspaceTabResolver.hasAnythingToCloseAll(state)
+        if (displayedRegularTabs.isNotEmpty() || canCloseAll) {
+            item(key = "open_tabs_header", contentType = "sidebar_section_header") {
+                WorkspaceTabsHeaderRow(
+                    title = if (state.isPrivateView) "Private tabs" else "Open tabs",
+                    showCloseAll = canCloseAll,
+                    isPrivate = state.isPrivateView,
+                    onClickCloseAll = onRequestCloseAll
+                )
+            }
+        }
+
         // Open Tabs list
         items(
             items = displayedRegularTabs,
@@ -904,6 +1035,7 @@ private fun ColumnScope.ArcExpandedSidebarContent(
                 tab = tab,
                 isActive = tab.id == state.activeTabId,
                 isPinnedStyle = false,
+                isLoaded = true,
                 isReorderMode = isReorderingTabs,
                 onSelect = { if (!isReorderingTabs) onSelectTab(tab.id) },
                 onLongPress = { if (!isReorderingTabs) onLongPressTab(tab) },
@@ -1079,22 +1211,35 @@ private fun ColumnScope.ArcExpandedSidebarContent(
 @Composable
 private fun SidebarEssentialTile(
     essential: EssentialEntity,
+    isLoaded: Boolean,
+    isActive: Boolean,
+    isPlayingMedia: Boolean,
     isReorderMode: Boolean,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val containerColor = when {
+        isActive -> MaterialTheme.colorScheme.primaryContainer
+        isLoaded -> MaterialTheme.colorScheme.surfaceContainerHigh
+        else -> MaterialTheme.colorScheme.surfaceContainer
+    }
+    val border = when {
+        isReorderMode -> BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
+        isActive -> BorderStroke(1.8.dp, MaterialTheme.colorScheme.primary)
+        isLoaded -> BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.48f))
+        else -> BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.28f))
+    }
+    val statusDescription = when {
+        isActive -> "Active"
+        isLoaded -> "Loaded"
+        else -> "Unloaded"
+    }
+
     Surface(
         shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        border = BorderStroke(
-            width = if (isReorderMode) 1.5.dp else 1.dp,
-            color = if (isReorderMode) {
-                MaterialTheme.colorScheme.primary
-            } else {
-                MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
-            }
-        ),
+        color = containerColor,
+        border = border,
         modifier = modifier
             .height(48.dp)
             .clip(RoundedCornerShape(14.dp))
@@ -1109,7 +1254,7 @@ private fun SidebarEssentialTile(
                 }
             )
             .semantics {
-                contentDescription = "Open ${essential.title} (${essential.domain})"
+                contentDescription = "${essential.title} (${essential.domain}), $statusDescription"
             }
     ) {
         Box(
@@ -1123,9 +1268,49 @@ private fun SidebarEssentialTile(
                 size = 48.dp,
                 iconSize = 24.dp,
                 shape = RoundedCornerShape(14.dp),
-                tint = MaterialTheme.colorScheme.primary,
-                fillImageToContainer = true
+                tint = if (isActive || isLoaded) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                fillImageToContainer = true,
+                modifier = Modifier.graphicsLayer {
+                    alpha = if (isLoaded || isActive || isReorderMode) 1f else 0.66f
+                }
             )
+
+            if (isLoaded && !isReorderMode) {
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.primary,
+                    border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.surface.copy(alpha = 0.75f)),
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 3.5.dp)
+                        .width(if (isActive) 20.dp else 12.dp)
+                        .height(3.5.dp)
+                ) {}
+            }
+
+            if (isPlayingMedia && !isReorderMode) {
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(3.dp)
+                        .size(14.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Rounded.VolumeUp,
+                            contentDescription = "Playing media",
+                            tint = MaterialTheme.colorScheme.onPrimary,
+                            modifier = Modifier.size(9.dp)
+                        )
+                    }
+                }
+            }
         }
     }
 }
@@ -1134,22 +1319,40 @@ private fun SidebarEssentialTile(
 @Composable
 private fun SidebarZenPinnedRow(
     item: ZenPinnedItemEntity,
+    boundTab: BrowserTabUi?,
+    isActive: Boolean,
     isReorderMode: Boolean,
     onClick: () -> Unit,
     onLongPress: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val isLoaded = boundTab != null
+    val containerColor = when {
+        isActive -> MaterialTheme.colorScheme.primaryContainer
+        isLoaded -> MaterialTheme.colorScheme.surfaceContainerHigh
+        else -> MaterialTheme.colorScheme.surfaceContainerLow
+    }
+    val contentColor = when {
+        isActive -> MaterialTheme.colorScheme.onPrimaryContainer
+        isLoaded -> MaterialTheme.colorScheme.onSurface
+        else -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f)
+    }
+    val border = when {
+        isReorderMode -> BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
+        isActive -> BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
+        isLoaded -> BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.42f))
+        else -> BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.28f))
+    }
+    val statusLabel = when {
+        isActive -> "Active"
+        isLoaded -> "Loaded"
+        else -> "Unloaded"
+    }
+
     Surface(
         shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceContainer,
-        border = BorderStroke(
-            width = if (isReorderMode) 1.5.dp else 1.dp,
-            color = if (isReorderMode) {
-                MaterialTheme.colorScheme.primary
-            } else {
-                MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
-            }
-        ),
+        color = containerColor,
+        border = border,
         modifier = modifier
             .fillMaxWidth()
             .heightIn(min = 48.dp)
@@ -1164,6 +1367,9 @@ private fun SidebarZenPinnedRow(
                     Modifier
                 }
             )
+            .semantics {
+                contentDescription = "${item.title}, $statusLabel"
+            }
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
@@ -1177,38 +1383,92 @@ private fun SidebarZenPinnedRow(
                 size = 28.dp,
                 iconSize = 18.dp,
                 shape = RoundedCornerShape(8.dp),
-                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                fillImageToContainer = true
+                containerColor = if (isActive) {
+                    MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
+                } else {
+                    MaterialTheme.colorScheme.surfaceContainerHigh
+                },
+                fillImageToContainer = true,
+                modifier = Modifier.graphicsLayer {
+                    alpha = if (isLoaded || isActive || isReorderMode) 1f else 0.68f
+                }
             )
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = item.title,
                     style = MaterialTheme.typography.labelLarge,
+                    color = contentColor,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                val subtitle = item.folderName?.takeIf { it.isNotBlank() }
-                    ?: OmniboxEngine.extractHost(item.url)
+                val subtitle = when {
+                    boundTab != null && boundTab.displayHost.isNotBlank() -> boundTab.displayHost
+                    !item.folderName.isNullOrBlank() -> item.folderName
+                    else -> OmniboxEngine.extractHost(item.url)
+                }
                 if (subtitle.isNotBlank()) {
-                    Text(
-                        text = subtitle,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = subtitle,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (isActive) {
+                                contentColor.copy(alpha = 0.78f)
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (isLoaded) 1f else 0.72f)
+                            },
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                        if (boundTab?.resolvedSiteMode == SiteMode.DESKTOP) {
+                            Icon(
+                                imageVector = Icons.Rounded.DesktopWindows,
+                                contentDescription = "Desktop mode",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(12.dp)
+                            )
+                        }
+                        if (boundTab?.isPlayingMedia == true) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Rounded.VolumeUp,
+                                contentDescription = "Playing media",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(12.dp)
+                            )
+                        }
+                    }
                 }
             }
-            Icon(
-                imageVector = when {
-                    isReorderMode -> Icons.Rounded.DragIndicator
-                    item.isPinned -> Icons.Rounded.PushPin
-                    else -> Icons.Rounded.Tab
-                },
-                contentDescription = if (isReorderMode) "Drag to reorder" else "Pinned item",
-                tint = MaterialTheme.colorScheme.primary.copy(alpha = if (isReorderMode) 1f else 0.72f),
-                modifier = Modifier.size(16.dp)
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                if (isLoaded && !isReorderMode) {
+                    Box(
+                        modifier = Modifier
+                            .size(if (isActive) 8.dp else 7.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primary)
+                    )
+                }
+                Icon(
+                    imageVector = when {
+                        isReorderMode -> Icons.Rounded.DragIndicator
+                        item.isPinned -> Icons.Rounded.PushPin
+                        else -> Icons.Rounded.Tab
+                    },
+                    contentDescription = if (isReorderMode) "Drag to reorder" else "Pinned item",
+                    tint = when {
+                        isReorderMode || isActive -> MaterialTheme.colorScheme.primary
+                        isLoaded -> MaterialTheme.colorScheme.primary.copy(alpha = 0.78f)
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
+                    },
+                    modifier = Modifier.size(16.dp)
+                )
+            }
         }
     }
 }
@@ -1219,6 +1479,7 @@ private fun SidebarTabRow(
     tab: BrowserTabUi,
     isActive: Boolean,
     isPinnedStyle: Boolean,
+    isLoaded: Boolean = true,
     isReorderMode: Boolean,
     onSelect: () -> Unit,
     onLongPress: () -> Unit,
@@ -1230,18 +1491,22 @@ private fun SidebarTabRow(
     val containerColor = when {
         isActive && isPrivate -> foxColors.privateContainer
         isActive -> MaterialTheme.colorScheme.primaryContainer
+        isPinnedStyle && !isLoaded -> MaterialTheme.colorScheme.surfaceContainerLow
+        isPinnedStyle -> MaterialTheme.colorScheme.surfaceContainerHigh
         else -> MaterialTheme.colorScheme.surfaceContainer
     }
     val contentColor = when {
         isActive && isPrivate -> foxColors.onPrivateContainer
         isActive -> MaterialTheme.colorScheme.onPrimaryContainer
+        isPinnedStyle && !isLoaded -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f)
         else -> MaterialTheme.colorScheme.onSurface
     }
     val border = when {
         isReorderMode -> BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
         isActive && isPrivate -> BorderStroke(1.dp, foxColors.privateAccent.copy(alpha = 0.65f))
-        isActive -> BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.55f))
-        isPinnedStyle -> BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+        isActive -> BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
+        isPinnedStyle && isLoaded -> BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.42f))
+        isPinnedStyle -> BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.28f))
         else -> null
     }
     val badgeBg = when {
@@ -1280,12 +1545,14 @@ private fun SidebarTabRow(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            val iconAlpha = if (isLoaded || isActive || isReorderMode || !isPinnedStyle) 1f else 0.68f
             if (tab.isStartPage && tab.customIcon == null) {
                 Box(
                     modifier = Modifier
                         .size(28.dp)
                         .clip(RoundedCornerShape(8.dp))
-                        .background(badgeBg),
+                        .background(badgeBg)
+                        .graphicsLayer { alpha = iconAlpha },
                     contentAlignment = Alignment.Center
                 ) {
                     SwiftfoxEmblem(
@@ -1304,7 +1571,8 @@ private fun SidebarTabRow(
                     shape = RoundedCornerShape(8.dp),
                     containerColor = badgeBg,
                     tint = badgeTint,
-                    fillImageToContainer = true
+                    fillImageToContainer = true,
+                    modifier = Modifier.graphicsLayer { alpha = iconAlpha }
                 )
             }
             Column(modifier = Modifier.weight(1f)) {
@@ -1325,13 +1593,15 @@ private fun SidebarTabRow(
                         color = if (isActive) {
                             contentColor.copy(alpha = 0.78f)
                         } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
+                            MaterialTheme.colorScheme.onSurfaceVariant.copy(
+                                alpha = if (isLoaded || !isPinnedStyle) 1f else 0.72f
+                            )
                         },
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f, fill = false)
                     )
-                    if (tab.resolvedSiteMode == SiteMode.DESKTOP) {
+                    if (isLoaded && tab.resolvedSiteMode == SiteMode.DESKTOP) {
                         Icon(
                             imageVector = Icons.Rounded.DesktopWindows,
                             contentDescription = "Desktop mode",
@@ -1339,7 +1609,7 @@ private fun SidebarTabRow(
                             modifier = Modifier.size(12.dp)
                         )
                     }
-                    if (tab.isPlayingMedia) {
+                    if (isLoaded && tab.isPlayingMedia) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Rounded.VolumeUp,
                             contentDescription = "Playing media",
@@ -1359,12 +1629,29 @@ private fun SidebarTabRow(
                     )
                 }
                 isPinnedStyle -> {
-                    Icon(
-                        imageVector = Icons.Rounded.PushPin,
-                        contentDescription = "Pinned tab",
-                        tint = badgeTint.copy(alpha = 0.75f),
-                        modifier = Modifier.size(15.dp)
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        if (isLoaded) {
+                            Box(
+                                modifier = Modifier
+                                    .size(if (isActive) 8.dp else 7.dp)
+                                    .clip(CircleShape)
+                                    .background(MaterialTheme.colorScheme.primary)
+                            )
+                        }
+                        Icon(
+                            imageVector = Icons.Rounded.PushPin,
+                            contentDescription = if (isLoaded) "Loaded pinned tab" else "Unloaded pinned tab",
+                            tint = when {
+                                isActive -> badgeTint
+                                isLoaded -> badgeTint.copy(alpha = 0.78f)
+                                else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
+                            },
+                            modifier = Modifier.size(15.dp)
+                        )
+                    }
                 }
                 else -> {
                     IconButton(
@@ -1456,7 +1743,10 @@ private fun ColumnScope.ArcCollapsedSidebarRail(
     onCreateTab: () -> Unit,
     onCreatePrivateTab: () -> Unit,
     onLongPressSpace: (SpaceEntity) -> Unit,
-    onLongPressTab: (BrowserTabUi) -> Unit
+    onLongPressEssential: (EssentialEntity) -> Unit,
+    onLongPressTab: (BrowserTabUi) -> Unit,
+    onLongPressZenPinned: (ZenPinnedItemEntity) -> Unit,
+    itemCallbacks: WorkspaceItemCallbacks
 ) {
     val foxColors = LocalSwiftfoxColors.current
     val emblemVariant = if (state.isPrivateView) {
@@ -1558,23 +1848,113 @@ private fun ColumnScope.ArcCollapsedSidebarRail(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
+        if (!state.isPrivateView && state.activeSpaceEssentials.isNotEmpty()) {
+            items(
+                items = state.activeSpaceEssentials,
+                key = { "rail_ess_${it.id}" },
+                contentType = { "sidebar_ess_collapsed" }
+            ) { ess ->
+                val boundTab = state.tabForEssential(ess.id)
+                SidebarEssentialTile(
+                    essential = ess,
+                    isLoaded = boundTab != null,
+                    isActive = boundTab != null && boundTab.id == state.activeTabId,
+                    isPlayingMedia = boundTab?.isPlayingMedia == true,
+                    isReorderMode = false,
+                    onClick = { itemCallbacks.onActivateEssential(ess.id) },
+                    onLongClick = { onLongPressEssential(ess) },
+                    modifier = Modifier
+                        .animateItem()
+                        .size(48.dp)
+                )
+            }
+        }
+        if (!state.isPrivateView && state.activeSpaceZenPinned.isNotEmpty()) {
+            items(
+                items = state.activeSpaceZenPinned,
+                key = { "rail_zen_${it.id}" },
+                contentType = { "sidebar_zen_collapsed" }
+            ) { item ->
+                val boundTab = state.tabForZenPinned(item.id)
+                val isLoaded = boundTab != null
+                val isActive = boundTab != null && boundTab.id == state.activeTabId
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = when {
+                        isActive -> MaterialTheme.colorScheme.primaryContainer
+                        isLoaded -> MaterialTheme.colorScheme.surfaceContainerHigh
+                        else -> MaterialTheme.colorScheme.surfaceContainer
+                    },
+                    border = when {
+                        isActive -> BorderStroke(1.8.dp, MaterialTheme.colorScheme.primary)
+                        isLoaded -> BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.48f))
+                        else -> BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.28f))
+                    },
+                    modifier = Modifier
+                        .animateItem()
+                        .size(48.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .combinedClickable(
+                            onClick = { itemCallbacks.onActivateZenPinned(item.id) },
+                            onLongClick = { onLongPressZenPinned(item) }
+                        )
+                        .semantics {
+                            val status = when {
+                                isActive -> "Active"
+                                isLoaded -> "Loaded"
+                                else -> "Unloaded"
+                            }
+                            contentDescription = "${item.title}, $status"
+                        }
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        SiteIconBadge(
+                            url = item.url,
+                            fallbackLabel = item.title,
+                            customIcon = item.customIcon,
+                            size = 48.dp,
+                            iconSize = 24.dp,
+                            shape = RoundedCornerShape(14.dp),
+                            tint = if (isActive || isLoaded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            fillImageToContainer = true,
+                            modifier = Modifier.graphicsLayer { alpha = if (isLoaded || isActive) 1f else 0.66f }
+                        )
+                        if (isLoaded) {
+                            Surface(
+                                shape = CircleShape,
+                                color = MaterialTheme.colorScheme.primary,
+                                border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.surface.copy(alpha = 0.75f)),
+                                modifier = Modifier
+                                    .align(Alignment.BottomCenter)
+                                    .padding(bottom = 3.5.dp)
+                                    .width(if (isActive) 20.dp else 12.dp)
+                                    .height(3.5.dp)
+                            ) {}
+                        }
+                    }
+                }
+            }
+        }
         items(
             items = state.visibleTabs,
             key = { it.id },
             contentType = { "sidebar_tab_collapsed" }
         ) { tab ->
-            val isActive = tab.id == state.activeTabId
+            val isLoaded = !tab.isUnloaded
+            val isActive = isLoaded && tab.id == state.activeTabId
             Surface(
                 shape = RoundedCornerShape(14.dp),
                 color = when {
                     isActive && tab.isPrivate -> foxColors.privateContainer
                     isActive -> MaterialTheme.colorScheme.primaryContainer
+                    tab.isPinned && !isLoaded -> MaterialTheme.colorScheme.surfaceContainer
                     else -> MaterialTheme.colorScheme.surfaceContainerHigh
                 },
                 border = when {
                     isActive && tab.isPrivate -> BorderStroke(1.5.dp, foxColors.privateAccent)
-                    isActive -> BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
-                    tab.isPinned -> BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f))
+                    isActive -> BorderStroke(1.8.dp, MaterialTheme.colorScheme.primary)
+                    tab.isPinned && isLoaded -> BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.48f))
+                    tab.isPinned -> BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.28f))
                     else -> null
                 },
                 modifier = Modifier
@@ -1582,7 +1962,13 @@ private fun ColumnScope.ArcCollapsedSidebarRail(
                     .size(48.dp)
                     .clip(RoundedCornerShape(14.dp))
                     .combinedClickable(
-                        onClick = { onSelectTab(tab.id) },
+                        onClick = {
+                            if (tab.isPinned && !tab.isPrivate) {
+                                itemCallbacks.onActivatePinnedTab(tab.id)
+                            } else {
+                                onSelectTab(tab.id)
+                            }
+                        },
                         onLongClick = { onLongPressTab(tab) }
                     )
                     .semantics {
@@ -1590,10 +1976,12 @@ private fun ColumnScope.ArcCollapsedSidebarRail(
                     }
             ) {
                 Box(contentAlignment = Alignment.Center) {
+                    val iconAlpha = if (isLoaded || isActive || !tab.isPinned) 1f else 0.66f
                     if (tab.isStartPage && tab.customIcon == null) {
                         SwiftfoxEmblem(
                             size = 22.dp,
-                            variant = if (tab.isPrivate) SwiftfoxEmblemVariant.PURPLE else SwiftfoxEmblemVariant.ORANGE
+                            variant = if (tab.isPrivate) SwiftfoxEmblemVariant.PURPLE else SwiftfoxEmblemVariant.ORANGE,
+                            modifier = Modifier.graphicsLayer { alpha = iconAlpha }
                         )
                     } else {
                         SiteIconBadge(
@@ -1609,18 +1997,21 @@ private fun ColumnScope.ArcCollapsedSidebarRail(
                                 isActive -> MaterialTheme.colorScheme.primary
                                 else -> MaterialTheme.colorScheme.onSurface
                             },
-                            fillImageToContainer = true
+                            fillImageToContainer = true,
+                            modifier = Modifier.graphicsLayer { alpha = iconAlpha }
                         )
                     }
-                    if (tab.isPinned && !tab.isPrivate) {
-                        Box(
+                    if (tab.isPinned && !tab.isPrivate && isLoaded) {
+                        Surface(
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.primary,
+                            border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.surface.copy(alpha = 0.75f)),
                             modifier = Modifier
-                                .align(Alignment.TopEnd)
-                                .padding(5.dp)
-                                .size(6.dp)
-                                .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.primary)
-                        )
+                                .align(Alignment.BottomCenter)
+                                .padding(bottom = 3.5.dp)
+                                .width(if (isActive) 20.dp else 12.dp)
+                                .height(3.5.dp)
+                        ) {}
                     }
                 }
             }

@@ -64,14 +64,26 @@ interface TabDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAll(tabs: List<TabEntity>)
 
-    @Query("UPDATE tabs SET spaceId = :newSpaceId WHERE spaceId = :oldSpaceId AND isPrivate = 0")
+    @Query("UPDATE tabs SET spaceId = :newSpaceId WHERE spaceId = :oldSpaceId AND isPrivate = 0 AND essentialId IS NULL")
     suspend fun reassignSpace(oldSpaceId: String, newSpaceId: String)
 
     @Query("DELETE FROM tabs WHERE id = :tabId")
     suspend fun deleteById(tabId: String)
 
+    @Query("DELETE FROM tabs WHERE id IN (:tabIds)")
+    suspend fun deleteByIds(tabIds: List<String>)
+
     @Query("DELETE FROM tabs WHERE spaceId = :spaceId AND isPrivate = 0")
     suspend fun deleteBySpace(spaceId: String)
+
+    @Query("DELETE FROM tabs WHERE essentialId = :essentialId")
+    suspend fun deleteByEssentialId(essentialId: String)
+
+    @Query("DELETE FROM tabs WHERE zenPinnedId = :zenPinnedId")
+    suspend fun deleteByZenPinnedId(zenPinnedId: String)
+
+    @Query("DELETE FROM tabs WHERE zenPinnedId IS NOT NULL")
+    suspend fun deleteAllZenPinnedTabs()
 }
 
 @Dao

@@ -146,6 +146,7 @@ data class BrowserSettings(
     val pullToRefreshEnabled: Boolean = true,
     val swipeUrlBarSwitchTabs: Boolean = true,
     val hideToolbarsOnScroll: Boolean = true,
+    val confirmClosePinnedOnSecondTap: Boolean = true,
     val backgroundMediaEnabled: Boolean = true,
     val blockThirdPartyCookies: Boolean = true,
     val syncBookmarksEnabled: Boolean = true,

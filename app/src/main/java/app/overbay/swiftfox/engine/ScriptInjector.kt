@@ -15,6 +15,8 @@ import app.overbay.swiftfox.features.userscripts.UserscriptRunAt
 import app.overbay.swiftfox.features.zapper.ZapperController
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import java.net.URI
 import java.util.Locale
 
@@ -27,6 +29,10 @@ enum class PrepaintDarkMode {
 data class GlobalPrepaintDarkConfig(
     val mode: PrepaintDarkMode = PrepaintDarkMode.NONE,
     val amoled: Boolean = false,
+    val brightness: Int = 100,
+    val contrast: Int = 100,
+    val sepia: Int = 0,
+    val skipNativeDark: Boolean = true,
     val globalEnabled: Boolean = false,
     val excludedHosts: Set<String> = emptySet(),
     val includedHosts: Set<String> = emptySet()
@@ -269,9 +275,64 @@ object ScriptInjector {
             """.trimIndent()
         }
 
+        val subframeBranch = if (config.mode == PrepaintDarkMode.DARK_READER) {
+            val excludedLit = json.encodeToString(normalizedExcluded)
+            val includedLit = json.encodeToString(normalizedIncluded)
+            val baseSubframeCfgJson = buildJsonObject {
+                put("amoled", config.amoled)
+                put("brightness", config.brightness.coerceIn(50, 150))
+                put("contrast", config.contrast.coerceIn(50, 150))
+                put("sepia", config.sepia.coerceIn(0, 100))
+                put("skipNativeDark", config.skipNativeDark)
+            }.toString()
+            val globalEnabledLit = if (config.globalEnabled) "true" else "false"
+            """
+                if (window !== window.top) {
+                    var topHost = '';
+                    try {
+                        if (window.location && window.location.ancestorOrigins && window.location.ancestorOrigins.length > 0) {
+                            var topOrigin = window.location.ancestorOrigins[window.location.ancestorOrigins.length - 1];
+                            if (topOrigin && topOrigin !== 'null') {
+                                topHost = (new URL(topOrigin).hostname || '').trim().toLowerCase().replace(/^\[|\]$/g, '').replace(/^www\./, '');
+                            }
+                        }
+                    } catch (e) {}
+                    if (!topHost) {
+                        try {
+                            if (document.referrer) {
+                                topHost = (new URL(document.referrer).hostname || '').trim().toLowerCase().replace(/^\[|\]$/g, '').replace(/^www\./, '');
+                            }
+                        } catch (e) {}
+                    }
+                    var sfExcluded = $excludedLit;
+                    var sfIncluded = $includedLit;
+                    var sfIsIncluded = !!(topHost && sfIncluded.indexOf(topHost) !== -1);
+                    var sfIsExcluded = !!(topHost && sfExcluded.indexOf(topHost) !== -1);
+                    var sfCfg = $baseSubframeCfgJson;
+                    sfCfg.enabled = $globalEnabledLit ? !sfIsExcluded : sfIsIncluded;
+                    sfCfg.forceOverride = sfIsIncluded;
+                    if (typeof window.__sfDarkSubframeBoot === 'function') {
+                        window.__sfDarkSubframeBoot(sfCfg);
+                    } else {
+                        try {
+                            Object.defineProperty(window, '__sfDarkSubframePending', {
+                                value: sfCfg,
+                                writable: true,
+                                enumerable: false,
+                                configurable: true
+                            });
+                        } catch (e) {}
+                    }
+                    return;
+                }
+            """.trimIndent()
+        } else {
+            "if (window !== window.top) return;"
+        }
+
         return """
             (function() {
-                if (window !== window.top) return;
+                $subframeBranch
                 if (!location || (location.protocol !== 'http:' && location.protocol !== 'https:')) return;
                 var host = (location.hostname || '').toLowerCase().replace(/^\[|\]$/g, '').replace(/^www\./, '');
                 var list = $hostsLit;

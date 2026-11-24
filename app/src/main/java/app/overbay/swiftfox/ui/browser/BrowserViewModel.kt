@@ -125,6 +125,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private var localSubmitJob: Job? = null
     private var pendingLocalSubmitQuery: String? = null
     private var readerExtractJob: Job? = null
+    private var subframeDarkWarmupJob: Job? = null
     private val readerRequestCounter = AtomicLong(0L)
     private var initialTabsLoaded = false
     private val startupTabReconciliationDone = AtomicBoolean(false)
@@ -254,9 +255,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             }
             val isSameUrl = currentTab.url == url
             if (currentTab.isPrivate) {
-                val prevHost = FaviconRepository.normalizedHost(currentTab.url)
-                val nextHost = FaviconRepository.normalizedHost(url)
-                if (prevHost != nextHost) {
+                val prevScope = FaviconRepository.privateScopeKey(currentTab.url)
+                val nextScope = FaviconRepository.privateScopeKey(url)
+                if (prevScope != nextScope) {
                     app.faviconRepository.clearPrivateTabIcon(tabId)
                 }
             }
@@ -602,7 +603,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     url = targetUrl,
                     bitmap = icon,
                     isPrivate = tab.isPrivate,
-                    tabId = tabId
+                    tabId = tabId,
+                    aliasUrl = tab.pinnedUrl
                 )
             }
         }
@@ -1706,7 +1708,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             isChromeDark = isChromeDark()
         )
         val (initialDarkSurface, initialAmoledSurface) = resolveWebSurfaceDarkColors(initialDarkState)
-        val initialPrepaintScript = buildGlobalPrepaintDarkScript(tab.isPrivate)
+        val initialPrepaintConfig = buildGlobalPrepaintDarkConfig(tab.isPrivate)
+        val initialPrepaintScript = ScriptInjector.buildGlobalPrepaintDarkScript(initialPrepaintConfig)
+        val initialSubframeDarkEnabled = shouldEnableSubframeDarkRuntime(initialPrepaintConfig)
+        val subframeRuntimeReady = app.darkReaderInjector.isSubframeRuntimeWarmed
+        if (initialSubframeDarkEnabled && !subframeRuntimeReady) {
+            scheduleSubframeDarkRuntimeWarmup()
+        }
         val session = pool.getOrCreate(
             tabId = tab.id,
             isPrivate = tab.isPrivate,
@@ -1716,6 +1724,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             beforeRestore = { created ->
                 created.applySurfaceBackground(initialDarkSurface, initialAmoledSurface)
                 created.applyWebDarkening(initialDarkState.useAlgorithmicLite)
+                if (!initialSubframeDarkEnabled || subframeRuntimeReady) {
+                    created.updateSubframeDarkReaderRuntime(initialSubframeDarkEnabled, app.darkReaderInjector)
+                }
                 created.updateGlobalPrepaintDarkScript(initialPrepaintScript)
                 applySettingsToSession(
                     tab = tab,
@@ -1727,6 +1738,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             }
         )
         session.applySurfaceBackground(initialDarkSurface, initialAmoledSurface)
+        if (!initialSubframeDarkEnabled || subframeRuntimeReady) {
+            session.updateSubframeDarkReaderRuntime(initialSubframeDarkEnabled, app.darkReaderInjector)
+        }
         session.updateGlobalPrepaintDarkScript(initialPrepaintScript)
         if (_uiState.value.activeTabId == tab.id) {
             pool.setActiveTab(tab.id)
@@ -5667,7 +5681,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         return isDarkSurface to isAmoled
     }
 
-    private fun buildGlobalPrepaintDarkScript(isPrivate: Boolean): String {
+    private fun buildGlobalPrepaintDarkConfig(isPrivate: Boolean): GlobalPrepaintDarkConfig {
         val state = _uiState.value
         val settings = state.settings
         val globalDark = DarkReaderConfig.resolve(
@@ -5700,23 +5714,50 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             WebDarkEngine.DARK_READER -> settings.darkReaderAmoled
             WebDarkEngine.ALGORITHMIC_LITE -> isAmoledSurface()
         }
-        return ScriptInjector.buildGlobalPrepaintDarkScript(
-            GlobalPrepaintDarkConfig(
-                mode = mode,
-                amoled = amoled,
-                globalEnabled = globalDark.enabled,
-                excludedHosts = excluded,
-                includedHosts = included
-            )
+        return GlobalPrepaintDarkConfig(
+            mode = mode,
+            amoled = amoled,
+            brightness = settings.darkReaderBrightness,
+            contrast = settings.darkReaderContrast,
+            sepia = settings.darkReaderSepia,
+            skipNativeDark = settings.darkReaderSkipNativeDark,
+            globalEnabled = globalDark.enabled,
+            excludedHosts = excluded,
+            includedHosts = included
         )
     }
 
+    private fun shouldEnableSubframeDarkRuntime(config: GlobalPrepaintDarkConfig): Boolean =
+        config.mode == PrepaintDarkMode.DARK_READER &&
+            (config.globalEnabled || config.includedHosts.isNotEmpty())
+
+    private fun scheduleSubframeDarkRuntimeWarmup() {
+        if (app.darkReaderInjector.isSubframeRuntimeWarmed || subframeDarkWarmupJob?.isActive == true) {
+            return
+        }
+        subframeDarkWarmupJob = viewModelScope.launch(Dispatchers.IO) {
+            app.darkReaderInjector.warmUpAssets()
+            withContext(Dispatchers.Main) {
+                syncGlobalPrepaintDarkScripts()
+            }
+        }
+    }
+
     private fun syncGlobalPrepaintDarkScripts() {
-        val normalScript = buildGlobalPrepaintDarkScript(isPrivate = false)
-        val privateScript = buildGlobalPrepaintDarkScript(isPrivate = true)
+        val normalConfig = buildGlobalPrepaintDarkConfig(isPrivate = false)
+        val privateConfig = buildGlobalPrepaintDarkConfig(isPrivate = true)
+        val normalSubframe = shouldEnableSubframeDarkRuntime(normalConfig)
+        val privateSubframe = shouldEnableSubframeDarkRuntime(privateConfig)
+        val needsWarmup = (normalSubframe || privateSubframe) && !app.darkReaderInjector.isSubframeRuntimeWarmed
+        if (needsWarmup) {
+            scheduleSubframeDarkRuntimeWarmup()
+        }
         pool.updateAllGlobalPrepaintDarkScripts(
-            normalScript = normalScript,
-            privateScript = privateScript
+            normalScript = ScriptInjector.buildGlobalPrepaintDarkScript(normalConfig),
+            privateScript = ScriptInjector.buildGlobalPrepaintDarkScript(privateConfig),
+            normalSubframeDarkEnabled = normalSubframe,
+            privateSubframeDarkEnabled = privateSubframe,
+            darkReaderInjector = if (needsWarmup) null else app.darkReaderInjector
         )
     }
 

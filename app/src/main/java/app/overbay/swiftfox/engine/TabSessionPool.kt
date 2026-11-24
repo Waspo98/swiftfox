@@ -8,6 +8,7 @@ import android.webkit.CookieManager
 import android.webkit.WebStorage
 import androidx.webkit.ProfileStore
 import androidx.webkit.WebViewFeature
+import app.overbay.swiftfox.features.darkreader.DarkReaderInjector
 
 class TabSessionPool(
     private val maxWarmSessions: Int = 5
@@ -201,9 +202,19 @@ class TabSessionPool(
         snapshot.forEach { it.clearDocumentStartScripts() }
     }
 
-    fun updateAllGlobalPrepaintDarkScripts(normalScript: String, privateScript: String) {
+    fun updateAllGlobalPrepaintDarkScripts(
+        normalScript: String,
+        privateScript: String,
+        normalSubframeDarkEnabled: Boolean = false,
+        privateSubframeDarkEnabled: Boolean = false,
+        darkReaderInjector: DarkReaderInjector? = null
+    ) {
         val snapshot = synchronized(lock) { warmSessions.values.toList() }
         snapshot.forEach { session ->
+            if (darkReaderInjector != null) {
+                val subframeEnabled = if (session.isPrivate) privateSubframeDarkEnabled else normalSubframeDarkEnabled
+                session.updateSubframeDarkReaderRuntime(subframeEnabled, darkReaderInjector)
+            }
             session.updateGlobalPrepaintDarkScript(if (session.isPrivate) privateScript else normalScript)
         }
     }

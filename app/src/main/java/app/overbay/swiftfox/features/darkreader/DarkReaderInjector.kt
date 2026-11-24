@@ -15,17 +15,73 @@ class DarkReaderInjector(context: Context?) {
     private val appContext: Context? = context?.applicationContext ?: context
     private val json = Json { ignoreUnknownKeys = true }
 
+    @Volatile
+    private var assetsWarmed: Boolean = false
+
     private val darkReaderJs: String by lazy {
         readAsset("js/darkreader.min.js")
+    }
+
+    private val amoledJs: String by lazy {
+        readAsset("js/darkreader_amoled.js")
     }
 
     private val bridgeJs: String by lazy {
         readAsset("js/darkreader_bridge.js")
     }
 
+    private val subframeJs: String by lazy {
+        readAsset("js/darkreader_subframe.js")
+    }
+
+    private val subframeRuntimeScript: String by lazy {
+        assembleSubframeRuntimeScript(darkReaderJs, amoledJs, subframeJs)
+    }
+
+    val isSubframeRuntimeWarmed: Boolean
+        get() = assetsWarmed
+
     fun warmUpAssets() {
         darkReaderJs
+        amoledJs
         bridgeJs
+        subframeJs
+        subframeRuntimeScript
+        assetsWarmed = true
+    }
+
+    /**
+     * Static, token-free document-start runtime for cross-origin and same-origin iframes.
+     * Exits immediately in `window === window.top` and lazily initializes `darkreader.min.js`
+     * only inside visible, non-denylisted subframes.
+     */
+    fun buildSubframeRuntimeScript(): String = subframeRuntimeScript
+
+    internal fun assembleSubframeRuntimeScript(
+        darkReaderSource: String,
+        amoledSource: String,
+        subframeSource: String
+    ): String {
+        if (darkReaderSource.isEmpty() || amoledSource.isEmpty() || subframeSource.isEmpty()) {
+            return ""
+        }
+        return buildString(darkReaderSource.length + amoledSource.length + subframeSource.length + 380) {
+            append("(function(){\n")
+            append("if(window===window.top)return;\n")
+            append("var ensureDarkReader=function(){\n")
+            append("if(typeof DarkReader==='undefined'||typeof DarkReader.enable!=='function'){\n")
+            append("(function(define,exports,module){\n")
+            append(darkReaderSource)
+            append("\n}).call(globalThis,undefined,undefined,undefined);\n")
+            append("}\n")
+            append("};\n")
+            append("var createAmoled=")
+            append(amoledSource)
+            append(";\n")
+            append(subframeSource)
+            append("(ensureDarkReader,createAmoled);\n")
+            append("})();")
+        }
     }
 
     /**
@@ -43,7 +99,7 @@ class DarkReaderInjector(context: Context?) {
         val configJson = DarkReaderConfig.toConfigJson(state)
         val keyLit = json.encodeToString(runtimeKey)
         val tokenLit = json.encodeToString(bridgeToken)
-        return buildString(darkReaderJs.length + bridgeJs.length + configJson.length + 320) {
+        return buildString(darkReaderJs.length + amoledJs.length + bridgeJs.length + configJson.length + 380) {
             append("(function(){\n")
             if (darkReaderJs.isNotEmpty()) {
                 append("if(typeof DarkReader==='undefined'||typeof DarkReader.enable!=='function'){\n")
@@ -54,8 +110,15 @@ class DarkReaderInjector(context: Context?) {
             }
             if (bridgeJs.isNotEmpty()) {
                 append("if(!Object.prototype.hasOwnProperty.call(window,").append(keyLit).append(")){\n")
+                append("var createAmoled=")
+                if (amoledJs.isNotEmpty()) {
+                    append(amoledJs)
+                } else {
+                    append("null")
+                }
+                append(";\n")
                 append(bridgeJs)
-                append("(").append(keyLit).append(",").append(tokenLit).append(");\n")
+                append("(").append(keyLit).append(",").append(tokenLit).append(",createAmoled);\n")
                 append("}\n")
             }
             append("var rt=window[").append(keyLit).append("];\n")
@@ -87,7 +150,7 @@ class DarkReaderInjector(context: Context?) {
 
     fun buildDisableScript(runtimeKey: String = DEFAULT_RUNTIME_KEY): String {
         val keyLit = json.encodeToString(runtimeKey)
-        return "(function(){try{var p=document.getElementById('swiftfox-prepaint-dark');if(p&&p.parentNode){p.parentNode.removeChild(p);}}catch(e){}var rt=window[$keyLit];if(rt&&typeof rt.apply==='function'){rt.apply({enabled:false});}else if(typeof DarkReader!=='undefined'&&typeof DarkReader.disable==='function'){DarkReader.disable();}})();"
+        return "(function(){try{var p=document.getElementById('swiftfox-prepaint-dark');if(p&&p.parentNode){p.parentNode.removeChild(p);}}catch(e){}var rt=window[$keyLit];if(rt&&typeof rt.apply==='function'){rt.apply({enabled:false});}else{if(typeof DarkReader!=='undefined'&&typeof DarkReader.disable==='function'){DarkReader.disable();}try{var fs=document.querySelectorAll('iframe');for(var i=0;i<fs.length;i++){if(fs[i].contentWindow){fs[i].contentWindow.postMessage({__swiftfoxDarkSync:true,config:{enabled:false}},'*');}}}catch(e){}}})();"
     }
 
     fun parseStatusJson(raw: String): DarkReaderStatusEvent? {

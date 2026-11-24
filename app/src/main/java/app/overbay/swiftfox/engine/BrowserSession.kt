@@ -131,6 +131,8 @@ class BrowserSession(
     private val documentStartHandlers = mutableListOf<ScriptHandler>()
     private var prepaintDarkHandler: ScriptHandler? = null
     private var lastPrepaintDarkScript: String? = null
+    private var subframeDarkRuntimeHandler: ScriptHandler? = null
+    private var isSubframeDarkRuntimeRegistered: Boolean = false
     private val pendingBlobDownloads = ConcurrentHashMap<String, PendingBlobDownload>()
 
     @Volatile
@@ -688,6 +690,29 @@ class BrowserSession(
         prepaintDarkHandler = null
     }
 
+    fun updateSubframeDarkReaderRuntime(enabled: Boolean, darkReaderInjector: DarkReaderInjector) {
+        if (isDestroyed) return
+        if (enabled == isSubframeDarkRuntimeRegistered) return
+        if (enabled) {
+            val script = darkReaderInjector.buildSubframeRuntimeScript()
+            if (script.isBlank()) return
+            subframeDarkRuntimeHandler = ScriptInjector.registerGlobalPrepaintDarkScript(
+                webView = webView,
+                previousHandler = subframeDarkRuntimeHandler,
+                script = script
+            )
+            isSubframeDarkRuntimeRegistered = subframeDarkRuntimeHandler != null
+        } else {
+            clearSubframeDarkReaderRuntime()
+        }
+    }
+
+    fun clearSubframeDarkReaderRuntime() {
+        isSubframeDarkRuntimeRegistered = false
+        runCatching { subframeDarkRuntimeHandler?.remove() }
+        subframeDarkRuntimeHandler = null
+    }
+
     fun updateDocumentStartScripts(
         origin: String,
         cosmeticCss: String,
@@ -801,6 +826,7 @@ class BrowserSession(
         webView.onScrollMetricsChanged = null
         clearDocumentStartScripts()
         clearGlobalPrepaintDarkScript()
+        clearSubframeDarkReaderRuntime()
         pendingBlobDownloads.clear()
         // Detach all clients, listeners, and bridges BEFORE loadUrl("about:blank")
         // so teardown/hibernation never fires stale callbacks into BrowserViewModel.

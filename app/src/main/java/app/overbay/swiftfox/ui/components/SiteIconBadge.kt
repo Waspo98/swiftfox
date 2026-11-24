@@ -160,7 +160,7 @@ fun SiteIconBadge(
     val reduceMotion = rememberReduceMotion()
     val spec = remember(customIcon) { CustomIconSpec.parse(customIcon) }
 
-    val hostKey = remember(url) { FaviconRepository.normalizedHost(url) }
+    val hostKey = remember(url) { FaviconRepository.cacheKeyForUrl(url) }
     var customBitmap by remember(spec, repo) {
         mutableStateOf(
             if (spec is CustomIconSpec.LocalImage) repo?.getCachedCustomImage(spec.fileName) else null

@@ -235,7 +235,12 @@ class DarkReaderConfigTest {
             File("src/main/assets/js/darkreader_bridge.js"),
             File("app/src/main/assets/js/darkreader_bridge.js")
         ).first { it.exists() }
+        val amoledFile = listOf(
+            File("src/main/assets/js/darkreader_amoled.js"),
+            File("app/src/main/assets/js/darkreader_amoled.js")
+        ).first { it.exists() }
         val js = bridgeFile.readText(Charsets.UTF_8)
+        val amoledJs = amoledFile.readText(Charsets.UTF_8)
 
         // Neutral zero-saturation poles prevent Dark Reader from tinting neutral gray text violet
         assertTrue(js.contains("darkSchemeBackgroundColor: config.amoled ? '#000000' : '#181818'"))
@@ -246,14 +251,15 @@ class DarkReaderConfigTest {
         // AMOLED mode overrides native dark sites instead of leaving dark-gray pages untouched
         assertTrue(js.contains("config.skipNativeDark && !config.forceOverride && !config.amoled"))
 
-        // AMOLED CSS-variable floor snaps near-black neutral surfaces to #000000 and primary text to #ffffff
+        // Shared AMOLED CSS-variable floor snaps near-black neutral surfaces to #000000 and primary text to #ffffff
         // across both Dark Reader's core variables stylesheet and root-vars stylesheet
-        assertTrue(js.contains("darkreader--variables"))
-        assertTrue(js.contains("darkreader--root-vars"))
-        assertTrue(js.contains("--darkreader-background-"))
-        assertTrue(js.contains("--darkreader-bg--"))
-        assertTrue(js.contains("--darkreader-text-"))
-        assertTrue(js.contains("normalizeAmoledVarValue"))
+        assertTrue(amoledJs.contains("darkreader--variables"))
+        assertTrue(amoledJs.contains("darkreader--root-vars"))
+        assertTrue(amoledJs.contains("--darkreader-background-"))
+        assertTrue(amoledJs.contains("--darkreader-bg--"))
+        assertTrue(amoledJs.contains("--darkreader-text-"))
+        assertTrue(amoledJs.contains("normalizeAmoledVarValue"))
+        assertTrue(js.contains("createAmoledController"))
 
         // Deferred DOMContentLoaded & dark-signal-gated mutation/load recheck avoids flashing light sites
         assertTrue(js.contains("attachNativeDarkMutationObserver"))
@@ -273,5 +279,110 @@ class DarkReaderConfigTest {
         )
         assertTrue(wrapped.contains("""if (!window.location || window.location.origin !== "https://example.com:8443") return;"""))
         assertTrue(wrapped.contains("window.__dr();"))
+    }
+
+    @Test
+    fun globalPrepaintDarkReaderResolvesSubframeInClosureWithoutLeakingHostLists() {
+        val script = ScriptInjector.buildGlobalPrepaintDarkScript(
+            GlobalPrepaintDarkConfig(
+                mode = PrepaintDarkMode.DARK_READER,
+                amoled = true,
+                brightness = 110,
+                contrast = 105,
+                sepia = 15,
+                skipNativeDark = true,
+                globalEnabled = true,
+                excludedHosts = setOf("light.example.com"),
+                includedHosts = setOf("forced.example.com")
+            )
+        )
+        // Host override lists stay strictly closure-local and are NEVER assigned onto window
+        assertFalse(script.contains("__sfDarkSubframeCfg"))
+        assertFalse(script.contains("\"excludedHosts\""))
+        assertFalse(script.contains("\"includedHosts\""))
+        assertTrue(script.contains("ancestorOrigins"))
+        assertTrue(script.contains("sfCfg.forceOverride = sfIsIncluded;"))
+        assertTrue(script.contains("__sfDarkSubframeBoot"))
+        assertTrue(script.contains("enumerable: false"))
+        assertTrue(script.contains("\"amoled\":true"))
+        assertTrue(script.contains("\"brightness\":110"))
+        assertTrue(script.contains("\"contrast\":105"))
+        assertTrue(script.contains("\"sepia\":15"))
+        assertTrue(script.contains("\"skipNativeDark\":true"))
+        assertFalse(script.contains("SwiftfoxNativeChannel"))
+
+        // Algorithmic Lite does not inject Dark Reader subframe handoff
+        val liteScript = ScriptInjector.buildGlobalPrepaintDarkScript(
+            GlobalPrepaintDarkConfig(
+                mode = PrepaintDarkMode.ALGORITHMIC_LITE,
+                amoled = false,
+                globalEnabled = true
+            )
+        )
+        assertFalse(liteScript.contains("__sfDarkSubframeBoot"))
+        assertFalse(liteScript.contains("__sfDarkSubframePending"))
+    }
+
+    @Test
+    fun subframeDarkReaderRuntimeAndMainBridgeSyncIframesSafely() {
+        val subframeFile = listOf(
+            File("src/main/assets/js/darkreader_subframe.js"),
+            File("app/src/main/assets/js/darkreader_subframe.js")
+        ).firstOrNull { it.exists() }
+        val amoledFile = listOf(
+            File("src/main/assets/js/darkreader_amoled.js"),
+            File("app/src/main/assets/js/darkreader_amoled.js")
+        ).firstOrNull { it.exists() }
+        assertTrue("Expected darkreader_subframe.js asset to exist", subframeFile != null)
+        assertTrue("Expected darkreader_amoled.js asset to exist", amoledFile != null)
+        val subframeJs = subframeFile!!.readText(Charsets.UTF_8)
+        val amoledJs = amoledFile!!.readText(Charsets.UTF_8)
+
+        // Exits immediately on main frame, cleans up transient handoff keys, never references native channel
+        assertTrue(subframeJs.contains("window === window.top"))
+        assertFalse(subframeJs.contains("SwiftfoxNativeChannel"))
+        assertTrue(subframeJs.contains("delete window[HANDOFF_CFG_KEY]"))
+        assertTrue(subframeJs.contains("delete window[HANDOFF_BOOT_KEY]"))
+        // Defers collapsed 0x0 iframes (e.g. tweets before hydration resize) without wasting CPU on trackers
+        assertTrue(subframeJs.contains("ResizeObserver"))
+        // Re-evaluates native dark mode even when toggling off AMOLED / enabling skipNativeDark live
+        assertTrue(subframeJs.contains("evaluateSubframeNativeDark"))
+        // Live sync via parent/top-verified postMessage
+        assertTrue(subframeJs.contains("__swiftfoxDarkSync"))
+        assertTrue(subframeJs.contains("event.source !== window.parent && event.source !== window.top"))
+        // Skips sensitive/media embeds (CAPTCHAs, payments, pure video players)
+        assertTrue(subframeJs.contains("challenges.cloudflare.com"))
+        assertTrue(subframeJs.contains("js.stripe.com"))
+        assertTrue(subframeJs.contains("youtube.com"))
+        // Uses shared AMOLED controller without duplicating normalizeAmoledVarValue
+        assertTrue(subframeJs.contains("createAmoledController"))
+        assertFalse(subframeJs.contains("function normalizeAmoledVarValue"))
+
+        // Main-frame bridge and disable script broadcast live sync to child iframes
+        val bridgeFile = listOf(
+            File("src/main/assets/js/darkreader_bridge.js"),
+            File("app/src/main/assets/js/darkreader_bridge.js")
+        ).first { it.exists() }
+        val bridgeJs = bridgeFile.readText(Charsets.UTF_8)
+        assertTrue(bridgeJs.contains("__swiftfoxDarkSync"))
+        assertTrue(bridgeJs.contains("postMessage"))
+        assertFalse(bridgeJs.contains("function normalizeAmoledVarValue"))
+
+        val injector = DarkReaderInjector(null)
+        val disableScript = injector.buildDisableScript("drKey1")
+        assertTrue(disableScript.contains("__swiftfoxDarkSync"))
+
+        // Missing assets return empty string so BrowserSession skips registering a broken stub
+        assertEquals("", injector.buildSubframeRuntimeScript())
+        assertEquals("", injector.assembleSubframeRuntimeScript("", amoledJs, subframeJs))
+        assertEquals("", injector.assembleSubframeRuntimeScript("window.DarkReader={};", "", subframeJs))
+        assertEquals("", injector.assembleSubframeRuntimeScript("window.DarkReader={};", amoledJs, ""))
+
+        // Full assembled script wraps DarkReader, shared AMOLED helper, and subframe runtime without tokens
+        val assembled = injector.assembleSubframeRuntimeScript("window.DarkReader={};", amoledJs, subframeJs)
+        assertTrue(assembled.contains("window===window.top"))
+        assertTrue(assembled.contains("createAmoledController"))
+        assertTrue(assembled.contains("(ensureDarkReader,createAmoled);"))
+        assertFalse(assembled.contains("SwiftfoxNativeChannel"))
     }
 }

@@ -677,7 +677,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             val newTab = createTab(
                 url = OmniboxEngine.NEW_TAB_URL,
                 isPrivate = parent?.isPrivate ?: _uiState.value.isPrivateView,
-                spaceId = parent?.spaceId ?: _uiState.value.activeSpaceId,
+                spaceId = WorkspaceTabResolver.resolveChildTabSpaceId(
+                    parentSpaceId = parent?.spaceId,
+                    activeSpaceId = _uiState.value.activeSpaceId
+                ),
                 selectImmediately = true,
                 isPopupWindow = true
             )
@@ -1305,13 +1308,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                         }
                         val hasOrphanedTab = state.tabs.any {
                             !it.isPrivate &&
-                                it.spaceId != WorkspaceTabResolver.ESSENTIAL_GLOBAL_SPACE_ID &&
+                                !(it.isEssentialTab && it.spaceId == WorkspaceTabResolver.ESSENTIAL_GLOBAL_SPACE_ID) &&
                                 it.spaceId !in validSpaceIds
                         }
                         val migratedTabs = if (hasOrphanedTab) {
                             state.tabs.map { tab ->
                                 if (!tab.isPrivate &&
-                                    tab.spaceId != WorkspaceTabResolver.ESSENTIAL_GLOBAL_SPACE_ID &&
+                                    !(tab.isEssentialTab && tab.spaceId == WorkspaceTabResolver.ESSENTIAL_GLOBAL_SPACE_ID) &&
                                     tab.spaceId !in validSpaceIds
                                 ) {
                                     tab.copy(spaceId = resolvedSpaceId).also { migratedToPersist += it }
@@ -1670,6 +1673,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         selectImmediately: Boolean = true,
         isPopupWindow: Boolean = false,
         closeFoldedSidebar: Boolean = true,
+        closeTabSwitcher: Boolean = true,
         dismissAllOverlays: Boolean = false,
         isPinned: Boolean = false,
         customIcon: String? = null,
@@ -1754,7 +1758,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 isPrivateView = if (selectImmediately) isPrivate else state.isPrivateView,
                 activeSpaceId = nextActiveSpaceId,
                 isFoldedSidebarOpen = if (selectImmediately && closeFoldedSidebar) false else state.isFoldedSidebarOpen,
-                activeOverlay = if (selectImmediately && (dismissAllOverlays || state.activeOverlay == BrowserOverlay.TAB_SWITCHER)) {
+                activeOverlay = if (selectImmediately && (dismissAllOverlays || (closeTabSwitcher && state.activeOverlay == BrowserOverlay.TAB_SWITCHER))) {
                     BrowserOverlay.NONE
                 } else {
                     state.activeOverlay
@@ -2579,22 +2583,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             unloadedTabToPersist = null
             shouldDeleteFromDb = true
         } else if (target.isPinned) {
-            val homeUrl = target.pinnedUrl?.takeIf { it.isNotBlank() } ?: target.url
-            val resetHost = OmniboxEngine.extractHost(homeUrl)
-            val unloaded = target.copy(
-                url = homeUrl,
-                title = target.customTitle?.takeIf { it.isNotBlank() } ?: resetHost.ifBlank { target.title },
-                isUnloaded = true,
-                isLoading = false,
-                progress = 0,
-                canGoBack = false,
-                canGoForward = false,
-                isPlayingMedia = false,
-                isPlayingVideo = false,
-                blockedCount = 0,
-                isReaderAvailable = false,
-                darkReaderSkippedNative = false
-            )
+            val unloaded = WorkspaceTabResolver.toUnloadedPinnedTab(target)
             updatedTabs = state.tabs.map { if (it.id == tabId) unloaded else it }
             unloadedTabToPersist = unloaded
             shouldDeleteFromDb = false
@@ -2663,7 +2652,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     spaceId = fallbackSpaceId,
                     isPrivate = false,
                     selectImmediately = true,
-                    closeFoldedSidebar = false
+                    closeFoldedSidebar = false,
+                    closeTabSwitcher = false
                 )
             }
         }
@@ -2704,7 +2694,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 zapper = if (wasActiveRemoved) ZapperUiState() else current.zapper,
                 readerArticle = if (wasActiveRemoved) null else current.readerArticle,
                 isReaderLoading = if (wasActiveRemoved) false else current.isReaderLoading,
-                findInPage = if (wasActiveRemoved) FindInPageState() else current.findInPage
+                findInPage = if (wasActiveRemoved) FindInPageState() else current.findInPage,
+                externalAppPrompt = if (current.externalAppPrompt?.tabId in orphanSet || wasActiveRemoved) null else current.externalAppPrompt,
+                httpsErrorPrompt = if (current.httpsErrorPrompt?.tabId in orphanSet || wasActiveRemoved) null else current.httpsErrorPrompt,
+                permissionPrompt = if (current.permissionPrompt?.tabId in orphanSet || wasActiveRemoved) null else current.permissionPrompt
             )
         }
         viewModelScope.launch {
@@ -2721,7 +2714,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     spaceId = state.activeSpaceId,
                     isPrivate = false,
                     selectImmediately = true,
-                    closeFoldedSidebar = false
+                    closeFoldedSidebar = false,
+                    closeTabSwitcher = false
                 )
             }
         }
@@ -2746,22 +2740,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 if (tab.id !in targetIds) {
                     add(tab)
                 } else if (!tab.isBoundWorkspaceTab && tab.isPinned) {
-                    val homeUrl = tab.pinnedUrl?.takeIf { it.isNotBlank() } ?: tab.url
-                    val host = OmniboxEngine.extractHost(homeUrl)
-                    val unloaded = tab.copy(
-                        url = homeUrl,
-                        title = tab.customTitle?.takeIf { it.isNotBlank() } ?: host.ifBlank { tab.title },
-                        isUnloaded = true,
-                        isLoading = false,
-                        progress = 0,
-                        canGoBack = false,
-                        canGoForward = false,
-                        isPlayingMedia = false,
-                        isPlayingVideo = false,
-                        blockedCount = 0,
-                        isReaderAvailable = false,
-                        darkReaderSkippedNative = false
-                    )
+                    val unloaded = WorkspaceTabResolver.toUnloadedPinnedTab(tab)
                     unloadedLocals += unloaded
                     add(unloaded)
                 }
@@ -2822,7 +2801,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     spaceId = state.activeSpaceId,
                     isPrivate = false,
                     selectImmediately = true,
-                    closeFoldedSidebar = false
+                    closeFoldedSidebar = false,
+                    closeTabSwitcher = false
                 )
             }
         }
@@ -2929,7 +2909,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     spaceId = state.activeSpaceId,
                     isPrivate = false,
                     selectImmediately = true,
-                    closeFoldedSidebar = false
+                    closeFoldedSidebar = false,
+                    closeTabSwitcher = false
                 )
             }
         }
@@ -2964,22 +2945,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 when {
                     tab.id in idsToRemove -> Unit
                     tab.id in localPinIdsToUnload -> {
-                        val homeUrl = tab.pinnedUrl?.takeIf { it.isNotBlank() } ?: tab.url
-                        val host = OmniboxEngine.extractHost(homeUrl)
-                        val unloaded = tab.copy(
-                            url = homeUrl,
-                            title = tab.customTitle?.takeIf { it.isNotBlank() } ?: host.ifBlank { tab.title },
-                            isUnloaded = true,
-                            isLoading = false,
-                            progress = 0,
-                            canGoBack = false,
-                            canGoForward = false,
-                            isPlayingMedia = false,
-                            isPlayingVideo = false,
-                            blockedCount = 0,
-                            isReaderAvailable = false,
-                            darkReaderSkippedNative = false
-                        )
+                        val unloaded = WorkspaceTabResolver.toUnloadedPinnedTab(tab)
                         unloadedLocals += unloaded
                         add(unloaded)
                     }
@@ -3029,7 +2995,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 spaceId = state.activeSpaceId,
                 isPrivate = false,
                 selectImmediately = true,
-                closeFoldedSidebar = false
+                closeFoldedSidebar = false,
+                closeTabSwitcher = false
             )
         }
     }

@@ -247,13 +247,18 @@ class DarkReaderConfigTest {
         assertTrue(js.contains("config.skipNativeDark && !config.forceOverride && !config.amoled"))
 
         // AMOLED CSS-variable floor snaps near-black neutral surfaces to #000000 and primary text to #ffffff
+        // across both Dark Reader's core variables stylesheet and root-vars stylesheet
         assertTrue(js.contains("darkreader--variables"))
+        assertTrue(js.contains("darkreader--root-vars"))
         assertTrue(js.contains("--darkreader-background-"))
+        assertTrue(js.contains("--darkreader-bg--"))
         assertTrue(js.contains("--darkreader-text-"))
         assertTrue(js.contains("normalizeAmoledVarValue"))
 
-        // Deferred DOMContentLoaded & mutation recheck catches JS-toggled native dark themes in standard dark mode
+        // Deferred DOMContentLoaded & dark-signal-gated mutation/load recheck avoids flashing light sites
         assertTrue(js.contains("attachNativeDarkMutationObserver"))
+        assertTrue(js.contains("hasNewDarkThemeSignal"))
+        assertTrue(js.contains("!nativeDarkCache.settled || hasNewDarkThemeSignal()"))
         assertTrue(js.contains("setTimeout"))
     }
 

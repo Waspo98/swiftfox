@@ -341,8 +341,7 @@ fun SpacesTabSwitcherPreview() {
             onCreateTab = {},
             onSelectSpace = {},
             onTogglePrivate = {},
-            onCreateSpace = { _, _, _ -> },
-            onOpenEssential = {}
+            onCreateSpace = { _, _, _ -> }
         )
     }
 }

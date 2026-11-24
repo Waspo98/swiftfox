@@ -7,6 +7,8 @@
   var AMOLED_MAX_CHROMA = 20;
   var AMOLED_BG_MAX_LUMINANCE = 0.11;
   var AMOLED_TEXT_MIN_LUMINANCE = 0.78;
+  var OBSERVED_THEME_ATTRS = ['class', 'data-theme', 'data-color-mode', 'data-bs-theme', 'data-mode'];
+  var DARK_TOKEN_REGEX = /(?:^|[\s_-])(?:dark|night|dim|amoled)(?:mode|theme)?(?:$|[\s_-])|(?:dark|night)(?:mode|theme)/i;
 
   var fetchMethodSet = false;
   var domListenerAttached = false;
@@ -14,6 +16,7 @@
   var amoledLoadListenerAttached = false;
   var domRecheckTimer = null;
   var nativeDarkCache = null;
+  var probedDarkSignalSignature = null;
   var nativeDarkObserver = null;
   var nativeDarkObserverTimer = null;
   var nativeDarkMutationDebounce = null;
@@ -21,6 +24,8 @@
   var amoledSweepScheduled = false;
   var hookedVarStyleObj = null;
   var hookedVarOrigSetProperty = null;
+  var hookedRootVarsSheet = null;
+  var hookedRootVarsOrigInsertRule = null;
   var lastConfig = null;
   var appliedSignature = null;
 
@@ -107,6 +112,7 @@
       return value;
     }
     var isBg = prop.indexOf('--darkreader-background-') === 0 ||
+      prop.indexOf('--darkreader-bg--') === 0 ||
       prop === '--darkreader-neutral-background';
     var isText = !isBg && (
       prop.indexOf('--darkreader-text-') === 0 ||
@@ -142,51 +148,24 @@
     return value;
   }
 
-  function findDarkReaderVariablesRootRule() {
+  function findDarkReaderRootRule(styleSelector) {
     try {
-      var styleEl = document.querySelector('style.darkreader--variables');
+      var styleEl = document.querySelector(styleSelector);
       var sheet = styleEl && styleEl.sheet;
       var rules = sheet && sheet.cssRules;
       if (!rules) return null;
       for (var i = 0; i < rules.length; i++) {
         if (rules[i].selectorText === ':root' && rules[i].style) {
-          return rules[i];
+          return { sheet: sheet, rule: rules[i] };
         }
       }
+      return { sheet: sheet, rule: null };
     } catch (e) {}
     return null;
   }
 
-  function patchAmoledVariablesRule(config) {
-    if (!config || !config.amoled) return;
-    var rootRule = findDarkReaderVariablesRootRule();
-    if (!rootRule || !rootRule.style) return;
-    var styleObj = rootRule.style;
-
-    if (hookedVarStyleObj !== styleObj && typeof styleObj.setProperty === 'function') {
-      var origSet = styleObj.setProperty;
-      hookedVarStyleObj = styleObj;
-      hookedVarOrigSetProperty = origSet;
-      try {
-        Object.defineProperty(styleObj, 'setProperty', {
-          configurable: true,
-          writable: true,
-          value: function (prop, val, priority) {
-            var nextVal = normalizeAmoledVarValue(prop, val, lastConfig);
-            if (priority !== undefined) {
-              return origSet.call(this, prop, nextVal, priority);
-            }
-            return origSet.call(this, prop, nextVal);
-          }
-        });
-      } catch (e) {}
-    }
-
-    var rawSet = (hookedVarStyleObj === styleObj && hookedVarOrigSetProperty)
-      ? hookedVarOrigSetProperty
-      : styleObj.setProperty;
-    if (typeof rawSet !== 'function') return;
-
+  function sweepAmoledStyleProps(styleObj, rawSet, config) {
+    if (!styleObj || typeof rawSet !== 'function') return;
     var propNames = [];
     for (var i = 0; i < styleObj.length; i++) {
       propNames.push(styleObj[i]);
@@ -201,6 +180,86 @@
         }
       }
     }
+  }
+
+  function patchAmoledRootVarsRule(config) {
+    if (!config || !config.amoled) return;
+    var found = findDarkReaderRootRule('style.darkreader--root-vars');
+    if (!found || !found.sheet) return;
+    var sheet = found.sheet;
+
+    if (hookedRootVarsSheet !== sheet && typeof sheet.insertRule === 'function') {
+      if (hookedRootVarsSheet && hookedRootVarsOrigInsertRule) {
+        try { delete hookedRootVarsSheet.insertRule; } catch (e) {}
+      }
+      var origInsert = sheet.insertRule;
+      hookedRootVarsSheet = sheet;
+      hookedRootVarsOrigInsertRule = origInsert;
+      try {
+        Object.defineProperty(sheet, 'insertRule', {
+          configurable: true,
+          writable: true,
+          value: function (ruleText, index) {
+            var res = index !== undefined
+              ? origInsert.call(this, ruleText, index)
+              : origInsert.call(this, ruleText);
+            if (lastConfig && lastConfig.enabled && lastConfig.amoled) {
+              try {
+                var rules = this.cssRules;
+                for (var k = 0; k < rules.length; k++) {
+                  if (rules[k].selectorText === ':root' && rules[k].style) {
+                    sweepAmoledStyleProps(rules[k].style, rules[k].style.setProperty, lastConfig);
+                  }
+                }
+              } catch (e) {}
+            }
+            return res;
+          }
+        });
+      } catch (e) {}
+    }
+
+    if (found.rule && found.rule.style) {
+      sweepAmoledStyleProps(found.rule.style, found.rule.style.setProperty, config);
+    }
+  }
+
+  function patchAmoledVariablesRule(config) {
+    if (!config || !config.amoled) return;
+    var found = findDarkReaderRootRule('style.darkreader--variables');
+    var rootRule = found && found.rule;
+    if (rootRule && rootRule.style) {
+      var styleObj = rootRule.style;
+
+      if (hookedVarStyleObj !== styleObj && typeof styleObj.setProperty === 'function') {
+        if (hookedVarStyleObj && hookedVarOrigSetProperty) {
+          try { delete hookedVarStyleObj.setProperty; } catch (e) {}
+        }
+        var origSet = styleObj.setProperty;
+        hookedVarStyleObj = styleObj;
+        hookedVarOrigSetProperty = origSet;
+        try {
+          Object.defineProperty(styleObj, 'setProperty', {
+            configurable: true,
+            writable: true,
+            value: function (prop, val, priority) {
+              var nextVal = normalizeAmoledVarValue(prop, val, lastConfig);
+              if (priority !== undefined) {
+                return origSet.call(this, prop, nextVal, priority);
+              }
+              return origSet.call(this, prop, nextVal);
+            }
+          });
+        } catch (e) {}
+      }
+
+      var rawSet = (hookedVarStyleObj === styleObj && hookedVarOrigSetProperty)
+        ? hookedVarOrigSetProperty
+        : styleObj.setProperty;
+      sweepAmoledStyleProps(styleObj, rawSet, config);
+    }
+
+    patchAmoledRootVarsRule(config);
   }
 
   function scheduleAmoledSweep() {
@@ -232,6 +291,13 @@
     }
     hookedVarStyleObj = null;
     hookedVarOrigSetProperty = null;
+    if (hookedRootVarsSheet && hookedRootVarsOrigInsertRule) {
+      try {
+        delete hookedRootVarsSheet.insertRule;
+      } catch (e) {}
+    }
+    hookedRootVarsSheet = null;
+    hookedRootVarsOrigInsertRule = null;
   }
 
   function installAmoledVarOverride(config) {
@@ -351,7 +417,52 @@
     return nativeDarkCache.settled || !isDomSettled();
   }
 
+  function extractDarkHintTokens(attrName, rawValue) {
+    if (!rawValue || typeof rawValue !== 'string') return '';
+    if (attrName === 'class') {
+      var parts = rawValue.trim().split(/\s+/);
+      var matches = [];
+      for (var i = 0; i < parts.length; i++) {
+        if (parts[i] && DARK_TOKEN_REGEX.test(parts[i])) {
+          matches.push(parts[i].toLowerCase());
+        }
+      }
+      matches.sort();
+      return matches.join(' ');
+    }
+    var trimmed = rawValue.trim().toLowerCase();
+    return DARK_TOKEN_REGEX.test(trimmed) ? trimmed : '';
+  }
+
+  function buildElementDarkAttrSignature(el) {
+    if (!el || typeof el.getAttribute !== 'function') return '';
+    var parts = [];
+    for (var i = 0; i < OBSERVED_THEME_ATTRS.length; i++) {
+      var attr = OBSERVED_THEME_ATTRS[i];
+      var hint = extractDarkHintTokens(attr, el.getAttribute(attr));
+      if (hint) {
+        parts.push(attr + '=' + hint);
+      }
+    }
+    return parts.join(';');
+  }
+
+  function currentDarkThemeSignalSignature() {
+    var metaDark = hasExplicitDarkColorScheme(getMetaColorSchemeContent()) ? '1' : '0';
+    return [
+      metaDark,
+      buildElementDarkAttrSignature(document.documentElement),
+      buildElementDarkAttrSignature(document.body)
+    ].join('|');
+  }
+
+  function hasNewDarkThemeSignal() {
+    var current = currentDarkThemeSignalSignature();
+    return current !== '0||' && current !== probedDarkSignalSignature;
+  }
+
   function saveCache(value) {
+    probedDarkSignalSignature = currentDarkThemeSignalSignature();
     if (!document.body) return;
     nativeDarkCache = {
       origin: currentOriginKey(),
@@ -452,13 +563,17 @@
     }
     var attrOpts = {
       attributes: true,
-      attributeFilter: ['class', 'data-theme', 'data-color-mode', 'data-bs-theme', 'data-mode']
+      attributeFilter: OBSERVED_THEME_ATTRS
     };
     try {
       nativeDarkObserver = new MutationObserver(function () {
         if (!lastConfig || !lastConfig.enabled || !lastConfig.skipNativeDark ||
             lastConfig.forceOverride || lastConfig.amoled) {
           teardownNativeDarkObserver();
+          return;
+        }
+        // Ignore routine non-theme class/attr churn (fonts, hydration, modals) so light sites never flash white.
+        if (!hasNewDarkThemeSignal()) {
           return;
         }
         if (nativeDarkMutationDebounce !== null) {
@@ -469,6 +584,9 @@
           if (!lastConfig || !lastConfig.enabled || !lastConfig.skipNativeDark ||
               lastConfig.forceOverride || lastConfig.amoled) {
             teardownNativeDarkObserver();
+            return;
+          }
+          if (!hasNewDarkThemeSignal()) {
             return;
           }
           nativeDarkCache = null;
@@ -496,8 +614,13 @@
           if (lastConfig && lastConfig.enabled && lastConfig.skipNativeDark &&
               !lastConfig.forceOverride && !lastConfig.amoled &&
               (!nativeDarkCache || !nativeDarkCache.value)) {
-            nativeDarkCache = null;
-            api.apply(lastConfig);
+            // Only re-probe on window.load if the DOM hadn't settled during the prior probe
+            // or a new dark-theme attribute/meta signal appeared late; never flash settled light sites.
+            var needsRecheck = !nativeDarkCache || !nativeDarkCache.settled || hasNewDarkThemeSignal();
+            if (needsRecheck) {
+              nativeDarkCache = null;
+              api.apply(lastConfig);
+            }
           }
           teardownNativeDarkObserver();
         }, 0);
@@ -557,6 +680,7 @@
       if (!config.enabled) {
         teardownNativeDarkObserver();
         nativeDarkCache = null;
+        probedDarkSignalSignature = null;
         appliedSignature = null;
         disableDarkReaderSafe();
         clearPrepaintStyle();
@@ -599,6 +723,7 @@
         teardownNativeDarkObserver();
         if (config.amoled) {
           nativeDarkCache = null;
+          probedDarkSignalSignature = null;
         }
       }
 

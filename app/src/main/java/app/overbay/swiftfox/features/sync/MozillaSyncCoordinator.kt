@@ -1455,8 +1455,11 @@ class MozillaSyncCoordinator(
                 ?: ensuredDefaultSpace?.id
                 ?: SwiftfoxDatabase.DEFAULT_SPACE_ID
 
+            // Capture existing Zen Pinned items before deleting removed Spaces so bound tabs are also cleaned up
+            val existingPinnedById = db.zenPinnedItemDao().getAll().associateBy { it.id }
+
             for (oldSynced in existingSpaces.filter { it.syncGuid != null && it.syncGuid !in seenSpaceSyncGuids }) {
-                // Migrate open tabs out of removed synced Spaces so tabs are never orphaned
+                // Migrate open regular/pinned tabs out of removed synced Spaces so tabs are never orphaned
                 db.tabDao().reassignSpace(oldSynced.id, fallbackSpaceId)
                 db.zenPinnedItemDao().deleteBySpace(oldSynced.id)
                 db.spaceDao().deleteById(oldSynced.id)
@@ -1503,7 +1506,6 @@ class MozillaSyncCoordinator(
             }
 
             // Replace Zen Pinned items per space while preserving local custom icons
-            val existingPinnedById = db.zenPinnedItemDao().getAll().associateBy { it.id }
             val pinnedEntities = mutableListOf<ZenPinnedItemEntity>()
             for ((workspaceUuid, entries) in snapshot.pinnedBySpace) {
                 val spaceId = zenSpaceIdMap[workspaceUuid] ?: continue

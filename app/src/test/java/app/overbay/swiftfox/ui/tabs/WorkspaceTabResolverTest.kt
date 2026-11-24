@@ -228,4 +228,66 @@ class WorkspaceTabResolverTest {
         assertFalse(WorkspaceTabResolver.hasClosableRegularTabs(cleanState))
         assertFalse(WorkspaceTabResolver.hasAnythingToCloseAll(cleanState))
     }
+
+    @Test
+    fun resolveChildTabSpaceId_fallsBackToActiveSpaceForGlobalEssentialParent() {
+        assertEquals(
+            "space_work",
+            WorkspaceTabResolver.resolveChildTabSpaceId(
+                parentSpaceId = WorkspaceTabResolver.ESSENTIAL_GLOBAL_SPACE_ID,
+                activeSpaceId = "space_work"
+            )
+        )
+        assertEquals(
+            "space_work",
+            WorkspaceTabResolver.resolveChildTabSpaceId(
+                parentSpaceId = null,
+                activeSpaceId = "space_work"
+            )
+        )
+        assertEquals(
+            "space_personal",
+            WorkspaceTabResolver.resolveChildTabSpaceId(
+                parentSpaceId = "space_personal",
+                activeSpaceId = "space_work"
+            )
+        )
+    }
+
+    @Test
+    fun toUnloadedPinnedTab_resetsUrlAndTransientSessionFlags() {
+        val loadedPin = BrowserTabUi(
+            id = "tab_pin",
+            spaceId = "space_personal",
+            title = "Subpage Title",
+            url = "https://docs.example.com/guide/step-2",
+            isPinned = true,
+            isUnloaded = false,
+            pinnedUrl = "https://docs.example.com",
+            customTitle = "Docs",
+            isLoading = true,
+            progress = 75,
+            canGoBack = true,
+            canGoForward = true,
+            isPlayingMedia = true,
+            isPlayingVideo = true,
+            blockedCount = 14,
+            isReaderAvailable = true,
+            darkReaderSkippedNative = true
+        )
+
+        val unloaded = WorkspaceTabResolver.toUnloadedPinnedTab(loadedPin)
+        assertTrue(unloaded.isUnloaded)
+        assertEquals("https://docs.example.com", unloaded.url)
+        assertEquals("Docs", unloaded.title)
+        assertFalse(unloaded.isLoading)
+        assertEquals(0, unloaded.progress)
+        assertFalse(unloaded.canGoBack)
+        assertFalse(unloaded.canGoForward)
+        assertFalse(unloaded.isPlayingMedia)
+        assertFalse(unloaded.isPlayingVideo)
+        assertEquals(0, unloaded.blockedCount)
+        assertFalse(unloaded.isReaderAvailable)
+        assertFalse(unloaded.darkReaderSkippedNative)
+    }
 }

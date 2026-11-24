@@ -116,9 +116,7 @@ fun SpacesTabSwitcher(
     onTogglePrivate: (Boolean) -> Unit,
     onCreateSpace: (String, String, Boolean) -> Unit,
     onDeleteSpace: (String) -> Unit = {},
-    onOpenEssential: (String) -> Unit,
     onOpenSyncedTabs: () -> Unit = {},
-    onOpenZenPinnedUrl: (String) -> Unit = onOpenEssential,
     itemCallbacks: WorkspaceItemCallbacks = WorkspaceItemCallbacks(onDeleteSpace = onDeleteSpace)
 ) {
     var showCreateSpaceDialog by remember { mutableStateOf(false) }

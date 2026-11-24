@@ -3,6 +3,7 @@ package app.overbay.swiftfox.ui.tabs
 import app.overbay.swiftfox.data.db.EssentialEntity
 import app.overbay.swiftfox.data.db.SpaceEntity
 import app.overbay.swiftfox.data.prefs.BrowserSettings
+import app.overbay.swiftfox.features.omnibox.OmniboxEngine
 import app.overbay.swiftfox.ui.browser.BrowserTabUi
 import app.overbay.swiftfox.ui.browser.BrowserUiState
 
@@ -56,6 +57,43 @@ object WorkspaceTabResolver {
             return essential.spaceId
         }
         return ESSENTIAL_GLOBAL_SPACE_ID
+    }
+
+    /**
+     * Resolves the Space ID for a newly opened child/popup tab so tabs spawned from a global
+     * Essential tab land in the user's active Space instead of the global Essential sentinel.
+     */
+    fun resolveChildTabSpaceId(
+        parentSpaceId: String?,
+        activeSpaceId: String
+    ): String {
+        return if (parentSpaceId.isNullOrBlank() || parentSpaceId == ESSENTIAL_GLOBAL_SPACE_ID) {
+            activeSpaceId
+        } else {
+            parentSpaceId
+        }
+    }
+
+    /**
+     * Resets a local pinned tab to its unloaded ("sleeping") representation at its pinned URL.
+     */
+    fun toUnloadedPinnedTab(tab: BrowserTabUi): BrowserTabUi {
+        val homeUrl = tab.pinnedUrl?.takeIf { it.isNotBlank() } ?: tab.url
+        val resetHost = OmniboxEngine.extractHost(homeUrl)
+        return tab.copy(
+            url = homeUrl,
+            title = tab.customTitle?.takeIf { it.isNotBlank() } ?: resetHost.ifBlank { tab.title },
+            isUnloaded = true,
+            isLoading = false,
+            progress = 0,
+            canGoBack = false,
+            canGoForward = false,
+            isPlayingMedia = false,
+            isPlayingVideo = false,
+            blockedCount = 0,
+            isReaderAvailable = false,
+            darkReaderSkippedNative = false
+        )
     }
 
     /**

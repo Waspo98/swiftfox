@@ -775,15 +775,7 @@ fun BrowserScreen(
                         onDeleteSpace = { spaceId ->
                             viewModel.deleteSpace(spaceId)
                         },
-                        onOpenEssential = { url ->
-                            viewModel.setOverlay(BrowserOverlay.NONE)
-                            viewModel.navigateActiveTab(url)
-                        },
                         onOpenSyncedTabs = { viewModel.setOverlay(BrowserOverlay.SYNCED_TABS) },
-                        onOpenZenPinnedUrl = { url ->
-                            viewModel.setOverlay(BrowserOverlay.NONE)
-                            viewModel.navigateActiveTab(url)
-                        },
                         itemCallbacks = workspaceItemCallbacks
                     )
                 }
@@ -1325,7 +1317,6 @@ fun BrowserShellLayout(
                     onCloseTab = onCloseTab,
                     onCreateTab = onCreateTab,
                     onCreatePrivateTab = onCreatePrivateTab,
-                    onOpenEssential = onOpenUrl,
                     onCreateSpace = onCreateSpace,
                     onDeleteSpace = onDeleteSpace,
                     itemCallbacks = itemCallbacks
@@ -1792,7 +1783,6 @@ private fun BoxScope.FoldedSidebarDrawerOverlay(
                 onCloseTab = onCloseTab,
                 onCreateTab = onCreateTab,
                 onCreatePrivateTab = onCreatePrivateTab,
-                onOpenEssential = onOpenUrl,
                 onCreateSpace = onCreateSpace,
                 onDeleteSpace = onDeleteSpace,
                 itemCallbacks = itemCallbacks

@@ -84,14 +84,8 @@ data class BrowserTabUi(
     val isEssentialTab: Boolean
         get() = essentialId != null
 
-    val isZenPinnedTab: Boolean
-        get() = zenPinnedId != null
-
     val isBoundWorkspaceTab: Boolean
         get() = essentialId != null || zenPinnedId != null
-
-    val isLoaded: Boolean
-        get() = !isUnloaded
 
     val isStartPage: Boolean
         get() = !isPopupWindow && (url.isBlank() || url == OmniboxEngine.NEW_TAB_URL)

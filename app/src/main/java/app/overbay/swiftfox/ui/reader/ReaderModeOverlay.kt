@@ -14,8 +14,6 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -34,6 +32,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -46,8 +46,6 @@ import androidx.compose.material.icons.rounded.Remove
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalIconButton
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -88,6 +86,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
@@ -99,6 +98,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withLink
@@ -117,6 +117,7 @@ import app.overbay.swiftfox.features.omnibox.OmniboxEngine
 import app.overbay.swiftfox.features.reader.ReaderArticle
 import app.overbay.swiftfox.features.reader.ReaderBlock
 import app.overbay.swiftfox.features.reader.TextRun
+import app.overbay.swiftfox.ui.components.SwiftfoxSegmentedControl
 import app.overbay.swiftfox.ui.theme.AmoledOnSurface
 import app.overbay.swiftfox.ui.theme.AmoledOnSurfaceVariant
 import app.overbay.swiftfox.ui.theme.AmoledOutlineVariant
@@ -1200,7 +1201,7 @@ private fun ReaderDefinitionBlock(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ReaderAppearanceSheet(
     settings: BrowserSettings,
@@ -1235,49 +1236,92 @@ private fun ReaderAppearanceSheet(
                 overflow = TextOverflow.Ellipsis
             )
 
-            // Surface selector
+            // Surface selector (5-up visual swatch tiles)
             SheetSection(label = "Surface") {
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(IntrinsicSize.Max)
+                        .selectableGroup(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     ReaderSurfaceMode.entries.forEach { mode ->
                         val selected = settings.readerSurfaceMode == mode
-                        FilterChip(
-                            selected = selected,
-                            onClick = { onSurfaceModeChange(mode) },
-                            leadingIcon = {
-                                if (selected) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.Check,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                } else {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(12.dp)
-                                            .clip(CircleShape)
-                                            .background(surfaceSwatchColor(mode))
-                                            .border(1.dp, MaterialTheme.colorScheme.outline, CircleShape)
-                                    )
-                                }
+                        val swatchColor = surfaceSwatchColor(mode)
+                        val checkTint = when (mode) {
+                            ReaderSurfaceMode.FOLLOW_APP -> MaterialTheme.colorScheme.onPrimary
+                            ReaderSurfaceMode.DAY, ReaderSurfaceMode.SEPIA -> Color(0xFF1C1917)
+                            ReaderSurfaceMode.DARK, ReaderSurfaceMode.AMOLED -> Color.White
+                        }
+                        val shortLabel = if (mode == ReaderSurfaceMode.FOLLOW_APP) "Auto" else mode.label
+
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = if (selected) {
+                                MaterialTheme.colorScheme.primaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.surfaceContainerHigh
                             },
-                            label = {
+                            contentColor = if (selected) {
+                                MaterialTheme.colorScheme.onPrimaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            border = if (selected) {
+                                BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
+                            } else {
+                                BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.28f))
+                            },
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .heightIn(min = 64.dp)
+                                .clip(RoundedCornerShape(16.dp))
+                                .selectable(
+                                    selected = selected,
+                                    role = Role.RadioButton,
+                                    onClick = { onSurfaceModeChange(mode) }
+                                )
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 4.dp, vertical = 10.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterVertically)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(22.dp)
+                                        .clip(CircleShape)
+                                        .background(swatchColor)
+                                        .border(
+                                            1.dp,
+                                            MaterialTheme.colorScheme.outline.copy(alpha = 0.55f),
+                                            CircleShape
+                                        ),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    if (selected) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.Check,
+                                            contentDescription = null,
+                                            tint = checkTint,
+                                            modifier = Modifier.size(13.dp)
+                                        )
+                                    }
+                                }
                                 Text(
-                                    text = mode.label,
+                                    text = shortLabel,
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium
+                                    ),
+                                    textAlign = TextAlign.Center,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
-                            },
-                            shape = RoundedCornerShape(18.dp),
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                                selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                                selectedLeadingIconColor = MaterialTheme.colorScheme.primary
-                            ),
-                            modifier = Modifier.heightIn(min = 48.dp)
-                        )
+                            }
+                        }
                     }
                 }
             }
@@ -1286,37 +1330,19 @@ private fun ReaderAppearanceSheet(
 
             // Font family selector
             SheetSection(label = "Typeface") {
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    ReaderFontFamily.entries.forEach { family ->
-                        val selected = settings.readerFontFamily == family
-                        val chipFont = when (family) {
+                SwiftfoxSegmentedControl(
+                    options = ReaderFontFamily.entries,
+                    selected = settings.readerFontFamily,
+                    onSelect = onFontFamilyChange,
+                    labelFor = { it.label },
+                    fontFamilyFor = { family ->
+                        when (family) {
                             ReaderFontFamily.SANS -> FontFamily.SansSerif
                             ReaderFontFamily.SERIF -> FontFamily.Serif
                             ReaderFontFamily.MONO -> FontFamily.Monospace
                         }
-                        FilterChip(
-                            selected = selected,
-                            onClick = { onFontFamilyChange(family) },
-                            label = {
-                                Text(
-                                    text = family.label,
-                                    fontFamily = chipFont,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            },
-                            shape = RoundedCornerShape(18.dp),
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                                selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
-                            ),
-                            modifier = Modifier.heightIn(min = 48.dp)
-                        )
                     }
-                }
+                )
             }
 
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
@@ -1406,31 +1432,14 @@ private fun ReaderAppearanceSheet(
             }?.first ?: 1.6f
 
             SheetSection(label = "Line spacing") {
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    LineSpacingOptions.forEach { (spacing, label) ->
-                        val selected = spacing == closestSpacing
-                        FilterChip(
-                            selected = selected,
-                            onClick = { onLineHeightChange(spacing) },
-                            label = {
-                                Text(
-                                    text = "$label · ${spacing}×",
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            },
-                            shape = RoundedCornerShape(18.dp),
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                                selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
-                            ),
-                            modifier = Modifier.heightIn(min = 48.dp)
-                        )
-                    }
-                }
+                val selectedOption = LineSpacingOptions.firstOrNull { it.first == closestSpacing }
+                    ?: LineSpacingOptions[1]
+                SwiftfoxSegmentedControl(
+                    options = LineSpacingOptions,
+                    selected = selectedOption,
+                    onSelect = { (spacing, _) -> onLineHeightChange(spacing) },
+                    labelFor = { (spacing, label) -> "$label · ${spacing}×" }
+                )
             }
         }
     }

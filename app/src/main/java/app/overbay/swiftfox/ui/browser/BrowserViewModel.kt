@@ -1772,6 +1772,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 privateSiteOverrides = if (clearAllPrivateState) emptyMap() else current.privateSiteOverrides,
                 privateZappedRules = if (clearAllPrivateState) emptyMap() else current.privateZappedRules,
                 recentlyClosedTab = if (showClosedSnackbar) closing else null,
+                recentlyResetSiteOverride = null,
                 snackbarMessage = if (showClosedSnackbar) "Closed ${closing.title}" else null,
                 snackbarId = if (showClosedSnackbar) snackbarCounter.incrementAndGet() else current.snackbarId,
                 zapper = if (wasActive) ZapperUiState() else current.zapper,
@@ -2460,8 +2461,24 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     current.overlayBackStack + BrowserOverlay.TAB_SWITCHER
                 else -> emptyList()
             }
+            val preserveSettingsCategory = when {
+                overlay == BrowserOverlay.SETTINGS && current.activeOverlay == BrowserOverlay.SETTINGS -> true
+                current.activeOverlay == BrowserOverlay.SETTINGS &&
+                    overlay in setOf(
+                        BrowserOverlay.FILTER_LISTS,
+                        BrowserOverlay.USERSCRIPTS,
+                        BrowserOverlay.ZAPPED_RULES,
+                        BrowserOverlay.SYNC,
+                        BrowserOverlay.SYNCED_TABS,
+                        BrowserOverlay.BOOKMARKS,
+                        BrowserOverlay.HISTORY,
+                        BrowserOverlay.DOWNLOADS
+                    ) -> true
+                else -> false
+            }
             current.copy(
                 activeOverlay = overlay,
+                activeSettingsCategory = if (preserveSettingsCategory) current.activeSettingsCategory else null,
                 overlayBackStack = nextStack,
                 isFoldedSidebarOpen = if (overlay != BrowserOverlay.NONE) false else current.isFoldedSidebarOpen,
                 isSiteRulesOpen = false,
@@ -2471,8 +2488,15 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun setSettingsCategory(category: SettingsCategory?) {
+        _uiState.update { it.copy(activeSettingsCategory = category) }
+    }
+
     fun navigateBackFromOverlay() {
         _uiState.update { current ->
+            if (current.activeOverlay == BrowserOverlay.SETTINGS && current.activeSettingsCategory != null) {
+                return@update current.copy(activeSettingsCategory = null)
+            }
             val prev = current.overlayBackStack.lastOrNull() ?: BrowserOverlay.NONE
             val remaining = if (current.overlayBackStack.isNotEmpty()) {
                 current.overlayBackStack.dropLast(1)
@@ -2481,6 +2505,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             }
             current.copy(
                 activeOverlay = prev,
+                activeSettingsCategory = if (prev == BrowserOverlay.SETTINGS) current.activeSettingsCategory else null,
                 overlayBackStack = remaining
             )
         }
@@ -3208,15 +3233,49 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun clearAllBrowsingData() {
-        lastRecordedHistoryUrlByTab.clear()
-        lastRecordedHistoryTitleByTab.clear()
-        _thumbnails.update { TabThumbnailsSnapshot() }
+        clearBrowsingData(
+            clearHistory = true,
+            clearCookiesAndSiteData = true,
+            clearCache = true
+        )
+    }
+
+    fun clearBrowsingData(
+        clearHistory: Boolean,
+        clearCookiesAndSiteData: Boolean,
+        clearCache: Boolean
+    ) {
+        if (!clearHistory && !clearCookiesAndSiteData && !clearCache) return
+        if (clearHistory) {
+            lastRecordedHistoryUrlByTab.clear()
+            lastRecordedHistoryTitleByTab.clear()
+        }
+        if (clearCache) {
+            _thumbnails.update { TabThumbnailsSnapshot() }
+        }
         viewModelScope.launch {
-            db.historyDao().clearAll()
-            app.mozillaSyncCoordinator.mirrorHistoryCleared()
+            if (clearHistory) {
+                db.historyDao().clearAll()
+                app.mozillaSyncCoordinator.mirrorHistoryCleared()
+            }
             val containerProfiles = _uiState.value.spaces.mapNotNull { it.containerProfileName }
-            pool.clearAllProfilesData(containerProfiles)
-            showSnackbar("Cleared history, cookies, and cache")
+            pool.clearProfilesData(
+                containerProfiles = containerProfiles,
+                clearHistory = clearHistory,
+                clearCookiesAndSiteData = clearCookiesAndSiteData,
+                clearCache = clearCache
+            )
+            val clearedParts = buildList {
+                if (clearHistory) add("history")
+                if (clearCookiesAndSiteData) add("cookies & site data")
+                if (clearCache) add("cache")
+            }
+            val summary = when (clearedParts.size) {
+                1 -> clearedParts.first()
+                2 -> "${clearedParts[0]} and ${clearedParts[1]}"
+                else -> "${clearedParts[0]}, ${clearedParts[1]}, and ${clearedParts[2]}"
+            }
+            showSnackbar("Cleared $summary")
         }
     }
 
@@ -3472,7 +3531,61 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                         reloadActiveTabIfHost(normalizedHost)
                     }
                 }
-                showSnackbar("Reset site overrides for $normalizedHost")
+                if (prevOverride != null) {
+                    _uiState.update {
+                        it.copy(
+                            snackbarMessage = "Reset overrides for $normalizedHost",
+                            snackbarId = snackbarCounter.incrementAndGet(),
+                            recentlyClosedTab = null,
+                            recentlyResetSiteOverride = prevOverride
+                        )
+                    }
+                } else {
+                    showSnackbar("Reset site overrides for $normalizedHost")
+                }
+            }
+        }
+    }
+
+    fun undoResetSiteOverride() {
+        val restored = _uiState.value.recentlyResetSiteOverride ?: return
+        val normalizedHost = OmniboxEngine.normalizeHost(restored.host)
+        val normalizedEntity = restored.copy(host = normalizedHost)
+        _uiState.update {
+            it.copy(
+                siteOverrides = it.siteOverrides + (normalizedHost to normalizedEntity),
+                recentlyResetSiteOverride = null,
+                snackbarMessage = null
+            )
+        }
+        val writeGen = siteOverrideWrites.beginWrite()
+        viewModelScope.launch {
+            siteOverrideWrites.runSerializedWrite(
+                generation = writeGen,
+                writeToDb = {
+                    db.siteOverrideDao().upsert(normalizedEntity)
+                },
+                readSettledFromDb = {
+                    db.siteOverrideDao().getAll()
+                        .associateBy { o -> OmniboxEngine.normalizeHost(o.host) }
+                },
+                onSettled = { settled ->
+                    if (_uiState.value.siteOverrides != settled) {
+                        _uiState.update { it.copy(siteOverrides = settled) }
+                        refreshResolvedSiteModesForAllTabs(_uiState.value.activeProfile)
+                    }
+                }
+            )
+            withContext(Dispatchers.Main) {
+                refreshResolvedSiteModesForAllTabs(_uiState.value.activeProfile)
+                pool.clearAllDocumentStartScripts()
+                syncGlobalPrepaintDarkScripts()
+                val active = _uiState.value.activeTab
+                pool.markAllBackgroundWebDarkDirty(active?.id)
+                if (active != null && OmniboxEngine.normalizeHost(active.displayHost) == normalizedHost) {
+                    applyResolvedSettingsToTab(active.id, reloadIfModeChanged = true)
+                }
+                showSnackbar("Restored overrides for $normalizedHost")
             }
         }
     }
@@ -3495,6 +3608,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun setDarkReaderBrightness(value: Int) = viewModelScope.launch { prefs.setDarkReaderBrightness(value) }
     fun setDarkReaderContrast(value: Int) = viewModelScope.launch { prefs.setDarkReaderContrast(value) }
     fun setDarkReaderSepia(value: Int) = viewModelScope.launch { prefs.setDarkReaderSepia(value) }
+    fun resetDarkReaderAdjustments() = viewModelScope.launch {
+        prefs.setDarkReaderBrightness(100)
+        prefs.setDarkReaderContrast(100)
+        prefs.setDarkReaderSepia(0)
+    }
     fun setDarkReaderSkipNativeDark(enabled: Boolean) = viewModelScope.launch { prefs.setDarkReaderSkipNativeDark(enabled) }
 
     fun setAdblockEnabled(enabled: Boolean) = viewModelScope.launch {
@@ -3730,7 +3848,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             it.copy(
                 snackbarMessage = message,
                 snackbarId = snackbarCounter.incrementAndGet(),
-                recentlyClosedTab = null
+                recentlyClosedTab = null,
+                recentlyResetSiteOverride = null
             )
         }
     }
@@ -3739,7 +3858,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         _uiState.update {
             it.copy(
                 snackbarMessage = null,
-                recentlyClosedTab = null
+                recentlyClosedTab = null,
+                recentlyResetSiteOverride = null
             )
         }
     }

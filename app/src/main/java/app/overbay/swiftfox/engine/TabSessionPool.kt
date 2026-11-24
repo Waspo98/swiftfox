@@ -267,30 +267,50 @@ class TabSessionPool(
     }
 
     fun clearAllProfilesData(containerProfiles: Collection<String>) {
+        clearProfilesData(
+            containerProfiles = containerProfiles,
+            clearHistory = true,
+            clearCookiesAndSiteData = true,
+            clearCache = true
+        )
+    }
+
+    fun clearProfilesData(
+        containerProfiles: Collection<String>,
+        clearHistory: Boolean,
+        clearCookiesAndSiteData: Boolean,
+        clearCache: Boolean
+    ) {
         val warmSnapshot = synchronized(lock) {
-            hibernatedBundles.clear()
-            thumbnails.clear()
+            if (clearHistory) {
+                hibernatedBundles.clear()
+            }
+            if (clearCache) {
+                thumbnails.clear()
+            }
             warmSessions.values.toList()
         }
-        runCatching {
-            val defaultCm = CookieManager.getInstance()
-            defaultCm.removeAllCookies {
-                runCatching { defaultCm.flush() }
+        if (clearCookiesAndSiteData) {
+            runCatching {
+                val defaultCm = CookieManager.getInstance()
+                defaultCm.removeAllCookies {
+                    runCatching { defaultCm.flush() }
+                }
+                WebStorage.getInstance().deleteAllData()
             }
-            WebStorage.getInstance().deleteAllData()
-        }
-        if (WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) {
-            val store = runCatching { ProfileStore.getInstance() }.getOrNull()
-            if (store != null) {
-                val allNames = (store.allProfileNames + containerProfiles)
-                    .filter { it.isNotBlank() && it != BrowserSession.DEFAULT_PROFILE_NAME }
-                    .distinct()
-                allNames.forEach { name ->
-                    runCatching {
-                        val profile = store.getProfile(name) ?: return@runCatching
-                        profile.webStorage.deleteAllData()
-                        profile.cookieManager.removeAllCookies {
-                            runCatching { profile.cookieManager.flush() }
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) {
+                val store = runCatching { ProfileStore.getInstance() }.getOrNull()
+                if (store != null) {
+                    val allNames = (store.allProfileNames + containerProfiles)
+                        .filter { it.isNotBlank() && it != BrowserSession.DEFAULT_PROFILE_NAME }
+                        .distinct()
+                    allNames.forEach { name ->
+                        runCatching {
+                            val profile = store.getProfile(name) ?: return@runCatching
+                            profile.webStorage.deleteAllData()
+                            profile.cookieManager.removeAllCookies {
+                                runCatching { profile.cookieManager.flush() }
+                            }
                         }
                     }
                 }
@@ -298,9 +318,15 @@ class TabSessionPool(
         }
         warmSnapshot.forEach { session ->
             runCatching {
-                session.webView.clearCache(true)
-                session.webView.clearFormData()
-                session.webView.clearHistory()
+                if (clearCache) {
+                    session.webView.clearCache(true)
+                }
+                if (clearCookiesAndSiteData) {
+                    session.webView.clearFormData()
+                }
+                if (clearHistory) {
+                    session.webView.clearHistory()
+                }
             }
         }
     }

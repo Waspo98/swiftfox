@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
@@ -29,8 +30,6 @@ import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Upload
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -57,6 +56,7 @@ import app.overbay.swiftfox.data.db.BookmarkEntity
 import app.overbay.swiftfox.data.db.DownloadRecordEntity
 import app.overbay.swiftfox.data.db.HistoryEntity
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
+import app.overbay.swiftfox.ui.components.SwiftfoxSelectablePill
 import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -193,20 +193,15 @@ fun BookmarksOverlay(
 
                 if (folders.size > 1) {
                     LazyRow(
+                        modifier = Modifier.selectableGroup(),
                         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         item(key = "folder_all", contentType = "folder_chip") {
-                            FilterChip(
+                            SwiftfoxSelectablePill(
+                                label = "All (${bookmarks.size})",
                                 selected = selectedFolder == null,
-                                onClick = { selectedFolder = null },
-                                label = { Text("All (${bookmarks.size})", maxLines = 1) },
-                                shape = RoundedCornerShape(18.dp),
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
-                                ),
-                                modifier = Modifier.heightIn(min = 48.dp)
+                                onClick = { selectedFolder = null }
                             )
                         }
                         items(
@@ -215,18 +210,12 @@ fun BookmarksOverlay(
                             contentType = { "folder_chip" }
                         ) { folderName ->
                             val isSelected = selectedFolder.equals(folderName, ignoreCase = true)
-                            FilterChip(
+                            SwiftfoxSelectablePill(
+                                label = folderName,
                                 selected = isSelected,
                                 onClick = {
                                     selectedFolder = if (isSelected) null else folderName
-                                },
-                                label = { Text(folderName, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                                shape = RoundedCornerShape(18.dp),
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
-                                ),
-                                modifier = Modifier.heightIn(min = 48.dp)
+                                }
                             )
                         }
                     }

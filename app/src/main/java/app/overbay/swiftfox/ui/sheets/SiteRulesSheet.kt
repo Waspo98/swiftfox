@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -23,8 +24,6 @@ import androidx.compose.material.icons.rounded.AutoFixHigh
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.RestartAlt
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -55,6 +54,8 @@ import androidx.compose.ui.unit.dp
 import app.overbay.swiftfox.data.db.SiteOverrideEntity
 import app.overbay.swiftfox.data.db.ZappedRuleEntity
 import app.overbay.swiftfox.data.prefs.SiteMode
+import app.overbay.swiftfox.ui.components.SwiftfoxSegmentedControl
+import app.overbay.swiftfox.ui.components.SwiftfoxSelectablePill
 
 private enum class UserAgentPreset(val label: String, val uaString: String?) {
     DEFAULT("Default", null),
@@ -186,8 +187,8 @@ fun SiteRulesSheet(
                     val adblockSubtitle = when {
                         !globalAdblockEnabled -> "Disabled globally in Settings"
                         override?.adblockDisabled == true -> "Paused on $host"
-                        isNativeRust -> "Active via adblock-rust"
-                        else -> "Active via Kotlin matcher"
+                        isNativeRust -> "Active via Native Rust engine"
+                        else -> "Active via Built-in matcher"
                     }
                     SiteSwitchRow(
                         title = "Ad & tracker blocking",
@@ -232,14 +233,19 @@ fun SiteRulesSheet(
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    RuleFilterChip("Global", override?.webDarkModeOverride == null) { onSetWebDarkOverride(null) }
-                    RuleFilterChip("Force dark", override?.webDarkModeOverride == true) { onSetWebDarkOverride(true) }
-                    RuleFilterChip("Force light", override?.webDarkModeOverride == false) { onSetWebDarkOverride(false) }
-                }
+                val darkOptions = remember { listOf(null, true, false) }
+                SwiftfoxSegmentedControl(
+                    options = darkOptions,
+                    selected = override?.webDarkModeOverride,
+                    onSelect = onSetWebDarkOverride,
+                    labelFor = { choice ->
+                        when (choice) {
+                            null -> "Global"
+                            true -> "Force dark"
+                            false -> "Force light"
+                        }
+                    }
+                )
             }
 
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -248,15 +254,24 @@ fun SiteRulesSheet(
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    val mode = override?.siteModeOverride
-                    RuleFilterChip("Posture default", mode == null) { onSetSiteModeOverride(null) }
-                    RuleFilterChip("Mobile", mode == SiteMode.MOBILE.name) { onSetSiteModeOverride(SiteMode.MOBILE) }
-                    RuleFilterChip("Desktop", mode == SiteMode.DESKTOP.name) { onSetSiteModeOverride(SiteMode.DESKTOP) }
+                val layoutOptions = remember { listOf<SiteMode?>(null, SiteMode.MOBILE, SiteMode.DESKTOP) }
+                val selectedMode = when (override?.siteModeOverride) {
+                    SiteMode.MOBILE.name -> SiteMode.MOBILE
+                    SiteMode.DESKTOP.name -> SiteMode.DESKTOP
+                    else -> null
                 }
+                SwiftfoxSegmentedControl(
+                    options = layoutOptions,
+                    selected = selectedMode,
+                    onSelect = onSetSiteModeOverride,
+                    labelFor = { choice ->
+                        when (choice) {
+                            null -> "Posture"
+                            SiteMode.MOBILE -> "Mobile"
+                            SiteMode.DESKTOP -> "Desktop"
+                        }
+                    }
+                )
             }
 
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -266,11 +281,12 @@ fun SiteRulesSheet(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 FlowRow(
+                    modifier = Modifier.selectableGroup(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     UserAgentPreset.entries.forEach { preset ->
-                        RuleFilterChip(
+                        SwiftfoxSelectablePill(
                             label = preset.label,
                             selected = selectedUaPreset == preset,
                             onClick = {
@@ -510,23 +526,4 @@ private fun SiteSwitchRow(
         }
         Switch(checked = checked, onCheckedChange = null, enabled = enabled)
     }
-}
-
-@Composable
-private fun RuleFilterChip(
-    label: String,
-    selected: Boolean,
-    onClick: () -> Unit
-) {
-    FilterChip(
-        selected = selected,
-        onClick = onClick,
-        label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-        shape = RoundedCornerShape(18.dp),
-        colors = FilterChipDefaults.filterChipColors(
-            selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-            selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
-        ),
-        modifier = Modifier.heightIn(min = 48.dp)
-    )
 }

@@ -37,8 +37,6 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -66,6 +64,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.overbay.swiftfox.features.sync.SyncAccountState
 import app.overbay.swiftfox.ui.browser.BrowserUiState
+import app.overbay.swiftfox.ui.components.SwiftfoxSegmentedControl
 import app.overbay.swiftfox.ui.theme.SwiftfoxEmblem
 import app.overbay.swiftfox.ui.theme.SwiftfoxEmblemVariant
 import java.util.Locale
@@ -497,24 +496,15 @@ fun SyncOverlay(
                                 style = MaterialTheme.typography.labelLarge,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
-                            FlowRow(
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                intervals.forEach { (mins, label) ->
-                                    FilterChip(
-                                        selected = settings.syncPeriodicIntervalMinutes == mins,
-                                        onClick = { onChangeSyncInterval(mins) },
-                                        label = { Text(label, maxLines = 1) },
-                                        shape = RoundedCornerShape(18.dp),
-                                        colors = FilterChipDefaults.filterChipColors(
-                                            selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                                            selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
-                                        ),
-                                        modifier = Modifier.heightIn(min = 48.dp)
-                                    )
-                                }
-                            }
+                            val selectedInterval = intervals.firstOrNull {
+                                it.first == settings.syncPeriodicIntervalMinutes
+                            } ?: intervals.first()
+                            SwiftfoxSegmentedControl(
+                                options = intervals,
+                                selected = selectedInterval,
+                                onSelect = { (mins, _) -> onChangeSyncInterval(mins) },
+                                labelFor = { (_, label) -> label }
+                            )
                         }
 
                         OutlinedButton(

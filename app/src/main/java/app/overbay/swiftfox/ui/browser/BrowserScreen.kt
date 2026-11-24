@@ -194,7 +194,7 @@ fun BrowserScreen(
             return@LaunchedEffect
         }
         snackbarHostState.currentSnackbarData?.dismiss()
-        val canUndo = state.recentlyClosedTab != null
+        val canUndo = state.recentlyClosedTab != null || state.recentlyResetSiteOverride != null
         val actionLabel = if (canUndo) "Undo" else null
         val result = snackbarHostState.showSnackbar(
             message = msg,
@@ -202,10 +202,10 @@ fun BrowserScreen(
             duration = SnackbarDuration.Short
         )
         if (result == SnackbarResult.ActionPerformed) {
-            if (state.recentlyClosedTab != null) {
-                viewModel.undoCloseTab()
-            } else {
-                viewModel.clearSnackbar()
+            when {
+                state.recentlyClosedTab != null -> viewModel.undoCloseTab()
+                state.recentlyResetSiteOverride != null -> viewModel.undoResetSiteOverride()
+                else -> viewModel.clearSnackbar()
             }
         } else {
             viewModel.clearSnackbar()

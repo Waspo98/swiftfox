@@ -1,7 +1,9 @@
 package app.overbay.swiftfox.ui.settings
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -14,8 +16,12 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.ArrowForward
@@ -36,10 +42,8 @@ import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.Smartphone
 import androidx.compose.material.icons.rounded.Tune
-import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -142,98 +146,52 @@ fun QuickActionsSection(
                     )
                 }
 
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                Row(
+                    horizontalArrangement = if (isWebPage) {
+                        Arrangement.SpaceBetween
+                    } else {
+                        Arrangement.spacedBy(12.dp)
+                    },
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    FilledTonalIconButton(
-                        onClick = onGoBack,
+                    QuickIconAction(
+                        label = "Back",
+                        icon = Icons.AutoMirrored.Rounded.ArrowBack,
                         enabled = activeTab?.canGoBack == true,
-                        modifier = Modifier.size(48.dp),
-                        shape = CircleShape,
-                        colors = IconButtonDefaults.filledTonalIconButtonColors(
-                            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
-                        )
-                    ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
-                            contentDescription = "Back"
-                        )
-                    }
-
-                    FilledTonalIconButton(
-                        onClick = onGoForward,
+                        onClick = onGoBack,
+                        modifier = if (isWebPage) Modifier.weight(1f) else Modifier
+                    )
+                    QuickIconAction(
+                        label = "Forward",
+                        icon = Icons.AutoMirrored.Rounded.ArrowForward,
                         enabled = activeTab?.canGoForward == true,
-                        modifier = Modifier.size(48.dp),
-                        shape = CircleShape,
-                        colors = IconButtonDefaults.filledTonalIconButtonColors(
-                            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
-                        )
-                    ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
-                            contentDescription = "Forward"
-                        )
-                    }
-
+                        onClick = onGoForward,
+                        modifier = if (isWebPage) Modifier.weight(1f) else Modifier
+                    )
                     if (isWebPage) {
-                        FilledTonalIconButton(
-                            onClick = onToggleBookmark,
-                            modifier = Modifier.size(48.dp),
-                            shape = CircleShape,
-                            colors = if (state.isActiveUrlBookmarked) {
-                                IconButtonDefaults.filledTonalIconButtonColors(
-                                    containerColor = MaterialTheme.colorScheme.primaryContainer,
-                                    contentColor = MaterialTheme.colorScheme.primary
-                                )
+                        QuickIconAction(
+                            label = if (state.isActiveUrlBookmarked) "Saved" else "Save",
+                            icon = if (state.isActiveUrlBookmarked) {
+                                Icons.Rounded.Bookmark
                             } else {
-                                IconButtonDefaults.filledTonalIconButtonColors(
-                                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
-                                )
-                            }
-                        ) {
-                            Icon(
-                                imageVector = if (state.isActiveUrlBookmarked) {
-                                    Icons.Rounded.Bookmark
-                                } else {
-                                    Icons.Rounded.BookmarkBorder
-                                },
-                                contentDescription = if (state.isActiveUrlBookmarked) {
-                                    "Remove bookmark"
-                                } else {
-                                    "Bookmark page"
-                                }
-                            )
-                        }
-
-                        FilledTonalIconButton(
+                                Icons.Rounded.BookmarkBorder
+                            },
+                            active = state.isActiveUrlBookmarked,
+                            onClick = onToggleBookmark,
+                            modifier = Modifier.weight(1f)
+                        )
+                        QuickIconAction(
+                            label = "Share",
+                            icon = Icons.Rounded.Share,
                             onClick = onShareCleanUrl,
-                            modifier = Modifier.size(48.dp),
-                            shape = CircleShape,
-                            colors = IconButtonDefaults.filledTonalIconButtonColors(
-                                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
-                            )
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Share,
-                                contentDescription = "Share clean link"
-                            )
-                        }
-
-                        FilledTonalIconButton(
+                            modifier = Modifier.weight(1f)
+                        )
+                        QuickIconAction(
+                            label = "Print",
+                            icon = Icons.Rounded.Print,
                             onClick = onPrintPage,
-                            modifier = Modifier.size(48.dp),
-                            shape = CircleShape,
-                            colors = IconButtonDefaults.filledTonalIconButtonColors(
-                                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
-                            )
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Print,
-                                contentDescription = "Print or save PDF"
-                            )
-                        }
+                            modifier = Modifier.weight(1f)
+                        )
                     }
                 }
             }
@@ -487,5 +445,69 @@ private fun QuickActionPill(
                 overflow = TextOverflow.Ellipsis
             )
         }
+    }
+}
+
+@Composable
+private fun QuickIconAction(
+    label: String,
+    icon: ImageVector,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    active: Boolean = false,
+    enabled: Boolean = true
+) {
+    val containerColor = when {
+        !enabled -> MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.42f)
+        active -> MaterialTheme.colorScheme.primaryContainer
+        else -> MaterialTheme.colorScheme.surfaceContainerHigh
+    }
+    val iconTint = when {
+        !enabled -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
+        active -> MaterialTheme.colorScheme.primary
+        else -> MaterialTheme.colorScheme.onSurface
+    }
+    val border = if (active && enabled) {
+        BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.65f))
+    } else {
+        null
+    }
+
+    Column(
+        modifier = modifier
+            .widthIn(min = 52.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+            .padding(vertical = 4.dp, horizontal = 2.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(5.dp)
+    ) {
+        Surface(
+            shape = CircleShape,
+            color = containerColor,
+            border = border,
+            modifier = Modifier.size(44.dp)
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = iconTint,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+        }
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = when {
+                !enabled -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.42f)
+                active -> MaterialTheme.colorScheme.primary
+                else -> MaterialTheme.colorScheme.onSurfaceVariant
+            },
+            textAlign = TextAlign.Center,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }

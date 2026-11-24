@@ -43,6 +43,14 @@ enum class BrowserOverlay {
     SYNCED_TABS
 }
 
+enum class SettingsCategory(val title: String) {
+    APPEARANCE("Appearance & Theme"),
+    FOLDABLE_LAYOUT("Foldable & Layout"),
+    ADBLOCK_SCRIPTS("Ad Blocking & Scripts"),
+    SEARCH_GESTURES("Search & Gestures"),
+    PRIVACY_MEDIA("Privacy, Links & Media")
+}
+
 data class BrowserTabUi(
     val id: String,
     val spaceId: String,
@@ -98,6 +106,7 @@ data class BrowserUiState(
     val omniboxSuggestions: List<OmniboxSuggestion> = emptyList(),
     val isSiteRulesOpen: Boolean = false,
     val activeOverlay: BrowserOverlay = BrowserOverlay.NONE,
+    val activeSettingsCategory: SettingsCategory? = null,
     val overlayBackStack: List<BrowserOverlay> = emptyList(),
     val findInPage: FindInPageState = FindInPageState(),
     val bookmarks: List<BookmarkEntity> = emptyList(),
@@ -124,6 +133,7 @@ data class BrowserUiState(
     val snackbarMessage: String? = null,
     val snackbarId: Long = 0L,
     val recentlyClosedTab: BrowserTabUi? = null,
+    val recentlyResetSiteOverride: SiteOverrideEntity? = null,
     val syncStatus: SyncStatusSnapshot = SyncStatusSnapshot(),
     val syncedRemoteTabs: List<SyncedRemoteTabEntity> = emptyList(),
     val zenPinnedItems: List<ZenPinnedItemEntity> = emptyList(),

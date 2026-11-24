@@ -208,8 +208,8 @@ object ScriptInjector {
         amoled: Boolean,
         mode: PrepaintDarkMode = PrepaintDarkMode.DARK_READER
     ): String {
-        val bg = if (amoled) "#000000" else "#18161b"
-        val fg = if (amoled) "#f3eef7" else "#ece7f0"
+        val bg = if (amoled) "#000000" else "#181818"
+        val fg = if (amoled) "#ffffff" else "#e8e8e8"
         return when (mode) {
             PrepaintDarkMode.NONE -> ""
             PrepaintDarkMode.ALGORITHMIC_LITE ->

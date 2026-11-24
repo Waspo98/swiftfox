@@ -20,6 +20,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
 
 class DarkReaderConfigTest {
 
@@ -193,6 +194,8 @@ class DarkReaderConfigTest {
         )
         assertTrue(darkReaderGlobal.contains("swiftfox-prepaint-dark"))
         assertTrue(darkReaderGlobal.contains("#000000!important"))
+        assertTrue(darkReaderGlobal.contains("color:#ffffff!important"))
+        assertFalse(darkReaderGlobal.contains("#f3eef7"))
         assertTrue(darkReaderGlobal.contains("color-scheme:dark!important"))
         assertTrue(darkReaderGlobal.contains("\"example.com\""))
         assertTrue(darkReaderGlobal.contains("\"light.org\""))
@@ -208,7 +211,9 @@ class DarkReaderConfigTest {
                 includedHosts = setOf("www.news.ycombinator.com")
             )
         )
-        assertTrue(allowlistOnly.contains("#18161b!important"))
+        assertTrue(allowlistOnly.contains("#181818!important"))
+        assertTrue(allowlistOnly.contains("color:#e8e8e8!important"))
+        assertFalse(allowlistOnly.contains("#ece7f0"))
         assertTrue(allowlistOnly.contains("\"news.ycombinator.com\""))
         assertTrue(allowlistOnly.contains("list.indexOf(host) === -1"))
 
@@ -219,9 +224,37 @@ class DarkReaderConfigTest {
                 globalEnabled = true
             )
         )
-        assertTrue(liteGlobal.contains("html{background-color:#18161b;color-scheme:dark;}"))
+        assertTrue(liteGlobal.contains("html{background-color:#181818;color-scheme:dark;}"))
         assertFalse(liteGlobal.contains("!important"))
         assertTrue(liteGlobal.contains("DOMContentLoaded"))
+    }
+
+    @Test
+    fun darkReaderBridgeUsesNeutralColorPolesAndAmoledOverride() {
+        val bridgeFile = listOf(
+            File("src/main/assets/js/darkreader_bridge.js"),
+            File("app/src/main/assets/js/darkreader_bridge.js")
+        ).first { it.exists() }
+        val js = bridgeFile.readText(Charsets.UTF_8)
+
+        // Neutral zero-saturation poles prevent Dark Reader from tinting neutral gray text violet
+        assertTrue(js.contains("darkSchemeBackgroundColor: config.amoled ? '#000000' : '#181818'"))
+        assertTrue(js.contains("darkSchemeTextColor: config.amoled ? '#ffffff' : '#e8e8e8'"))
+        assertFalse(js.contains("#f3eef7"))
+        assertFalse(js.contains("#ece7f0"))
+
+        // AMOLED mode overrides native dark sites instead of leaving dark-gray pages untouched
+        assertTrue(js.contains("config.skipNativeDark && !config.forceOverride && !config.amoled"))
+
+        // AMOLED CSS-variable floor snaps near-black neutral surfaces to #000000 and primary text to #ffffff
+        assertTrue(js.contains("darkreader--variables"))
+        assertTrue(js.contains("--darkreader-background-"))
+        assertTrue(js.contains("--darkreader-text-"))
+        assertTrue(js.contains("normalizeAmoledVarValue"))
+
+        // Deferred DOMContentLoaded & mutation recheck catches JS-toggled native dark themes in standard dark mode
+        assertTrue(js.contains("attachNativeDarkMutationObserver"))
+        assertTrue(js.contains("setTimeout"))
     }
 
     @Test

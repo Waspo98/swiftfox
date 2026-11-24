@@ -242,14 +242,19 @@ internal fun LazyListScope.appearanceSettingsItems(
                         Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
                             SettingsSwitchRow(
                                 title = "Pure black pages (AMOLED)",
-                                subtitle = "Render true black webpage backgrounds while keeping images natural",
+                                subtitle = "Force true black (#000000) backgrounds and crisp white text, including native dark sites",
                                 checked = settings.darkReaderAmoled,
                                 onCheckedChange = { viewModel.setDarkReaderAmoled(it) }
                             )
                             SettingsSwitchRow(
                                 title = "Keep native dark sites",
-                                subtitle = "Leave websites that already support dark mode untouched",
+                                subtitle = if (settings.darkReaderAmoled) {
+                                    "Overridden while Pure black pages (AMOLED) is active"
+                                } else {
+                                    "Leave websites that already support dark mode untouched"
+                                },
                                 checked = settings.darkReaderSkipNativeDark,
+                                enabled = !settings.darkReaderAmoled,
                                 onCheckedChange = { viewModel.setDarkReaderSkipNativeDark(it) }
                             )
 
@@ -838,10 +843,20 @@ private fun DarkReaderPreviewCard(
     val bgColor = if (amoled) {
         Color.Black
     } else {
-        applyDarkReaderFilter(Color(0xFF181A1B), brightness, contrast, sepia)
+        applyDarkReaderFilter(Color(0xFF181818), brightness, contrast, sepia)
     }
-    val headingColor = applyDarkReaderFilter(Color(0xFFEAE6E1), brightness, contrast, sepia)
-    val bodyColor = applyDarkReaderFilter(Color(0xFFB7B1A8), brightness, contrast, sepia)
+    val headingColor = applyDarkReaderFilter(
+        if (amoled) Color.White else Color(0xFFE8E8E8),
+        brightness,
+        contrast,
+        sepia
+    )
+    val bodyColor = applyDarkReaderFilter(
+        if (amoled) Color.White else Color(0xFFC8C8C8),
+        brightness,
+        contrast,
+        sepia
+    )
     val linkColor = applyDarkReaderFilter(MaterialTheme.colorScheme.primary, brightness, contrast, sepia)
 
     Surface(

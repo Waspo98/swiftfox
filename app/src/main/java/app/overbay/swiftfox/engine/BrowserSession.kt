@@ -590,7 +590,7 @@ class BrowserSession(
         val bgColor = when {
             !isChromeDark -> Color.WHITE
             isAmoled -> Color.BLACK
-            else -> 0xFF18161B.toInt()
+            else -> 0xFF181818.toInt()
         }
         if (lastSurfaceBgColor == bgColor) return
         lastSurfaceBgColor = bgColor

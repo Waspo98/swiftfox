@@ -316,12 +316,13 @@ fun BrowserScreen(
 
     fun animateCollapseTo(target: Float, instant: Boolean = false) {
         collapseBridge.snapJob?.cancel()
+        collapseBridge.cancelFlingWork()
         val clampedTarget = target.coerceIn(0f, 1f)
         if (instant || currentReduceMotion) {
             collapseBridge.applyProgress(clampedTarget, expandedViewport = clampedTarget > 0.001f)
             return
         }
-        val start = collapseBridge.controller.collapseProgress
+        val start = collapseBridge.renderedProgress
         if (kotlin.math.abs(start - clampedTarget) < 0.002f) {
             collapseBridge.applyProgress(clampedTarget, expandedViewport = clampedTarget > 0.001f)
             return
@@ -343,12 +344,14 @@ fun BrowserScreen(
     LaunchedEffect(forceExpandToolbars, activeTab?.id, effectivePlacement, posture) {
         if (forceExpandToolbars) {
             animateCollapseTo(0f, instant = true)
-        } else if (collapseBridge.controller.collapseProgress > 0f) {
+        } else if (collapseBridge.renderedProgress > 0f || collapseBridge.controller.collapseProgress > 0f) {
             animateCollapseTo(0f, instant = false)
         }
     }
     LaunchedEffect(activeTab?.id, activeTab?.isLoading) {
-        if (activeTab?.isLoading == true && collapseBridge.controller.collapseProgress > 0f) {
+        if (activeTab?.isLoading == true &&
+            (collapseBridge.renderedProgress > 0f || collapseBridge.controller.collapseProgress > 0f)
+        ) {
             animateCollapseTo(0f, instant = false)
         }
     }
@@ -521,10 +524,7 @@ fun BrowserScreen(
                             update = { swipeLayout ->
                                 if (session.isDestroyed) {
                                     val container = findWebViewContainer(swipeLayout)
-                                    if (collapseBridge.activeWebContainer === container) {
-                                        collapseBridge.activeWebContainer = null
-                                        collapseBridge.activeSwipeLayout = null
-                                    }
+                                    collapseBridge.detachContainer(container)
                                     container?.clearGestureCallbacks()
                                     (container?.getChildAt(0) as? SwiftfoxWebView)?.apply {
                                         onScrollMetricsChanged = null
@@ -572,9 +572,8 @@ fun BrowserScreen(
                                 }
                                 val isActiveTab = !isExiting && tab.id == currentActiveTabId
                                 if (isActiveTab) {
-                                    collapseBridge.activeWebContainer = webContainer
-                                    collapseBridge.activeSwipeLayout = swipeLayout
-                                    val progress = collapseBridge.controller.collapseProgress
+                                    collapseBridge.attachActiveContainer(webContainer, swipeLayout)
+                                    val progress = collapseBridge.renderedProgress
                                     webContainer.updateChromeMetrics(
                                         topBarHeightPx = collapseBridge.topBarHeightPx,
                                         bottomBarHeightPx = collapseBridge.bottomBarHeightPx,
@@ -589,6 +588,7 @@ fun BrowserScreen(
                                     webContainer.onGestureStart = {
                                         collapseBridge.isUserDragging = true
                                         collapseBridge.snapJob?.cancel()
+                                        collapseBridge.cancelFlingWork()
                                     }
                                     webContainer.onGestureDragDelta = { rawDeltaY, wv ->
                                         val consumed = collapseBridge.controller.onDragDelta(
@@ -601,11 +601,8 @@ fun BrowserScreen(
                                             forceExpanded = currentForceExpandToolbars
                                         )
                                         val next = collapseBridge.controller.collapseProgress
-                                        collapseBridge.progressState.floatValue = next
-                                        webContainer.updateChromeMetrics(
-                                            topBarHeightPx = collapseBridge.topBarHeightPx,
-                                            bottomBarHeightPx = collapseBridge.bottomBarHeightPx,
-                                            collapseProgress = next,
+                                        collapseBridge.applyProgress(
+                                            progress = next,
                                             expandedViewport = webContainer.isViewportExpanded || next > 0.001f
                                         )
                                         consumed
@@ -620,46 +617,39 @@ fun BrowserScreen(
                                             scrollExtent = wv.verticalScrollExtentPx,
                                             minScrollableOverflowPx = collapseBridge.minScrollableOverflowPx(),
                                             enabled = currentHideToolbarsOnScroll,
-                                            forceExpanded = currentForceExpandToolbars
+                                            forceExpanded = currentForceExpandToolbars,
+                                            webViewTranslatesWithTopBar = collapseBridge.hasTopBar
                                         )
                                         animateCollapseTo(target)
                                         if (handoffFling) {
-                                            wv.flingScroll(0, (-velocityY).roundToInt())
-                                        }
-                                    }
-                                    targetWebView.onScrollMetricsChanged = { scrollY, deltaY, scrollRange, scrollExtent ->
-                                        if (!collapseBridge.isUserDragging && collapseBridge.snapJob?.isActive != true) {
-                                            val snapTarget = collapseBridge.controller.onFlingScroll(
-                                                scrollY = scrollY,
-                                                deltaY = deltaY,
-                                                travelDistancePx = collapseBridge.effectiveTravelDistancePx(),
-                                                scrollRange = scrollRange,
-                                                scrollExtent = scrollExtent,
-                                                minScrollableOverflowPx = collapseBridge.minScrollableOverflowPx(),
-                                                enabled = currentHideToolbarsOnScroll,
-                                                forceExpanded = currentForceExpandToolbars
-                                            )
-                                            if (snapTarget != null) {
-                                                animateCollapseTo(snapTarget)
+                                            val flingVy = (-velocityY).roundToInt()
+                                            val canScrollInFlingDirection = if (flingVy > 0) {
+                                                wv.canScrollVertically(1)
                                             } else {
-                                                val next = collapseBridge.controller.collapseProgress
-                                                if (collapseBridge.progressState.floatValue != next) {
-                                                    collapseBridge.progressState.floatValue = next
-                                                    webContainer.updateChromeMetrics(
-                                                        topBarHeightPx = collapseBridge.topBarHeightPx,
-                                                        bottomBarHeightPx = collapseBridge.bottomBarHeightPx,
-                                                        collapseProgress = next,
-                                                        expandedViewport = next > 0.001f
-                                                    )
-                                                }
+                                                wv.scrollY > 0 && wv.canScrollVertically(-1)
+                                            }
+                                            if (canScrollInFlingDirection) {
+                                                wv.flingScroll(0, flingVy)
                                             }
                                         }
                                     }
-                                } else {
-                                    if (collapseBridge.activeWebContainer === webContainer) {
-                                        collapseBridge.activeWebContainer = null
-                                        collapseBridge.activeSwipeLayout = null
+                                    targetWebView.onScrollMetricsChanged = { scrollY, deltaY, scrollRange, scrollExtent ->
+                                        collapseBridge.onFlingScrollMetrics(
+                                            host = webContainer,
+                                            scrollY = scrollY,
+                                            deltaY = deltaY,
+                                            scrollRange = scrollRange,
+                                            scrollExtent = scrollExtent,
+                                            enabled = currentHideToolbarsOnScroll,
+                                            forceExpanded = currentForceExpandToolbars,
+                                            isEnabledProvider = { currentHideToolbarsOnScroll },
+                                            isForceExpandedProvider = { currentForceExpandToolbars },
+                                            coroutineScope = collapseScope,
+                                            onAnimateCollapseTo = { target -> animateCollapseTo(target) }
+                                        )
                                     }
+                                } else {
+                                    collapseBridge.detachContainer(webContainer)
                                     webContainer.clearGestureCallbacks()
                                     targetWebView.onScrollMetricsChanged = null
                                     // Keep exiting tab aligned at its current top bar offset during slide-out
@@ -673,10 +663,7 @@ fun BrowserScreen(
                             },
                             onRelease = { swipeLayout ->
                                 val webContainer = findWebViewContainer(swipeLayout)
-                                if (collapseBridge.activeWebContainer === webContainer) {
-                                    collapseBridge.activeWebContainer = null
-                                    collapseBridge.activeSwipeLayout = null
-                                }
+                                collapseBridge.detachContainer(webContainer)
                                 webContainer?.clearGestureCallbacks()
                                 (webContainer?.getChildAt(0) as? SwiftfoxWebView)?.apply {
                                     onScrollMetricsChanged = null

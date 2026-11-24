@@ -16,6 +16,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -25,8 +26,11 @@ import androidx.compose.ui.layout.layoutId
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import app.overbay.swiftfox.engine.SwiftfoxWebView
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 import kotlin.math.abs
 
 internal class ChromeBarHeights {
@@ -115,7 +119,7 @@ internal fun BrowserChromeViewportLayout(
             if (topBarH > 0) {
                 topBarPlaceable.placeRelativeWithLayer(0, viewportTop) {
                     val p = collapseProgressProvider().coerceIn(0f, 1f)
-                    translationY = -topBarH * p
+                    translationY = topBarH * (1f - p) - topBarH
                 }
             }
             if (statusH > 0) {
@@ -161,6 +165,11 @@ internal fun ExitingTabThumbnailFallback(
     }
 }
 
+internal interface FrameCallbackScheduler {
+    fun postOnNextFrame(action: Runnable)
+    fun cancelFrameCallback(action: Runnable)
+}
+
 internal class ToolbarCollapseBridge(
     val controller: ToolbarScrollCollapseController,
     val sideRailTravelPx: Float,
@@ -171,6 +180,12 @@ internal class ToolbarCollapseBridge(
     val progressState = mutableFloatStateOf(0f)
     val chromeHeights = ChromeBarHeights()
 
+    val renderedProgress: Float
+        get() = progressState.floatValue
+
+    val hasTopBar: Boolean
+        get() = topBarHeightPx > 0
+
     var topBarHeightPx: Int = 0
     var bottomBarHeightPx: Int = 0
     var activeWebContainer: WebViewContainer? = null
@@ -178,11 +193,167 @@ internal class ToolbarCollapseBridge(
     var isUserDragging: Boolean = false
     var snapJob: Job? = null
 
-    fun effectiveTravelDistancePx(): Float =
-        maxOf(topBarHeightPx, bottomBarHeightPx).toFloat().takeIf { it > 0f } ?: sideRailTravelPx
+    private var flingSettleJob: Job? = null
+    private var pendingFlingProgress: Float? = null
+    private var pendingFlingRunnable: Runnable? = null
+    private var pendingFlingHost: FrameCallbackScheduler? = null
+    private var pendingFlingIsSnap: Boolean = false
+
+    fun effectiveTravelDistancePx(): Float = when {
+        topBarHeightPx > 0 -> topBarHeightPx.toFloat()
+        bottomBarHeightPx > 0 -> bottomBarHeightPx.toFloat()
+        else -> sideRailTravelPx
+    }
 
     fun minScrollableOverflowPx(): Int =
         (topBarHeightPx + bottomBarHeightPx + minExtraOverflowPx).coerceAtLeast(minScrollableFloorPx)
+
+    fun attachActiveContainer(
+        webContainer: WebViewContainer,
+        swipeLayout: SwipeRefreshLayout
+    ) {
+        if (activeWebContainer !== webContainer) {
+            cancelFlingWork()
+        }
+        activeWebContainer = webContainer
+        activeSwipeLayout = swipeLayout
+    }
+
+    fun detachContainer(webContainer: WebViewContainer?) {
+        if (webContainer == null) return
+        if (pendingFlingHost === webContainer) {
+            cancelFlingWork()
+        }
+        if (activeWebContainer === webContainer) {
+            cancelFlingWork()
+            activeWebContainer = null
+            activeSwipeLayout = null
+        }
+    }
+
+    fun cancelFlingWork() {
+        flingSettleJob?.cancel()
+        flingSettleJob = null
+        val runnable = pendingFlingRunnable
+        val host = pendingFlingHost
+        pendingFlingRunnable = null
+        pendingFlingHost = null
+        pendingFlingIsSnap = false
+        if (runnable != null) {
+            host?.cancelFrameCallback(runnable)
+        }
+        if (pendingFlingProgress != null) {
+            pendingFlingProgress = null
+            controller.setProgress(progressState.floatValue)
+        }
+    }
+
+    fun onFlingScrollMetrics(
+        host: FrameCallbackScheduler,
+        scrollY: Int,
+        deltaY: Int,
+        scrollRange: Int,
+        scrollExtent: Int,
+        enabled: Boolean,
+        forceExpanded: Boolean,
+        isEnabledProvider: () -> Boolean,
+        isForceExpandedProvider: () -> Boolean,
+        coroutineScope: CoroutineScope,
+        onAnimateCollapseTo: (Float) -> Unit,
+        isHostActive: () -> Boolean = { activeWebContainer === host },
+        settleDelayMs: Long = 120L
+    ) {
+        if (isUserDragging || snapJob?.isActive == true) return
+        val snapTarget = controller.onFlingScroll(
+            scrollY = scrollY,
+            deltaY = deltaY,
+            travelDistancePx = effectiveTravelDistancePx(),
+            scrollRange = scrollRange,
+            scrollExtent = scrollExtent,
+            minScrollableOverflowPx = minScrollableOverflowPx(),
+            enabled = enabled,
+            forceExpanded = forceExpanded
+        )
+        if (snapTarget != null) {
+            cancelFlingWork()
+            // Defer off computeScroll()/draw so Compose and WebView animate in lockstep.
+            lateinit var runnable: Runnable
+            runnable = Runnable {
+                if (pendingFlingRunnable !== runnable) return@Runnable
+                pendingFlingRunnable = null
+                pendingFlingHost = null
+                pendingFlingIsSnap = false
+                if (isHostActive() && !isUserDragging && snapJob?.isActive != true) {
+                    onAnimateCollapseTo(snapTarget)
+                }
+            }
+            pendingFlingRunnable = runnable
+            pendingFlingHost = host
+            pendingFlingIsSnap = true
+            host.postOnNextFrame(runnable)
+            return
+        }
+
+        val next = controller.collapseProgress
+        if (progressState.floatValue == next && pendingFlingProgress == null) return
+
+        // If a snap runnable was queued earlier on this same frame, cancel it before scheduling
+        // a progress runnable so the two runnable types never collide in one slot.
+        if (pendingFlingIsSnap) {
+            val prevRunnable = pendingFlingRunnable
+            val prevHost = pendingFlingHost
+            pendingFlingRunnable = null
+            pendingFlingHost = null
+            pendingFlingIsSnap = false
+            if (prevRunnable != null) {
+                prevHost?.cancelFrameCallback(prevRunnable)
+            }
+        }
+
+        pendingFlingProgress = next
+        if (pendingFlingRunnable == null) {
+            lateinit var runnable: Runnable
+            runnable = Runnable {
+                if (pendingFlingRunnable !== runnable) return@Runnable
+                pendingFlingRunnable = null
+                pendingFlingHost = null
+                pendingFlingIsSnap = false
+                val pending = pendingFlingProgress ?: return@Runnable
+                pendingFlingProgress = null
+                if (!isHostActive() || isUserDragging || snapJob?.isActive == true) {
+                    controller.setProgress(progressState.floatValue)
+                    return@Runnable
+                }
+                applyProgress(
+                    progress = pending,
+                    expandedViewport = pending > 0.001f
+                )
+            }
+            pendingFlingRunnable = runnable
+            pendingFlingHost = host
+            pendingFlingIsSnap = false
+            host.postOnNextFrame(runnable)
+        }
+
+        flingSettleJob?.cancel()
+        flingSettleJob = null
+        if (next > 0.001f && next < 0.999f) {
+            flingSettleJob = coroutineScope.launch {
+                delay(settleDelayMs)
+                flingSettleJob = null
+                if (isHostActive() && !isUserDragging && snapJob?.isActive != true) {
+                    val current = controller.collapseProgress
+                    if (current > 0.001f && current < 0.999f) {
+                        val settledTarget = controller.resolveSettledSnapTarget(
+                            enabled = isEnabledProvider(),
+                            forceExpanded = isForceExpandedProvider()
+                        )
+                        onAnimateCollapseTo(settledTarget)
+                    }
+                }
+            }
+        }
+    }
 
     fun onChromeHeightsMeasured(topPx: Int, bottomPx: Int) {
         val changed = topBarHeightPx != topPx || bottomBarHeightPx != bottomPx
@@ -193,7 +364,7 @@ internal class ToolbarCollapseBridge(
             val container = activeWebContainer
             val swipe = activeSwipeLayout
             val applyViewMetrics = {
-                val progress = controller.collapseProgress
+                val progress = renderedProgress
                 container?.updateChromeMetrics(
                     topBarHeightPx = topBarHeightPx,
                     bottomBarHeightPx = bottomBarHeightPx,
@@ -219,6 +390,7 @@ internal class ToolbarCollapseBridge(
     fun applyProgress(progress: Float, expandedViewport: Boolean) {
         val clamped = progress.coerceIn(0f, 1f)
         controller.setProgress(clamped)
+        val changed = progressState.floatValue != clamped
         progressState.floatValue = clamped
         activeWebContainer?.updateChromeMetrics(
             topBarHeightPx = topBarHeightPx,
@@ -226,6 +398,11 @@ internal class ToolbarCollapseBridge(
             collapseProgress = clamped,
             expandedViewport = expandedViewport
         )
+        if (changed) {
+            // Flush Compose layer observers synchronously so topBar/bottomBar RenderNodes update
+            // on the exact same VSync frame as WebView.translationY (preventing 1-frame overlap).
+            Snapshot.sendApplyNotifications()
+        }
     }
 }
 
@@ -255,6 +432,7 @@ internal class VerticalDragGestureState(private val touchSlop: Int) {
 
     private var downRawX: Float = 0f
     private var downRawY: Float = 0f
+    private var prevRawY: Float = 0f
     private var lastRawY: Float = 0f
 
     sealed class MoveResult {
@@ -266,6 +444,7 @@ internal class VerticalDragGestureState(private val touchSlop: Int) {
     fun onDown(rawX: Float, rawY: Float) {
         downRawX = rawX
         downRawY = rawY
+        prevRawY = rawY
         lastRawY = rawY
         axis = GestureAxis.UNDECIDED
         lastMoveShiftedWebView = false
@@ -290,17 +469,24 @@ internal class VerticalDragGestureState(private val touchSlop: Int) {
             // Cross past Android touchSlop so Chromium already exited tap/long-press detection
             if (absDy > touchSlop + 2 && absDy > absDx) {
                 axis = GestureAxis.VERTICAL
-                lastRawY = downRawY + if (totalDy < 0f) -touchSlop.toFloat() else touchSlop.toFloat()
+                lastRawY = if (totalDy < 0f) {
+                    minOf(downRawY - touchSlop.toFloat(), prevRawY)
+                } else {
+                    maxOf(downRawY + touchSlop.toFloat(), prevRawY)
+                }
             } else if (absDx > touchSlop && absDx >= absDy) {
                 axis = GestureAxis.IGNORED
                 trackingActive = false
                 lastMoveShiftedWebView = false
                 return MoveResult.LockedHorizontalCancel
+            } else {
+                prevRawY = rawY
             }
         }
         if (axis == GestureAxis.VERTICAL) {
             val rawDy = lastRawY - rawY // > 0 when dragging finger up (scrolling down)
             lastRawY = rawY
+            prevRawY = rawY
             return if (rawDy != 0f) MoveResult.VerticalDelta(rawDy) else MoveResult.Ignored
         }
         return MoveResult.Ignored
@@ -325,9 +511,17 @@ internal class VerticalDragGestureState(private val touchSlop: Int) {
     }
 }
 
-internal class WebViewContainer(context: Context) : FrameLayout(context) {
+internal class WebViewContainer(context: Context) : FrameLayout(context), FrameCallbackScheduler {
     var lastPrimaryArgb: Int? = null
     var lastSurfaceArgb: Int? = null
+
+    override fun postOnNextFrame(action: Runnable) {
+        postOnAnimation(action)
+    }
+
+    override fun cancelFrameCallback(action: Runnable) {
+        removeCallbacks(action)
+    }
 
     private var topBarHeightPx: Int = 0
     private var bottomBarHeightPx: Int = 0

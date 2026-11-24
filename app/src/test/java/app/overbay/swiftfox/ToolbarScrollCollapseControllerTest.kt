@@ -1,16 +1,44 @@
 package app.overbay.swiftfox
 
+import androidx.compose.runtime.snapshots.Snapshot
 import app.overbay.swiftfox.data.prefs.BrowserSettings
+import app.overbay.swiftfox.ui.browser.FrameCallbackScheduler
 import app.overbay.swiftfox.ui.browser.GestureAxis
+import app.overbay.swiftfox.ui.browser.ToolbarCollapseBridge
 import app.overbay.swiftfox.ui.browser.ToolbarScrollCollapseController
 import app.overbay.swiftfox.ui.browser.VerticalDragGestureState
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class ToolbarScrollCollapseControllerTest {
+
+    private class FakeFrameScheduler : FrameCallbackScheduler {
+        val posted = mutableListOf<Runnable>()
+        val cancelled = mutableListOf<Runnable>()
+
+        override fun postOnNextFrame(action: Runnable) {
+            posted += action
+        }
+
+        override fun cancelFrameCallback(action: Runnable) {
+            cancelled += action
+            posted.remove(action)
+        }
+
+        fun runPendingFrames() {
+            val batch = posted.toList()
+            posted.clear()
+            batch.forEach { it.run() }
+        }
+    }
 
     @Test
     fun hideToolbarsOnScrollDefaultsToEnabled() {
@@ -127,12 +155,32 @@ class ToolbarScrollCollapseControllerTest {
                 scrollExtent = 1000,
                 minScrollableOverflowPx = 400,
                 enabled = true,
-                forceExpanded = false
+                forceExpanded = false,
+                webViewTranslatesWithTopBar = false
             ),
             0.001f
         )
 
-        // Low-velocity release above midpoint right at top of page -> snaps expanded
+        // Top/split mode: low-velocity release above midpoint right at top of page (scrollY stayed ~0
+        // due to 1:1 top-bar WebView translation) -> finishes collapsing to 1f instead of springing open
+        assertEquals(
+            1f,
+            controller.resolveSnapTarget(
+                velocityY = 0f,
+                minFlingVelocityPxPerSec = 150f,
+                scrollY = 10,
+                scrollRange = 3000,
+                scrollExtent = 1000,
+                minScrollableOverflowPx = 400,
+                enabled = true,
+                forceExpanded = false,
+                webViewTranslatesWithTopBar = true
+            ),
+            0.001f
+        )
+
+        // Bottom-only / side-rail mode: WebView scrolls directly without top-bar translation, so
+        // releasing right at the top of the page (scrollY <= threshold) reveals the bar to 0f
         assertEquals(
             0f,
             controller.resolveSnapTarget(
@@ -143,7 +191,8 @@ class ToolbarScrollCollapseControllerTest {
                 scrollExtent = 1000,
                 minScrollableOverflowPx = 400,
                 enabled = true,
-                forceExpanded = false
+                forceExpanded = false,
+                webViewTranslatesWithTopBar = false
             ),
             0.001f
         )
@@ -288,5 +337,291 @@ class ToolbarScrollCollapseControllerTest {
         val up = gesture.onUpOrCancel(isCancel = false)
         assertTrue(up.shouldFinish)
         assertFalse(up.cancelled)
+    }
+
+    @Test
+    fun splitModeUsesTopBarHeightAsTravelDistanceForOneToOneWebViewTracking() {
+        val bridge = ToolbarCollapseBridge(
+            controller = ToolbarScrollCollapseController(topRevealThresholdPx = 20),
+            sideRailTravelPx = 150f,
+            minExtraOverflowPx = 120,
+            minScrollableFloorPx = 400,
+            refreshSpinnerDropPx = 160
+        )
+
+        // Split mode: bottomBar (with nav bar inset) is taller than topBar; travel must lock 1:1 to topBar
+        bridge.topBarHeightPx = 175
+        bridge.bottomBarHeightPx = 245
+        assertEquals(175f, bridge.effectiveTravelDistancePx(), 0.001f)
+
+        // Bottom-only mode: no top bar -> tracks bottomBar 1:1
+        bridge.topBarHeightPx = 0
+        bridge.bottomBarHeightPx = 245
+        assertEquals(245f, bridge.effectiveTravelDistancePx(), 0.001f)
+
+        // Side-rail mode: neither top nor bottom bar -> falls back to sideRailTravelPx
+        bridge.topBarHeightPx = 0
+        bridge.bottomBarHeightPx = 0
+        assertEquals(150f, bridge.effectiveTravelDistancePx(), 0.001f)
+    }
+
+    @Test
+    fun applyProgressFlushesComposeSnapshotNotificationsSynchronously() {
+        val bridge = ToolbarCollapseBridge(
+            controller = ToolbarScrollCollapseController(topRevealThresholdPx = 20),
+            sideRailTravelPx = 150f,
+            minExtraOverflowPx = 120,
+            minScrollableFloorPx = 400,
+            refreshSpinnerDropPx = 160
+        )
+        // Flush any unrelated prior global writes before registering our observer
+        Snapshot.sendApplyNotifications()
+        var progressStateNotified = false
+        val handle = Snapshot.registerApplyObserver { changed, _ ->
+            if (bridge.progressState in changed) {
+                progressStateNotified = true
+            }
+        }
+        try {
+            bridge.applyProgress(0.65f, expandedViewport = true)
+            assertTrue(
+                "Expected applyProgress to flush Compose snapshot notifications synchronously so topBar/bottomBar stay on the exact same VSync frame as WebView.translationY",
+                progressStateNotified
+            )
+        } finally {
+            handle.dispose()
+        }
+    }
+
+    @Test
+    fun downwardFlingNearTopDoesNotSpringToolbarsBackOpen() {
+        val controller = ToolbarScrollCollapseController(topRevealThresholdPx = 20)
+        controller.setProgress(1f)
+
+        // Downward scroll (deltaY > 0) while scrollY is still within topRevealThresholdPx must stay collapsed
+        val snapOnDownScroll = controller.onFlingScroll(
+            scrollY = 12,
+            deltaY = 8,
+            travelDistancePx = 175f,
+            scrollRange = 3000,
+            scrollExtent = 1000,
+            minScrollableOverflowPx = 400,
+            enabled = true,
+            forceExpanded = false
+        )
+        assertNull(snapOnDownScroll)
+        assertEquals(1f, controller.collapseProgress, 0.001f)
+
+        // Upward fling back to top (deltaY < 0, scrollY <= threshold) still reveals toolbars to 0f
+        val snapOnUpScrollToTop = controller.onFlingScroll(
+            scrollY = 12,
+            deltaY = -12,
+            travelDistancePx = 175f,
+            scrollRange = 3000,
+            scrollExtent = 1000,
+            minScrollableOverflowPx = 400,
+            enabled = true,
+            forceExpanded = false
+        )
+        assertEquals(0f, snapOnUpScrollToTop)
+
+        // Settling a mid-collapse fling snaps cleanly to 0f or 1f around midpoint
+        controller.setProgress(0.40f)
+        assertEquals(0f, controller.resolveSettledSnapTarget(enabled = true, forceExpanded = false), 0.001f)
+        controller.setProgress(0.50f)
+        assertEquals(1f, controller.resolveSettledSnapTarget(enabled = true, forceExpanded = false), 0.001f)
+        assertEquals(0f, controller.resolveSettledSnapTarget(enabled = true, forceExpanded = true), 0.001f)
+    }
+
+    @Test
+    fun verticalLockDoesNotReversePastPreviousUndecidedMove() {
+        val gesture = VerticalDragGestureState(touchSlop = 16)
+        gesture.onDown(rawX = 200f, rawY = 500f)
+
+        // Intermediate move lands at dy = -17 (past touchSlop=16, but <= touchSlop+2=18 so still UNDECIDED)
+        assertEquals(VerticalDragGestureState.MoveResult.Ignored, gesture.onMove(rawX = 200f, rawY = 483f))
+
+        // Next move advances 2px further to 481 (dy = -19 -> locks VERTICAL).
+        // Delta must be 2px (from 483 -> 481), never 3px (484 -> 481) which would shift WebView backwards by 1px.
+        val move = gesture.onMove(rawX = 200f, rawY = 481f)
+        assertTrue(move is VerticalDragGestureState.MoveResult.VerticalDelta)
+        assertEquals(2f, (move as VerticalDragGestureState.MoveResult.VerticalDelta).rawDy, 0.001f)
+    }
+
+    @Test
+    fun cancelFlingWorkResyncsControllerToRenderedProgressAndCancelsExactHost() = runTest {
+        val bridge = ToolbarCollapseBridge(
+            controller = ToolbarScrollCollapseController(topRevealThresholdPx = 20),
+            sideRailTravelPx = 150f,
+            minExtraOverflowPx = 120,
+            minScrollableFloorPx = 400,
+            refreshSpinnerDropPx = 160
+        ).apply {
+            topBarHeightPx = 200
+            bottomBarHeightPx = 200
+        }
+        val hostA = FakeFrameScheduler()
+        val animatedTargets = mutableListOf<Float>()
+
+        // Queue a deferred fling progress update (0.0 -> 0.30) without running the next frame yet
+        bridge.onFlingScrollMetrics(
+            host = hostA,
+            scrollY = 100,
+            deltaY = 60,
+            scrollRange = 3000,
+            scrollExtent = 1000,
+            enabled = true,
+            forceExpanded = false,
+            isEnabledProvider = { true },
+            isForceExpandedProvider = { false },
+            coroutineScope = this,
+            onAnimateCollapseTo = { animatedTargets += it },
+            isHostActive = { true }
+        )
+        assertEquals(0.30f, bridge.controller.collapseProgress, 0.001f)
+        assertEquals(0f, bridge.renderedProgress, 0.001f)
+        assertEquals(1, hostA.posted.size)
+
+        // Cancelling fling work must remove the callback from hostA, cancel settle timer,
+        // and resync controller back to renderedProgress (0f) so animations never jump to 0.30f.
+        bridge.cancelFlingWork()
+        assertTrue(hostA.posted.isEmpty())
+        assertEquals(1, hostA.cancelled.size)
+        assertEquals(0f, bridge.controller.collapseProgress, 0.001f)
+
+        advanceTimeBy(200)
+        runCurrent()
+        assertTrue(animatedTargets.isEmpty())
+    }
+
+    @Test
+    fun staleHostRunnableCannotStealActiveHostFlingProgressOrTriggerStaleSnap() = runTest {
+        val bridge = ToolbarCollapseBridge(
+            controller = ToolbarScrollCollapseController(topRevealThresholdPx = 20),
+            sideRailTravelPx = 150f,
+            minExtraOverflowPx = 120,
+            minScrollableFloorPx = 400,
+            refreshSpinnerDropPx = 160
+        ).apply {
+            topBarHeightPx = 200
+            bottomBarHeightPx = 200
+        }
+        val hostA = FakeFrameScheduler()
+        val hostB = FakeFrameScheduler()
+        var activeHost: FrameCallbackScheduler = hostA
+        val animatedTargets = mutableListOf<Float>()
+
+        // Host A schedules a deferred fling progress update
+        bridge.onFlingScrollMetrics(
+            host = hostA,
+            scrollY = 100,
+            deltaY = 50,
+            scrollRange = 3000,
+            scrollExtent = 1000,
+            enabled = true,
+            forceExpanded = false,
+            isEnabledProvider = { true },
+            isForceExpandedProvider = { false },
+            coroutineScope = this,
+            onAnimateCollapseTo = { animatedTargets += it },
+            isHostActive = { activeHost === hostA }
+        )
+        val staleRunnableFromA = hostA.posted.single()
+
+        // Switch to host B, cancelling host A's work and queuing host B's fling progress (0.0 -> 0.40)
+        activeHost = hostB
+        bridge.cancelFlingWork()
+        bridge.onFlingScrollMetrics(
+            host = hostB,
+            scrollY = 200,
+            deltaY = 80,
+            scrollRange = 3000,
+            scrollExtent = 1000,
+            enabled = true,
+            forceExpanded = false,
+            isEnabledProvider = { true },
+            isForceExpandedProvider = { false },
+            coroutineScope = this,
+            onAnimateCollapseTo = { animatedTargets += it },
+            isHostActive = { activeHost === hostB }
+        )
+
+        // Even if host A's stale runnable still fires, it must be a complete no-op for host B
+        staleRunnableFromA.run()
+        assertEquals(0f, bridge.renderedProgress, 0.001f)
+        assertEquals(1, hostB.posted.size)
+
+        // Host B's runnable still applies its full 0.40f progress cleanly
+        hostB.runPendingFrames()
+        assertEquals(0.40f, bridge.renderedProgress, 0.001f)
+
+        // After settle delay, mid-collapse fling snaps cleanly to 0f (0.40 < 0.45 midpoint)
+        advanceTimeBy(125)
+        runCurrent()
+        assertEquals(listOf(0f), animatedTargets)
+    }
+
+    @Test
+    fun sameFrameSnapAndProgressCallbacksNeverCollideInSingleSlot() = runTest {
+        val bridge = ToolbarCollapseBridge(
+            controller = ToolbarScrollCollapseController(topRevealThresholdPx = 20),
+            sideRailTravelPx = 150f,
+            minExtraOverflowPx = 120,
+            minScrollableFloorPx = 400,
+            refreshSpinnerDropPx = 160
+        ).apply {
+            topBarHeightPx = 200
+            bottomBarHeightPx = 200
+        }
+        val host = FakeFrameScheduler()
+        val animatedTargets = mutableListOf<Float>()
+
+        // Start rendered at 0.50f
+        bridge.applyProgress(0.50f, expandedViewport = true)
+
+        // Event 1 on same frame: upward coast near top queues a snap-to-0f runnable
+        bridge.onFlingScrollMetrics(
+            host = host,
+            scrollY = 10,
+            deltaY = -20,
+            scrollRange = 3000,
+            scrollExtent = 1000,
+            enabled = true,
+            forceExpanded = false,
+            isEnabledProvider = { true },
+            isForceExpandedProvider = { false },
+            coroutineScope = this,
+            onAnimateCollapseTo = { animatedTargets += it },
+            isHostActive = { true }
+        )
+        assertEquals(1, host.posted.size)
+
+        // Event 2 on same frame: downward delta supersedes the snap runnable with progress 0.65f
+        bridge.onFlingScrollMetrics(
+            host = host,
+            scrollY = 40,
+            deltaY = 30,
+            scrollRange = 3000,
+            scrollExtent = 1000,
+            enabled = true,
+            forceExpanded = false,
+            isEnabledProvider = { true },
+            isForceExpandedProvider = { false },
+            coroutineScope = this,
+            onAnimateCollapseTo = { animatedTargets += it },
+            isHostActive = { true }
+        )
+        assertEquals(1, host.cancelled.size)
+        assertEquals(1, host.posted.size)
+
+        // Frame executes progress update (0.65f), NOT the cancelled snap-to-0f
+        host.runPendingFrames()
+        assertEquals(0.65f, bridge.renderedProgress, 0.001f)
+        assertTrue(animatedTargets.isEmpty())
+
+        // After settle delay, mid-collapse fling settles to 1f (0.65 >= 0.45 midpoint)
+        advanceTimeBy(125)
+        runCurrent()
+        assertEquals(listOf(1f), animatedTargets)
     }
 }

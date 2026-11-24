@@ -82,7 +82,7 @@ class ToolbarScrollCollapseController(
         }
 
         val safeScrollY = scrollY.coerceAtLeast(0)
-        if (safeScrollY <= topRevealThresholdPx) {
+        if (deltaY < 0 && safeScrollY <= topRevealThresholdPx) {
             return if (collapseProgress > 0f) 0f else null
         }
 
@@ -96,6 +96,12 @@ class ToolbarScrollCollapseController(
      * Resolves the settled snap target (`0f` = expanded, `1f` = hidden) when the user lifts
      * their finger (`velocityY < 0` for an upward flick / scrolling down; `> 0` for downward flick).
      * Short / `100vh` non-scrollable pages always resolve to `0f` so toolbars never hide off-screen.
+     *
+     * When [webViewTranslatesWithTopBar] is `true` (top or split toolbar), dragging up from the top
+     * of a page shifts `WebView.translationY` 1:1 while `scrollY` stays near `0`, so a low-velocity
+     * release past [snapMidpoint] finishes collapsing instead of springing back open. When `false`
+     * (bottom-only or side-rail placement), `WebView` scrolls directly to `scrollY == 0`, so
+     * releasing right at the top of the page reveals the toolbar cleanly.
      */
     fun resolveSnapTarget(
         velocityY: Float,
@@ -105,14 +111,29 @@ class ToolbarScrollCollapseController(
         scrollExtent: Int,
         minScrollableOverflowPx: Int,
         enabled: Boolean,
-        forceExpanded: Boolean
+        forceExpanded: Boolean,
+        webViewTranslatesWithTopBar: Boolean = true
     ): Float {
         if (!enabled || forceExpanded) return 0f
         val scrollableOverflow = (scrollRange - scrollExtent).coerceAtLeast(0)
         if (scrollableOverflow < minScrollableOverflowPx) return 0f
         if (velocityY <= -minFlingVelocityPxPerSec) return 1f
         if (velocityY >= minFlingVelocityPxPerSec) return 0f
-        if (scrollY.coerceAtLeast(0) <= topRevealThresholdPx) return 0f
+        if (!webViewTranslatesWithTopBar && scrollY.coerceAtLeast(0) <= topRevealThresholdPx) {
+            return 0f
+        }
+        return if (collapseProgress >= snapMidpoint) 1f else 0f
+    }
+
+    /**
+     * Resolves the settled snap target after a coasting momentum fling comes to rest while
+     * toolbars are partially collapsed.
+     */
+    fun resolveSettledSnapTarget(
+        enabled: Boolean,
+        forceExpanded: Boolean
+    ): Float {
+        if (!enabled || forceExpanded) return 0f
         return if (collapseProgress >= snapMidpoint) 1f else 0f
     }
 

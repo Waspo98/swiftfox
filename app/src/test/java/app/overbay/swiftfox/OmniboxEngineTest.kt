@@ -1,19 +1,25 @@
 package app.overbay.swiftfox
 
+import app.overbay.swiftfox.data.db.BookmarkEntity
 import app.overbay.swiftfox.data.db.EssentialEntity
 import app.overbay.swiftfox.data.db.HistoryEntity
 import app.overbay.swiftfox.data.db.SyncedRemoteTabEntity
 import app.overbay.swiftfox.data.prefs.BrowserSettings
 import app.overbay.swiftfox.data.prefs.SearchEngineId
 import app.overbay.swiftfox.features.omnibox.AutocompleteCandidate
+import app.overbay.swiftfox.features.omnibox.LiveSuggestionsResult
 import app.overbay.swiftfox.features.omnibox.OmniboxAutocompleteGate
 import app.overbay.swiftfox.features.omnibox.OmniboxCandidateBuilder
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
+import app.overbay.swiftfox.features.omnibox.OmniboxScopedSuggestions
+import app.overbay.swiftfox.features.omnibox.OmniboxSearchScope
 import app.overbay.swiftfox.features.omnibox.OmniboxSuggestion
 import app.overbay.swiftfox.features.omnibox.SuggestionKind
 import app.overbay.swiftfox.features.omnibox.TopDomainsRepository
+import app.overbay.swiftfox.features.sync.MozillaSyncCoordinator
 import app.overbay.swiftfox.ui.browser.BrowserTabUi
 import app.overbay.swiftfox.ui.browser.BrowserUiState
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -633,5 +639,236 @@ class OmniboxEngineTest {
         // Clearing resets suppression
         gate.onCleared()
         assertFalse(gate.isSuppressed)
+    }
+
+    @Test
+    fun oneTimeSearchScopeOverridesDefaultEngineAndForcesSearchOnDomains() {
+        val defaultGoogle = BrowserSettings(
+            searchEngine = SearchEngineId.GOOGLE,
+            customSearchUrlTemplate = "https://searx.example.org/search?q=%s"
+        )
+
+        // One-time DuckDuckGo scope searches DuckDuckGo without mutating default settings
+        val ddgScope = OmniboxSearchScope.Engine(SearchEngineId.DUCKDUCKGO)
+        assertEquals(
+            "https://duckduckgo.com/?q=foldable+browser",
+            OmniboxEngine.resolveInput("foldable browser", defaultGoogle, searchScope = ddgScope)
+        )
+        // Explicit one-time engine scope searches domain-like strings instead of navigating directly
+        assertEquals(
+            "https://duckduckgo.com/?q=github.com",
+            OmniboxEngine.resolveInput("github.com", defaultGoogle, searchScope = ddgScope)
+        )
+        // Explicit bang still overrides when typed
+        assertEquals(
+            "https://en.wikipedia.org/w/index.php?search=Kotlin",
+            OmniboxEngine.resolveInput("!w Kotlin", defaultGoogle, searchScope = ddgScope)
+        )
+        // One-time Custom scope uses customSearchUrlTemplate and exposes its homepage for favicons
+        val customScope = OmniboxSearchScope.Engine(SearchEngineId.CUSTOM)
+        assertEquals(
+            "https://searx.example.org/search?q=swiftfox",
+            OmniboxEngine.resolveInput("swiftfox", defaultGoogle, searchScope = customScope)
+        )
+        assertEquals(
+            "https://searx.example.org/",
+            SearchEngineId.CUSTOM.resolvedHomepageUrl(defaultGoogle.customSearchUrlTemplate)
+        )
+        assertTrue(SearchEngineId.CUSTOM.hasDistinctCustomTemplate(defaultGoogle.customSearchUrlTemplate))
+        assertEquals("Search searx.example.org", customScope.placeholder(defaultGoogle.customSearchUrlTemplate))
+
+        // Default custom template (unchanged Google fallback) is not treated as a distinct custom host
+        assertFalse(SearchEngineId.CUSTOM.hasDistinctCustomTemplate(SearchEngineId.GOOGLE.searchUrlTemplate))
+        assertEquals("Search Custom", customScope.placeholder(SearchEngineId.GOOGLE.searchUrlTemplate))
+
+        // Local scope filters report isLocalFilter = true and preserve distinct placeholders
+        assertTrue(OmniboxSearchScope.Bookmarks.isLocalFilter)
+        assertTrue(OmniboxSearchScope.Tabs.isLocalFilter)
+        assertTrue(OmniboxSearchScope.History.isLocalFilter)
+        assertFalse(ddgScope.isLocalFilter)
+        assertEquals("Search bookmarks", OmniboxSearchScope.Bookmarks.placeholder())
+        assertEquals("Search open tabs", OmniboxSearchScope.Tabs.placeholder())
+        assertEquals("Search history", OmniboxSearchScope.History.placeholder())
+
+        // Consistent displayName / displayLabel across built-in and distinct custom templates
+        assertEquals("Google", SearchEngineId.GOOGLE.displayName(defaultGoogle.customSearchUrlTemplate))
+        assertEquals("searx.example.org", SearchEngineId.CUSTOM.displayName(defaultGoogle.customSearchUrlTemplate))
+        assertEquals("searx.example.org", customScope.displayLabel(defaultGoogle.customSearchUrlTemplate))
+        assertEquals("Custom", SearchEngineId.CUSTOM.displayName(SearchEngineId.GOOGLE.searchUrlTemplate))
+    }
+
+    @Test
+    fun engineScopePrimarySuggestionMatchesBangOverridesAndCustomHostDisplay() {
+        val settings = BrowserSettings(
+            searchEngine = SearchEngineId.GOOGLE,
+            customSearchUrlTemplate = "https://www.searx.example.org/search?q=%s"
+        )
+        val ddgScope = OmniboxSearchScope.Engine(SearchEngineId.DUCKDUCKGO)
+        val customScope = OmniboxSearchScope.Engine(SearchEngineId.CUSTOM)
+
+        // Regular & domain-like queries render engine search row
+        val domainRow = OmniboxScopedSuggestions.buildEngineScopePrimarySuggestion("github.com", settings, ddgScope)
+        assertEquals(SuggestionKind.SEARCH, domainRow.kind)
+        assertEquals("Search with DuckDuckGo", domainRow.subtitle)
+        assertEquals("https://duckduckgo.com/?q=github.com", domainRow.targetUrl)
+
+        // Custom search engine shows distinct host (without www.) instead of bare "Custom"
+        val customRow = OmniboxScopedSuggestions.buildEngineScopePrimarySuggestion("swiftfox", settings, customScope)
+        assertEquals(SuggestionKind.SEARCH, customRow.kind)
+        assertEquals("Search with searx.example.org", customRow.subtitle)
+        assertEquals("https://www.searx.example.org/search?q=swiftfox", customRow.targetUrl)
+
+        // Live suggestions merged for Custom engine also use distinct host label
+        val mergedCustom = OmniboxCandidateBuilder.mergeLiveSuggestions(
+            existingSuggestions = listOf(customRow),
+            liveResult = LiveSuggestionsResult(searchQueries = listOf("swiftfox browser")),
+            settings = customScope.effectiveSettings(settings),
+            allowNavPromotion = false
+        )
+        assertEquals("searx.example.org", mergedCustom.last().subtitle)
+
+        // Explicit bang inside Engine scope renders a BANG row matching its Wikipedia target (not DuckDuckGo)
+        val bangRow = OmniboxScopedSuggestions.buildEngineScopePrimarySuggestion("!w Kotlin", settings, ddgScope)
+        assertEquals(SuggestionKind.BANG, bangRow.kind)
+        assertEquals("Bang shortcut", bangRow.subtitle)
+        assertEquals("Search Wikipedia for \"Kotlin\"", bangRow.title)
+        assertEquals("https://en.wikipedia.org/w/index.php?search=Kotlin", bangRow.targetUrl)
+
+        val bareBangRow = OmniboxScopedSuggestions.buildEngineScopePrimarySuggestion("!w", settings, ddgScope)
+        assertEquals(SuggestionKind.BANG, bareBangRow.kind)
+        assertEquals("Wikipedia (!w)", bareBangRow.title)
+        assertEquals("https://en.wikipedia.org/", bareBangRow.targetUrl)
+    }
+
+    @Test
+    fun localScopeSuggestionsFilterBookmarksTabsAndHistoryWithPrivateIsolation() = runBlocking {
+        val bm1 = BookmarkEntity(id = "bm1", title = "Kotlin Docs", url = "https://kotlinlang.org/docs")
+        val bm2 = BookmarkEntity(id = "bm2", title = "GitHub", url = "https://github.com/Waspo98/swiftfox")
+        val openTab = BrowserTabUi(
+            id = "tab_open",
+            spaceId = "space_1",
+            title = "Kotlin Coroutines",
+            url = "https://kotlinlang.org/docs/coroutines.html",
+            lastAccessedAt = 200L
+        )
+        val unloadedPinnedTab = BrowserTabUi(
+            id = "tab_pinned",
+            spaceId = "space_1",
+            title = "Kotlin Playground",
+            url = "about:blank",
+            isPinned = true,
+            isUnloaded = true,
+            pinnedUrl = "https://play.kotlinlang.org/",
+            lastAccessedAt = 500L
+        )
+        val privateTab = BrowserTabUi(
+            id = "tab_priv",
+            spaceId = "space_1",
+            title = "Private Kotlin",
+            url = "https://private.kotlin.example/",
+            isPrivate = true,
+            lastAccessedAt = 900L
+        )
+        val startTab = BrowserTabUi(
+            id = "tab_new",
+            spaceId = "space_1",
+            title = "New Tab",
+            url = OmniboxEngine.NEW_TAB_URL,
+            lastAccessedAt = 1000L
+        )
+        val hist1 = HistoryEntity(url = "https://kotlinlang.org/", title = "Kotlin Home")
+
+        val normalState = BrowserUiState(
+            settings = BrowserSettings(syncHistoryEnabled = true),
+            bookmarks = listOf(bm1, bm2),
+            tabs = listOf(unloadedPinnedTab, openTab, privateTab, startTab),
+            history = listOf(hist1),
+            activeTabId = openTab.id,
+            isPrivateView = false
+        )
+
+        // Bookmarks: deduplicates prefix and search results
+        val bmResults = OmniboxScopedSuggestions.buildLocalScopeSuggestions(
+            scope = OmniboxSearchScope.Bookmarks,
+            query = "kotlin",
+            state = normalState,
+            searchBookmarksByPrefix = { _, _ -> listOf(bm1) },
+            searchBookmarks = { _, _ -> listOf(bm1, bm2) },
+            searchHistoryByPrefix = { _, _ -> emptyList() },
+            searchHistory = { _, _ -> emptyList() },
+            searchSyncedHistory = { _, _ -> emptyList() }
+        )
+        assertEquals(listOf("bm_bm1", "bm_bm2"), bmResults.map { it.id })
+
+        // Tabs: loaded tab sorts before unloaded pinned tab, excludes private & start-page tabs
+        val tabResults = OmniboxScopedSuggestions.buildLocalScopeSuggestions(
+            scope = OmniboxSearchScope.Tabs,
+            query = "kotlin",
+            state = normalState,
+            searchBookmarksByPrefix = { _, _ -> emptyList() },
+            searchBookmarks = { _, _ -> emptyList() },
+            searchHistoryByPrefix = { _, _ -> emptyList() },
+            searchHistory = { _, _ -> emptyList() },
+            searchSyncedHistory = { _, _ -> emptyList() }
+        )
+        assertEquals(listOf("tab_open", "tab_pinned"), tabResults.map { it.tabId })
+        assertEquals("https://play.kotlinlang.org/", tabResults[1].targetUrl)
+
+        // History: merges local + synced Places history without duplicate URLs
+        val histResults = OmniboxScopedSuggestions.buildLocalScopeSuggestions(
+            scope = OmniboxSearchScope.History,
+            query = "kotlin",
+            state = normalState,
+            searchBookmarksByPrefix = { _, _ -> emptyList() },
+            searchBookmarks = { _, _ -> emptyList() },
+            searchHistoryByPrefix = { _, _ -> listOf(hist1) },
+            searchHistory = { _, _ -> listOf(hist1) },
+            searchSyncedHistory = { _, _ ->
+                listOf(
+                    MozillaSyncCoordinator.PlacesOmniboxMatch(
+                        url = "https://kotlinlang.org",
+                        title = "Duplicate Root",
+                        score = 100,
+                        fromAutocomplete = false
+                    ),
+                    MozillaSyncCoordinator.PlacesOmniboxMatch(
+                        url = "https://blog.jetbrains.com/kotlin/",
+                        title = "Kotlin Blog",
+                        score = 90,
+                        fromAutocomplete = false
+                    )
+                )
+            }
+        )
+        assertEquals(
+            listOf("https://kotlinlang.org/", "https://blog.jetbrains.com/kotlin/"),
+            histResults.map { it.targetUrl }
+        )
+
+        // Private mode: History returns empty and Tabs only surfaces private tabs
+        val privateState = normalState.copy(isPrivateView = true, activeTabId = privateTab.id)
+        val privateHistory = OmniboxScopedSuggestions.buildLocalScopeSuggestions(
+            scope = OmniboxSearchScope.History,
+            query = "kotlin",
+            state = privateState,
+            searchBookmarksByPrefix = { _, _ -> emptyList() },
+            searchBookmarks = { _, _ -> emptyList() },
+            searchHistoryByPrefix = { _, _ -> listOf(hist1) },
+            searchHistory = { _, _ -> listOf(hist1) },
+            searchSyncedHistory = { _, _ -> emptyList() }
+        )
+        assertTrue(privateHistory.isEmpty())
+
+        val privateTabs = OmniboxScopedSuggestions.buildLocalScopeSuggestions(
+            scope = OmniboxSearchScope.Tabs,
+            query = "kotlin",
+            state = privateState,
+            searchBookmarksByPrefix = { _, _ -> emptyList() },
+            searchBookmarks = { _, _ -> emptyList() },
+            searchHistoryByPrefix = { _, _ -> emptyList() },
+            searchHistory = { _, _ -> emptyList() },
+            searchSyncedHistory = { _, _ -> emptyList() }
+        )
+        assertEquals(listOf("tab_priv"), privateTabs.map { it.tabId })
     }
 }

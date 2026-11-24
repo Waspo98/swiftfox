@@ -450,4 +450,86 @@ class WorkspaceTabResolverTest {
             )
         )
     }
+
+    @Test
+    fun tabSwitcherTabsAndCountsIncludeLoadedEssentialsWithoutDoubleCounting() {
+        val loadedEss = EssentialEntity(
+            id = "ess_verge",
+            title = "The Verge",
+            url = "https://www.theverge.com",
+            domain = "theverge.com"
+        )
+        val unloadedEss = EssentialEntity(
+            id = "ess_bn",
+            title = "Bleacher Nation",
+            url = "https://www.bleachernation.com",
+            domain = "bleachernation.com"
+        )
+        val workOnlyEss = EssentialEntity(
+            id = "ess_jira",
+            title = "Jira",
+            url = "https://jira.example.com",
+            domain = "jira.example.com",
+            syncGuid = "jira",
+            zenContainerGuid = "container-work"
+        )
+        val loadedEssTab = BrowserTabUi(
+            id = "tab_ess_verge",
+            spaceId = WorkspaceTabResolver.ESSENTIAL_GLOBAL_SPACE_ID,
+            title = "The Verge",
+            url = "https://www.theverge.com",
+            essentialId = loadedEss.id
+        )
+        val workEssTab = BrowserTabUi(
+            id = "tab_ess_jira",
+            spaceId = "space_work",
+            title = "Jira",
+            url = "https://jira.example.com",
+            essentialId = workOnlyEss.id
+        )
+        val personalTab = BrowserTabUi(
+            id = "tab_personal_1",
+            spaceId = "space_personal",
+            title = "New Tab",
+            url = OmniboxEngine.NEW_TAB_URL
+        )
+        val privateTab = BrowserTabUi(
+            id = "tab_priv_1",
+            spaceId = "space_personal",
+            title = "Private",
+            url = "https://example.org",
+            isPrivate = true
+        )
+
+        val sharedState = BrowserUiState(
+            settings = BrowserSettings(syncZenSeparateEssentials = false),
+            spaces = spaces,
+            activeSpaceId = "space_personal",
+            essentials = listOf(loadedEss, unloadedEss),
+            tabs = listOf(loadedEssTab, personalTab, privateTab),
+            activeTabId = personalTab.id
+        )
+
+        // Open Essentials appear in tabSwitcherTabs alongside regular tabs; unloaded Essentials do not.
+        assertEquals(listOf(loadedEssTab, personalTab), sharedState.tabSwitcherTabs)
+        assertEquals(2, sharedState.tabSwitcherCountForSpace("space_personal"))
+        assertEquals(1, sharedState.tabSwitcherCountForSpace("space_work"))
+
+        // Private view remains strictly isolated from normal Essentials and tabs.
+        val privateState = sharedState.copy(isPrivateView = true, activeTabId = privateTab.id)
+        assertEquals(listOf(privateTab), privateState.tabSwitcherTabs)
+
+        // Container-separated Essential stored under space_work is counted once (no double-count).
+        val separatedState = BrowserUiState(
+            settings = BrowserSettings(syncZenSeparateEssentials = true),
+            spaces = spaces,
+            activeSpaceId = "space_work",
+            essentials = listOf(loadedEss, workOnlyEss),
+            tabs = listOf(loadedEssTab, workEssTab, personalTab),
+            activeTabId = workEssTab.id
+        )
+        assertEquals(listOf(loadedEssTab, workEssTab), separatedState.tabSwitcherTabs)
+        assertEquals(2, separatedState.tabSwitcherCountForSpace("space_work"))
+        assertEquals(2, separatedState.tabSwitcherCountForSpace("space_personal"))
+    }
 }

@@ -59,6 +59,8 @@ import app.overbay.swiftfox.features.icons.CustomIconSpec
 import app.overbay.swiftfox.features.icons.FaviconRepository
 import app.overbay.swiftfox.features.omnibox.OmniboxCandidateBuilder
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
+import app.overbay.swiftfox.features.omnibox.OmniboxScopedSuggestions
+import app.overbay.swiftfox.features.omnibox.OmniboxSearchScope
 import app.overbay.swiftfox.features.omnibox.OmniboxSuggestion
 import app.overbay.swiftfox.features.omnibox.SuggestionKind
 import app.overbay.swiftfox.features.sharing.CleanUrlSanitizer
@@ -120,6 +122,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     var onExportBookmarksHtmlBridge: (() -> Unit)? = null
 
     private var suggestionJob: Job? = null
+    private var localSubmitJob: Job? = null
+    private var pendingLocalSubmitQuery: String? = null
     private var readerExtractJob: Job? = null
     private val readerRequestCounter = AtomicLong(0L)
     private var initialTabsLoaded = false
@@ -1780,7 +1784,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             isQrPairingOpen = if (selectImmediately && dismissAllOverlays) false else state.isQrPairingOpen,
             fxaAuthUrl = if (selectImmediately && dismissAllOverlays) null else state.fxaAuthUrl,
             isOmniboxFocused = false,
+            omniboxSearchScope = null,
             omniboxSuggestions = if (selectImmediately) emptyList() else state.omniboxSuggestions,
+            omniboxSuggestionsQuery = if (selectImmediately) "" else state.omniboxSuggestionsQuery,
+            omniboxSuggestionsScope = if (selectImmediately) null else state.omniboxSuggestionsScope,
             omniboxInlineAutocomplete = if (selectImmediately) null else state.omniboxInlineAutocomplete,
             findInPage = if (selectImmediately) FindInPageState() else state.findInPage,
             readerArticle = if (selectImmediately) null else state.readerArticle,
@@ -1941,6 +1948,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun selectTab(tabId: String) {
         suggestionJob?.cancel()
+        cancelPendingLocalSubmit()
         val previousActive = _uiState.value.activeTabId
         if (previousActive != null && previousActive != tabId) {
             captureThumbnailFor(previousActive)
@@ -1998,7 +2006,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 activeOverlay = BrowserOverlay.NONE,
                 overlayBackStack = emptyList(),
                 isOmniboxFocused = false,
+                omniboxSearchScope = null,
                 omniboxSuggestions = emptyList(),
+                omniboxSuggestionsQuery = "",
+                omniboxSuggestionsScope = null,
                 omniboxInlineAutocomplete = null,
                 findInPage = FindInPageState(),
                 zapper = ZapperUiState(),
@@ -2181,6 +2192,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun selectSpace(spaceId: String) {
         stopActiveZapperIfRunning()
         suggestionJob?.cancel()
+        cancelPendingLocalSubmit()
         readerExtractJob?.cancel()
         readerExtractJob = null
         readerRequestCounter.incrementAndGet()
@@ -2232,6 +2244,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun togglePrivateView(enabled: Boolean) {
         stopActiveZapperIfRunning()
         suggestionJob?.cancel()
+        cancelPendingLocalSubmit()
         readerExtractJob?.cancel()
         readerExtractJob = null
         readerRequestCounter.incrementAndGet()
@@ -3442,14 +3455,75 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    private fun cancelPendingLocalSubmit() {
+        localSubmitJob?.cancel()
+        localSubmitJob = null
+        pendingLocalSubmitQuery = null
+    }
+
+    private fun openOmniboxSuggestion(suggestion: OmniboxSuggestion) {
+        if (suggestion.tabId != null) {
+            selectTab(suggestion.tabId)
+        } else {
+            navigateActiveTab(suggestion.targetUrl)
+        }
+    }
+
+    private suspend fun resolveLocalScopeSuggestions(
+        scope: OmniboxSearchScope,
+        query: String,
+        state: BrowserUiState
+    ): List<OmniboxSuggestion> = OmniboxScopedSuggestions.buildLocalScopeSuggestions(
+        scope = scope,
+        query = query,
+        state = state,
+        searchBookmarksByPrefix = { prefix, limit -> db.bookmarkDao().searchByUrlPrefix(prefix, limit = limit) },
+        searchBookmarks = { q, limit -> db.bookmarkDao().search(q, limit = limit) },
+        searchHistoryByPrefix = { prefix, limit -> db.historyDao().searchByUrlPrefix(prefix, limit = limit) },
+        searchHistory = { q, limit -> db.historyDao().search(q, limit = limit) },
+        searchSyncedHistory = { q, limit -> app.mozillaSyncCoordinator.querySyncedHistoryForOmnibox(q, limit = limit) }
+    )
+
     fun submitOmnibox(rawInput: String) {
-        val targetUrl = OmniboxEngine.resolveInput(rawInput, _uiState.value.settings)
+        cancelPendingLocalSubmit()
+        val state = _uiState.value
+        val scope = state.omniboxSearchScope
+        if (scope != null && scope.isLocalFilter) {
+            if (state.omniboxSuggestionsQuery == rawInput && state.omniboxSuggestionsScope == scope) {
+                state.omniboxSuggestions.firstOrNull()?.let(::openOmniboxSuggestion)
+                return
+            }
+            pendingLocalSubmitQuery = rawInput
+            localSubmitJob = viewModelScope.launch {
+                val matches = resolveLocalScopeSuggestions(scope, rawInput, _uiState.value)
+                val current = _uiState.value
+                if (!current.isOmniboxFocused ||
+                    current.omniboxSearchScope != scope ||
+                    pendingLocalSubmitQuery != rawInput
+                ) {
+                    return@launch
+                }
+                pendingLocalSubmitQuery = null
+                _uiState.update {
+                    it.copy(
+                        omniboxSuggestions = matches,
+                        omniboxSuggestionsQuery = rawInput,
+                        omniboxSuggestionsScope = scope,
+                        omniboxInlineAutocomplete = null
+                    )
+                }
+                matches.firstOrNull()?.let(::openOmniboxSuggestion)
+            }
+            return
+        }
+        val targetUrl = OmniboxEngine.resolveInput(rawInput, state.settings, searchScope = scope)
         navigateActiveTab(targetUrl)
     }
 
     fun navigateActiveTab(url: String) {
         stopActiveZapperIfRunning()
         suggestionJob?.cancel()
+        cancelPendingLocalSubmit()
         readerExtractJob?.cancel()
         readerExtractJob = null
         readerRequestCounter.incrementAndGet()
@@ -3471,7 +3545,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             it.copy(
                 isOmniboxFocused = false,
                 omniboxQuery = "",
+                omniboxSearchScope = null,
                 omniboxSuggestions = emptyList(),
+                omniboxSuggestionsQuery = "",
+                omniboxSuggestionsScope = null,
                 omniboxInlineAutocomplete = null,
                 isFoldedSidebarOpen = false,
                 activeOverlay = BrowserOverlay.NONE,
@@ -3581,18 +3658,30 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun focusOmnibox(prefillCurrentUrl: Boolean = true) {
+    fun focusOmnibox(
+        prefillCurrentUrl: Boolean = true,
+        searchScope: OmniboxSearchScope? = null
+    ) {
         stopActiveZapperIfRunning()
-        val current = _uiState.value.activeTab
-        val initialText = if (prefillCurrentUrl && current != null && !current.isStartPage) {
+        cancelPendingLocalSubmit()
+        val snapshot = _uiState.value
+        val current = snapshot.activeTab
+        val isPrivateContext = snapshot.isPrivateView || current?.isPrivate == true
+        val initialText = if (searchScope == null && prefillCurrentUrl && current != null && !current.isStartPage) {
             current.url
         } else {
             ""
+        }
+        val effectiveScope = if (isPrivateContext && searchScope == OmniboxSearchScope.History) {
+            null
+        } else {
+            searchScope
         }
         _uiState.update {
             it.copy(
                 isOmniboxFocused = true,
                 omniboxQuery = initialText,
+                omniboxSearchScope = effectiveScope,
                 isFoldedSidebarOpen = false,
                 isSiteRulesOpen = false
             )
@@ -3600,30 +3689,82 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         onOmniboxQueryChanged(initialText)
     }
 
+    fun setOmniboxSearchScope(scope: OmniboxSearchScope?) {
+        cancelPendingLocalSubmit()
+        val snapshot = _uiState.value
+        val isPrivateContext = snapshot.isPrivateView || snapshot.activeTab?.isPrivate == true
+        val effectiveScope = if (isPrivateContext && scope == OmniboxSearchScope.History) {
+            null
+        } else {
+            scope
+        }
+        _uiState.update {
+            it.copy(
+                omniboxSearchScope = effectiveScope,
+                omniboxInlineAutocomplete = if (effectiveScope != null) null else it.omniboxInlineAutocomplete
+            )
+        }
+        onOmniboxQueryChanged(_uiState.value.omniboxQuery)
+    }
+
+    fun openSearchSettings() {
+        suggestionJob?.cancel()
+        cancelPendingLocalSubmit()
+        stopActiveZapperIfRunning()
+        _uiState.update { current ->
+            current.copy(
+                activeOverlay = BrowserOverlay.SETTINGS,
+                activeSettingsCategory = SettingsCategory.SEARCH_GESTURES,
+                overlayBackStack = emptyList(),
+                isFoldedSidebarOpen = false,
+                isSiteRulesOpen = false,
+                isOmniboxFocused = false,
+                omniboxQuery = "",
+                omniboxSearchScope = null,
+                omniboxSuggestions = emptyList(),
+                omniboxSuggestionsQuery = "",
+                omniboxSuggestionsScope = null,
+                omniboxInlineAutocomplete = null
+            )
+        }
+    }
+
     fun dismissOmnibox() {
         suggestionJob?.cancel()
+        cancelPendingLocalSubmit()
         _uiState.update {
             it.copy(
                 isOmniboxFocused = false,
                 omniboxQuery = "",
+                omniboxSearchScope = null,
                 omniboxSuggestions = emptyList(),
+                omniboxSuggestionsQuery = "",
+                omniboxSuggestionsScope = null,
                 omniboxInlineAutocomplete = null
             )
         }
     }
 
     fun onOmniboxQueryChanged(query: String) {
+        if (pendingLocalSubmitQuery != null && query != pendingLocalSubmitQuery) {
+            cancelPendingLocalSubmit()
+        }
         val snapshot = _uiState.value
+        val scope = snapshot.omniboxSearchScope
         // Keep the synchronous Main-thread pass strictly bounded so huge synced bookmark
         // collections never jank typing; binary search over TopDomainsRepository is O(log n).
-        val instantCandidates = OmniboxCandidateBuilder.buildInMemoryCandidates(
-            state = snapshot,
-            maxBookmarksAndHistory = 80
-        ) + app.topDomainsRepository.findPrefixCandidates(query)
-        val instantAutocomplete = OmniboxEngine.findInlineAutocomplete(
-            rawQuery = query,
-            candidates = instantCandidates
-        )
+        val instantAutocomplete = if (scope == null) {
+            val instantCandidates = OmniboxCandidateBuilder.buildInMemoryCandidates(
+                state = snapshot,
+                maxBookmarksAndHistory = 80
+            ) + app.topDomainsRepository.findPrefixCandidates(query)
+            OmniboxEngine.findInlineAutocomplete(
+                rawQuery = query,
+                candidates = instantCandidates
+            )
+        } else {
+            null
+        }
         _uiState.update {
             it.copy(
                 omniboxQuery = query,
@@ -3633,7 +3774,85 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         suggestionJob?.cancel()
         suggestionJob = viewModelScope.launch {
             val trimmed = query.trim()
+            val currentState = _uiState.value
+            val inPrivate = currentState.isPrivateView || currentState.activeTab?.isPrivate == true
             val results = mutableListOf<OmniboxSuggestion>()
+
+            when (scope) {
+                OmniboxSearchScope.Bookmarks,
+                OmniboxSearchScope.Tabs,
+                OmniboxSearchScope.History -> {
+                    val scopedResults = resolveLocalScopeSuggestions(scope, query, currentState)
+                    _uiState.update { state ->
+                        if (state.omniboxQuery != query || state.omniboxSearchScope != scope) state
+                        else state.copy(
+                            omniboxSuggestions = scopedResults,
+                            omniboxSuggestionsQuery = query,
+                            omniboxSuggestionsScope = scope,
+                            omniboxInlineAutocomplete = null
+                        )
+                    }
+                    return@launch
+                }
+
+                is OmniboxSearchScope.Engine -> {
+                    if (trimmed.isEmpty()) {
+                        _uiState.update { state ->
+                            if (state.omniboxQuery != query || state.omniboxSearchScope != scope) state
+                            else state.copy(
+                                omniboxSuggestions = emptyList(),
+                                omniboxSuggestionsQuery = query,
+                                omniboxSuggestionsScope = scope,
+                                omniboxInlineAutocomplete = null
+                            )
+                        }
+                        return@launch
+                    }
+                    val currentSettings = _uiState.value.settings
+                    val effectiveSettings = scope.effectiveSettings(currentSettings)
+                    results += OmniboxScopedSuggestions.buildEngineScopePrimarySuggestion(
+                        trimmed = trimmed,
+                        settings = currentSettings,
+                        scope = scope
+                    )
+                    _uiState.update { state ->
+                        if (state.omniboxQuery != query || state.omniboxSearchScope != scope) state
+                        else state.copy(
+                            omniboxSuggestions = results,
+                            omniboxSuggestionsQuery = query,
+                            omniboxSuggestionsScope = scope,
+                            omniboxInlineAutocomplete = null
+                        )
+                    }
+                    if (inPrivate) return@launch
+                    delay(180)
+                    val liveResult = OmniboxEngine.fetchLiveSuggestionsResult(
+                        query = trimmed,
+                        settings = effectiveSettings,
+                        engineOverride = scope.engine
+                    )
+                    if (liveResult.searchQueries.isNotEmpty()) {
+                        val merged = OmniboxCandidateBuilder.mergeLiveSuggestions(
+                            existingSuggestions = results,
+                            liveResult = liveResult,
+                            settings = effectiveSettings,
+                            allowNavPromotion = false
+                        )
+                        _uiState.update { state ->
+                            if (state.omniboxQuery != query || state.omniboxSearchScope != scope) state
+                            else state.copy(
+                                omniboxSuggestions = merged,
+                                omniboxSuggestionsQuery = query,
+                                omniboxSuggestionsScope = scope,
+                                omniboxInlineAutocomplete = null
+                            )
+                        }
+                    }
+                    return@launch
+                }
+
+                null -> Unit
+            }
 
             if (trimmed.isEmpty()) {
                 _uiState.value.bookmarks.take(3).forEach { bm ->
@@ -3645,7 +3864,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                         kind = SuggestionKind.BOOKMARK
                     )
                 }
-                if (!_uiState.value.isPrivateView) {
+                if (!inPrivate) {
                     _uiState.value.history.take(4).forEach { h ->
                         if (results.none { it.targetUrl == h.url }) {
                             results += OmniboxSuggestion(
@@ -3658,7 +3877,15 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                         }
                     }
                 }
-                _uiState.update { it.copy(omniboxSuggestions = results, omniboxInlineAutocomplete = null) }
+                _uiState.update { state ->
+                    if (state.omniboxQuery != query || state.omniboxSearchScope != null) state
+                    else state.copy(
+                        omniboxSuggestions = results,
+                        omniboxSuggestionsQuery = query,
+                        omniboxSuggestionsScope = null,
+                        omniboxInlineAutocomplete = null
+                    )
+                }
                 return@launch
             }
 
@@ -3666,21 +3893,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
             val bang = OmniboxEngine.detectBang(trimmed)
             if (bang != null) {
-                val target = if (bang.query.isNotBlank()) {
-                    OmniboxEngine.resolveInput(trimmed, _uiState.value.settings)
-                } else {
-                    OmniboxEngine.bangHomepageUrl(bang.bang)
-                }
-                results += OmniboxSuggestion(
-                    id = "bang_${bang.triggerUsed}",
-                    title = if (bang.query.isNotBlank()) {
-                        "Search ${bang.bang.name} for \"${bang.query}\""
-                    } else {
-                        "${bang.bang.name} (${bang.triggerUsed})"
-                    },
-                    subtitle = "Bang shortcut",
-                    targetUrl = target,
-                    kind = SuggestionKind.BANG
+                results += OmniboxScopedSuggestions.buildBangSuggestion(
+                    bang = bang,
+                    rawTrimmed = trimmed,
+                    settings = _uiState.value.settings
                 )
             } else if (trimmed.startsWith("!") || trimmed.startsWith("@")) {
                 OmniboxEngine.bangs
@@ -3697,41 +3913,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     }
             }
 
-            val inPrivate = _uiState.value.isPrivateView
-            val matchingTabs = _uiState.value.tabs
-                .filter { tab ->
-                    val effectiveUrl = if (tab.isUnloaded) {
-                        tab.pinnedUrl?.takeIf { it.isNotBlank() } ?: tab.url
-                    } else {
-                        tab.url
-                    }
-                    effectiveUrl.isNotBlank() &&
-                        effectiveUrl != OmniboxEngine.NEW_TAB_URL &&
-                        tab.isPrivate == inPrivate &&
-                        (tab.displayTitle.contains(trimmed, true) || effectiveUrl.contains(trimmed, true))
-                }
-                .sortedBy { it.isUnloaded }
-                .take(2)
-            matchingTabs.forEach { tab ->
-                val effectiveUrl = if (tab.isUnloaded) {
-                    tab.pinnedUrl?.takeIf { it.isNotBlank() } ?: tab.url
-                } else {
-                    tab.url
-                }
-                val hostLabel = OmniboxEngine.extractHost(effectiveUrl).ifBlank { effectiveUrl }
-                results += OmniboxSuggestion(
-                    id = "tab_${tab.id}",
-                    title = tab.displayTitle,
-                    subtitle = if (tab.isUnloaded) {
-                        "Open saved tab · $hostLabel"
-                    } else {
-                        "Switch to open tab · $hostLabel"
-                    },
-                    targetUrl = effectiveUrl,
-                    kind = SuggestionKind.OPEN_TAB,
-                    tabId = tab.id
-                )
-            }
+            results += OmniboxScopedSuggestions.filterMatchingTabSuggestions(
+                tabs = _uiState.value.tabs,
+                trimmedQuery = trimmed,
+                inPrivate = inPrivate,
+                limit = 2,
+                sortByRecency = false
+            )
 
             val hostPrefix = OmniboxEngine.extractHostPrefixForDbQuery(query)
             val dbPrefixBookmarks = if (hostPrefix != null) {
@@ -3849,19 +4037,22 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                         )
                     )
                 }
+                val currentSettings = _uiState.value.settings
                 results += OmniboxSuggestion(
                     id = "search_self_$trimmed",
                     title = trimmed,
-                    subtitle = "Search with ${_uiState.value.settings.searchEngine.label}",
+                    subtitle = "Search with ${currentSettings.searchEngine.displayName(currentSettings.customSearchUrlTemplate)}",
                     targetUrl = resolvedDirect,
                     kind = SuggestionKind.SEARCH
                 )
             }
 
             _uiState.update { state ->
-                if (state.omniboxQuery != query) state
+                if (state.omniboxQuery != query || state.omniboxSearchScope != null) state
                 else state.copy(
                     omniboxSuggestions = results,
+                    omniboxSuggestionsQuery = query,
+                    omniboxSuggestionsScope = null,
                     omniboxInlineAutocomplete = refinedAutocomplete
                 )
             }
@@ -3893,9 +4084,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     refinedAutocomplete
                 }
                 _uiState.update { state ->
-                    if (state.omniboxQuery != query) state
+                    if (state.omniboxQuery != query || state.omniboxSearchScope != null) state
                     else state.copy(
                         omniboxSuggestions = merged,
+                        omniboxSuggestionsQuery = query,
+                        omniboxSuggestionsScope = null,
                         omniboxInlineAutocomplete = updatedAutocomplete
                     )
                 }
@@ -4009,6 +4202,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun setOverlay(overlay: BrowserOverlay) {
         suggestionJob?.cancel()
+        cancelPendingLocalSubmit()
         if (overlay != BrowserOverlay.NONE) {
             stopActiveZapperIfRunning()
         }
@@ -4063,7 +4257,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 isFoldedSidebarOpen = if (overlay != BrowserOverlay.NONE) false else current.isFoldedSidebarOpen,
                 isSiteRulesOpen = false,
                 isOmniboxFocused = false,
+                omniboxSearchScope = null,
                 omniboxSuggestions = emptyList(),
+                omniboxSuggestionsQuery = "",
+                omniboxSuggestionsScope = null,
                 omniboxInlineAutocomplete = null
             )
         }
@@ -5954,6 +6151,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         pool.onThumbnailsEvicted = null
         BackgroundMediaService.activeController = null
         suggestionJob?.cancel()
+        cancelPendingLocalSubmit()
         readerExtractJob?.cancel()
         spaCheckJobByTab.values.forEach { it.cancel() }
         spaCheckJobByTab.clear()

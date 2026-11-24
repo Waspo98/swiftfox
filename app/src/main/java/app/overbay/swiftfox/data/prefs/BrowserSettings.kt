@@ -38,38 +38,95 @@ enum class SiteMode(val label: String) {
 enum class SearchEngineId(
     val label: String,
     val searchUrlTemplate: String,
-    val suggestUrlTemplate: String?
+    val suggestUrlTemplate: String?,
+    val homepageUrl: String
 ) {
     GOOGLE(
         label = "Google",
         searchUrlTemplate = "https://www.google.com/search?q=%s",
-        suggestUrlTemplate = "https://suggestqueries.google.com/complete/search?client=chrome&q=%s"
+        suggestUrlTemplate = "https://suggestqueries.google.com/complete/search?client=chrome&q=%s",
+        homepageUrl = "https://www.google.com/"
     ),
     DUCKDUCKGO(
         label = "DuckDuckGo",
         searchUrlTemplate = "https://duckduckgo.com/?q=%s",
-        suggestUrlTemplate = "https://duckduckgo.com/ac/?q=%s&type=list"
+        suggestUrlTemplate = "https://duckduckgo.com/ac/?q=%s&type=list",
+        homepageUrl = "https://duckduckgo.com/"
     ),
     KAGI(
         label = "Kagi",
         searchUrlTemplate = "https://kagi.com/search?q=%s",
-        suggestUrlTemplate = "https://kagi.com/api/autosuggest?q=%s"
+        suggestUrlTemplate = "https://kagi.com/api/autosuggest?q=%s",
+        homepageUrl = "https://kagi.com/"
     ),
     BRAVE(
         label = "Brave Search",
         searchUrlTemplate = "https://search.brave.com/search?q=%s",
-        suggestUrlTemplate = "https://search.brave.com/api/suggest?q=%s"
+        suggestUrlTemplate = "https://search.brave.com/api/suggest?q=%s",
+        homepageUrl = "https://search.brave.com/"
     ),
     STARTPAGE(
         label = "Startpage",
         searchUrlTemplate = "https://www.startpage.com/do/dsearch?query=%s",
-        suggestUrlTemplate = null
+        suggestUrlTemplate = null,
+        homepageUrl = "https://www.startpage.com/"
     ),
     CUSTOM(
         label = "Custom",
         searchUrlTemplate = "https://www.google.com/search?q=%s",
-        suggestUrlTemplate = null
-    )
+        suggestUrlTemplate = null,
+        homepageUrl = ""
+    );
+
+    fun resolveSearchTemplate(customSearchUrlTemplate: String): String {
+        if (this != CUSTOM) return searchUrlTemplate
+        val candidate = customSearchUrlTemplate.trim()
+        val isHttpOrHttps = candidate.startsWith("https://", ignoreCase = true) ||
+            candidate.startsWith("http://", ignoreCase = true)
+        return if (isHttpOrHttps && candidate.contains("%s")) {
+            candidate
+        } else {
+            searchUrlTemplate
+        }
+    }
+
+    fun resolvedHomepageUrl(customSearchUrlTemplate: String): String {
+        if (this != CUSTOM) return homepageUrl
+        val candidate = customSearchUrlTemplate.trim()
+        val isHttpOrHttps = candidate.startsWith("https://", ignoreCase = true) ||
+            candidate.startsWith("http://", ignoreCase = true)
+        if (!isHttpOrHttps || !candidate.contains("%s")) return ""
+        return runCatching {
+            val uri = java.net.URI(candidate.replace("%s", "q"))
+            val scheme = uri.scheme?.takeIf { it.isNotBlank() } ?: return@runCatching ""
+            val authority = uri.rawAuthority?.takeIf { it.isNotBlank() } ?: return@runCatching ""
+            "$scheme://$authority/"
+        }.getOrDefault("")
+    }
+
+    fun hasDistinctCustomTemplate(customSearchUrlTemplate: String): Boolean {
+        if (this != CUSTOM) return false
+        val trimmed = customSearchUrlTemplate.trim()
+        val isHttpOrHttps = trimmed.startsWith("https://", ignoreCase = true) ||
+            trimmed.startsWith("http://", ignoreCase = true)
+        return isHttpOrHttps &&
+            trimmed.contains("%s") &&
+            !trimmed.equals(GOOGLE.searchUrlTemplate, ignoreCase = true)
+    }
+
+    fun displayName(customSearchUrlTemplate: String): String {
+        if (this != CUSTOM || !hasDistinctCustomTemplate(customSearchUrlTemplate)) return label
+        val homepage = resolvedHomepageUrl(customSearchUrlTemplate)
+        val host = runCatching {
+            java.net.URI(homepage).host
+                ?.trim()
+                ?.lowercase(java.util.Locale.ROOT)
+                ?.removePrefix("[")
+                ?.removeSuffix("]")
+                ?.removePrefix("www.")
+        }.getOrNull()
+        return host?.takeIf { it.isNotBlank() } ?: label
+    }
 }
 
 enum class ExternalAppLinkPolicy(val label: String, val description: String) {
@@ -164,14 +221,7 @@ data class BrowserSettings(
         DevicePosture.UNFOLDED -> unfoldedProfile
     }
 
-    fun resolvedSearchTemplate(): String {
-        val candidate = customSearchUrlTemplate.trim()
-        val isHttpOrHttps = candidate.startsWith("https://", ignoreCase = true) ||
-            candidate.startsWith("http://", ignoreCase = true)
-        return if (searchEngine == SearchEngineId.CUSTOM && isHttpOrHttps && candidate.contains("%s")) {
-            candidate
-        } else {
-            searchEngine.searchUrlTemplate
-        }
+    fun resolvedSearchTemplate(engineOverride: SearchEngineId? = null): String {
+        return (engineOverride ?: searchEngine).resolveSearchTemplate(customSearchUrlTemplate)
     }
 }

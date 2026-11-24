@@ -98,12 +98,6 @@ import app.overbay.swiftfox.ui.theme.SwiftfoxEmblem
 import app.overbay.swiftfox.ui.theme.SwiftfoxEmblemVariant
 import app.overbay.swiftfox.ui.theme.spaceIconFor
 
-private enum class SwitcherReorderMode {
-    NONE,
-    SPACES,
-    ESSENTIALS
-}
-
 @Composable
 fun SpacesTabSwitcher(
     state: BrowserUiState,
@@ -121,14 +115,13 @@ fun SpacesTabSwitcher(
 ) {
     var showCreateSpaceDialog by remember { mutableStateOf(false) }
     var showCloseAllSheet by remember { mutableStateOf(false) }
-    var reorderMode by remember { mutableStateOf(SwitcherReorderMode.NONE) }
+    var isReorderingSpaces by remember { mutableStateOf(false) }
 
     var actionSpace by remember { mutableStateOf<SpaceEntity?>(null) }
     var spaceToRename by remember { mutableStateOf<SpaceEntity?>(null) }
     var spaceToPickIcon by remember { mutableStateOf<SpaceEntity?>(null) }
     var spaceToDelete by remember { mutableStateOf<SpaceEntity?>(null) }
 
-    var actionEssential by remember { mutableStateOf<EssentialEntity?>(null) }
     var essentialToEdit by remember { mutableStateOf<EssentialEntity?>(null) }
     var essentialToPickIcon by remember { mutableStateOf<EssentialEntity?>(null) }
 
@@ -141,22 +134,15 @@ fun SpacesTabSwitcher(
     var zenPinnedToPickIcon by remember { mutableStateOf<ZenPinnedItemEntity?>(null) }
 
     val foxColors = LocalSwiftfoxColors.current
-    val essentials = state.activeSpaceEssentials
 
     LaunchedEffect(state.isPrivateView, state.activeSpaceId) {
-        reorderMode = SwitcherReorderMode.NONE
+        isReorderingSpaces = false
     }
     val spacesReorder = rememberDragReorderController(
         sourceItems = state.spaces,
         keyOf = { it.id },
         axis = DragAxis.HORIZONTAL,
         onCommitOrder = itemCallbacks.onReorderSpaces
-    )
-    val essentialsReorder = rememberDragReorderController(
-        sourceItems = essentials,
-        keyOf = { it.id },
-        axis = DragAxis.HORIZONTAL,
-        onCommitOrder = itemCallbacks.onReorderEssentials
     )
 
     Scaffold(
@@ -268,21 +254,16 @@ fun SpacesTabSwitcher(
                 )
             }
 
-            if (reorderMode != SwitcherReorderMode.NONE) {
+            if (isReorderingSpaces) {
                 ReorderModeBanner(
                     visible = true,
-                    label = if (reorderMode == SwitcherReorderMode.SPACES) {
-                        "Drag workspaces to reorder"
-                    } else {
-                        "Drag essentials to reorder"
-                    },
-                    onDone = { reorderMode = SwitcherReorderMode.NONE },
+                    label = "Drag workspaces to reorder",
+                    onDone = { isReorderingSpaces = false },
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
                 )
             }
 
             // Spaces pill strip
-            val isReorderingSpaces = reorderMode == SwitcherReorderMode.SPACES
             val displayedSpaces = if (isReorderingSpaces) spacesReorder.items.toList() else state.spaces
             LazyRow(
                 userScrollEnabled = !isReorderingSpaces,
@@ -298,7 +279,7 @@ fun SpacesTabSwitcher(
                     val selected = !state.isPrivateView && state.activeSpaceId == space.id
                     SpacePillChip(
                         space = space,
-                        tabCount = state.tabs.count { !it.isPrivate && !it.isUnloaded && !it.isEssentialTab && it.spaceId == space.id },
+                        tabCount = state.tabSwitcherCountForSpace(space.id),
                         selected = selected,
                         isReorderMode = isReorderingSpaces,
                         onClick = { if (!isReorderingSpaces) onSelectSpace(space.id) },
@@ -339,43 +320,6 @@ fun SpacesTabSwitcher(
                 }
             }
 
-            // Pinned Essentials compact strip with web favicons
-            val isReorderingEss = reorderMode == SwitcherReorderMode.ESSENTIALS
-            val displayedEssentials = if (isReorderingEss) essentialsReorder.items.toList() else essentials
-            if (!state.isPrivateView && displayedEssentials.isNotEmpty()) {
-                Spacer(Modifier.height(12.dp))
-                LazyRow(
-                    userScrollEnabled = !isReorderingEss,
-                    contentPadding = PaddingValues(horizontal = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    items(
-                        items = displayedEssentials,
-                        key = { it.id },
-                        contentType = { "essential_compact" }
-                    ) { essential ->
-                        val boundTab = state.tabForEssential(essential.id)
-                        CompactEssentialPill(
-                            essential = essential,
-                            isLoaded = boundTab != null,
-                            isActive = boundTab != null && boundTab.id == state.activeTabId,
-                            isPlayingMedia = boundTab?.isPlayingMedia == true,
-                            isReorderMode = isReorderingEss,
-                            onClick = { if (!isReorderingEss) itemCallbacks.onActivateEssential(essential.id) },
-                            onLongClick = { if (!isReorderingEss) actionEssential = essential },
-                            modifier = Modifier
-                                .then(if (!isReorderingEss) Modifier.animateItem() else Modifier)
-                                .dragReorderItem(
-                                    key = essential.id,
-                                    enabled = isReorderingEss,
-                                    controller = essentialsReorder
-                                )
-                        )
-                    }
-                }
-            }
-
             // Zen Browser synced pinned items for active Space with web favicons
             val zenPinned = state.activeSpaceZenPinned
             if (!state.isPrivateView && zenPinned.isNotEmpty()) {
@@ -403,9 +347,11 @@ fun SpacesTabSwitcher(
                 }
             }
 
-            val canCloseAll = reorderMode == SwitcherReorderMode.NONE &&
+            // Visual tab card grid (open Essentials render right alongside regular tabs as standard cards)
+            val tabs = state.tabSwitcherTabs
+            val canCloseAll = !isReorderingSpaces &&
                 WorkspaceTabResolver.hasAnythingToCloseAll(state)
-            if (state.visibleTabs.isNotEmpty() || canCloseAll) {
+            if (tabs.isNotEmpty() || canCloseAll) {
                 Spacer(Modifier.height(10.dp))
                 WorkspaceTabsHeaderRow(
                     title = if (state.isPrivateView) "Private tabs" else "Open tabs",
@@ -419,8 +365,6 @@ fun SpacesTabSwitcher(
                 Spacer(Modifier.height(14.dp))
             }
 
-            // Visual tab card grid
-            val tabs = state.visibleTabs
             if (tabs.isEmpty()) {
                 Box(
                     modifier = Modifier
@@ -481,7 +425,14 @@ fun SpacesTabSwitcher(
                                 }
                             },
                             onLongPress = { actionTab = tab },
-                            onClose = { onCloseTab(tab.id) },
+                            onClose = {
+                                val essId = tab.essentialId
+                                if (essId != null) {
+                                    itemCallbacks.onCloseEssentialTab(essId)
+                                } else {
+                                    onCloseTab(tab.id)
+                                }
+                            },
                             modifier = Modifier.animateItem()
                         )
                     }
@@ -534,7 +485,7 @@ fun SpacesTabSwitcher(
                     label = "Reorder workspaces",
                     icon = Icons.Rounded.SwapVert,
                     enabled = state.spaces.size > 1,
-                    onClick = { reorderMode = SwitcherReorderMode.SPACES }
+                    onClick = { isReorderingSpaces = true }
                 ),
                 SheetActionItem(
                     label = "Delete workspace",
@@ -592,78 +543,6 @@ fun SpacesTabSwitcher(
         )
     }
 
-    actionEssential?.let { target ->
-        val boundTab = state.tabForEssential(target.id)
-        val actions = buildList {
-            if (boundTab != null) {
-                add(
-                    SheetActionItem(
-                        label = "Close tab",
-                        icon = Icons.Rounded.Close,
-                        onClick = { itemCallbacks.onCloseEssentialTab(target.id) }
-                    )
-                )
-                if (!boundTab.url.equals(target.url, ignoreCase = true)) {
-                    add(
-                        SheetActionItem(
-                            label = "Reset to pinned URL",
-                            icon = Icons.Rounded.Refresh,
-                            onClick = { itemCallbacks.onResetEssentialTab(target.id) }
-                        )
-                    )
-                }
-            }
-            add(
-                SheetActionItem(
-                    label = "Edit title & URL",
-                    icon = Icons.Rounded.Edit,
-                    onClick = { essentialToEdit = target }
-                )
-            )
-            add(
-                SheetActionItem(
-                    label = "Set custom icon",
-                    icon = Icons.Rounded.Palette,
-                    onClick = { essentialToPickIcon = target }
-                )
-            )
-            add(
-                SheetActionItem(
-                    label = "Reorder essentials",
-                    icon = Icons.Rounded.SwapVert,
-                    enabled = essentials.size > 1,
-                    onClick = { reorderMode = SwitcherReorderMode.ESSENTIALS }
-                )
-            )
-            add(
-                SheetActionItem(
-                    label = "Delete",
-                    icon = Icons.Rounded.DeleteOutline,
-                    isDestructive = true,
-                    onClick = { itemCallbacks.onRemoveEssential(target.id) }
-                )
-            )
-        }
-        ItemActionBottomSheet(
-            title = target.title,
-            subtitle = if (boundTab != null) "${target.domain} · Open" else target.domain,
-            leadingIcon = {
-                SiteIconBadge(
-                    url = target.url,
-                    fallbackLabel = target.title,
-                    customIcon = target.customIcon,
-                    size = 40.dp,
-                    iconSize = 24.dp,
-                    shape = RoundedCornerShape(12.dp),
-                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    fillImageToContainer = true
-                )
-            },
-            actions = actions,
-            onDismiss = { actionEssential = null }
-        )
-    }
-
     essentialToEdit?.let { target ->
         EditTitleAndUrlDialog(
             dialogTitle = "Edit Essential",
@@ -691,63 +570,97 @@ fun SpacesTabSwitcher(
 
     actionTab?.let { target ->
         val isPrivate = target.isPrivate
+        val boundEssential = target.essentialId?.let { id -> state.essentials.firstOrNull { it.id == id } }
         val actions = buildList {
             if (!isPrivate) {
-                if (target.isPinned && !target.isUnloaded) {
-                    add(
-                        SheetActionItem(
-                            label = "Close tab",
-                            icon = Icons.Rounded.Close,
-                            onClick = { itemCallbacks.onClosePinnedTab(target.id) }
-                        )
-                    )
-                    if (!target.pinnedUrl.isNullOrBlank() && !target.url.equals(target.pinnedUrl, ignoreCase = true)) {
+                if (boundEssential != null) {
+                    if (!target.url.equals(boundEssential.url, ignoreCase = true)) {
                         add(
                             SheetActionItem(
                                 label = "Reset to pinned URL",
                                 icon = Icons.Rounded.Refresh,
-                                onClick = { itemCallbacks.onResetPinnedTab(target.id) }
+                                onClick = { itemCallbacks.onResetEssentialTab(boundEssential.id) }
                             )
                         )
                     }
-                }
-                add(
-                    SheetActionItem(
-                        label = if (target.isPinned) "Unpin tab" else "Pin tab",
-                        icon = Icons.Rounded.PushPin,
-                        onClick = { itemCallbacks.onSetTabPinned(target.id, !target.isPinned) }
-                    )
-                )
-                if (!target.isStartPage) {
                     add(
                         SheetActionItem(
-                            label = "Add to Essentials",
-                            icon = Icons.Rounded.StarOutline,
-                            onClick = { itemCallbacks.onAddTabToEssentials(target.id) }
+                            label = "Edit title & URL",
+                            icon = Icons.Rounded.Edit,
+                            onClick = { essentialToEdit = boundEssential }
+                        )
+                    )
+                    add(
+                        SheetActionItem(
+                            label = "Set custom icon",
+                            icon = Icons.Rounded.Palette,
+                            onClick = { essentialToPickIcon = boundEssential }
+                        )
+                    )
+                } else {
+                    if (target.isPinned && !target.isUnloaded) {
+                        add(
+                            SheetActionItem(
+                                label = "Close tab",
+                                icon = Icons.Rounded.Close,
+                                onClick = { itemCallbacks.onClosePinnedTab(target.id) }
+                            )
+                        )
+                        if (!target.pinnedUrl.isNullOrBlank() && !target.url.equals(target.pinnedUrl, ignoreCase = true)) {
+                            add(
+                                SheetActionItem(
+                                    label = "Reset to pinned URL",
+                                    icon = Icons.Rounded.Refresh,
+                                    onClick = { itemCallbacks.onResetPinnedTab(target.id) }
+                                )
+                            )
+                        }
+                    }
+                    add(
+                        SheetActionItem(
+                            label = if (target.isPinned) "Unpin tab" else "Pin tab",
+                            icon = Icons.Rounded.PushPin,
+                            onClick = { itemCallbacks.onSetTabPinned(target.id, !target.isPinned) }
+                        )
+                    )
+                    if (!target.isStartPage) {
+                        add(
+                            SheetActionItem(
+                                label = "Add to Essentials",
+                                icon = Icons.Rounded.StarOutline,
+                                onClick = { itemCallbacks.onAddTabToEssentials(target.id) }
+                            )
+                        )
+                    }
+                    add(
+                        SheetActionItem(
+                            label = if (target.isPinned) "Edit pinned URL & label" else "Edit tab URL & label",
+                            icon = Icons.Rounded.Edit,
+                            onClick = { tabToEdit = target }
+                        )
+                    )
+                    add(
+                        SheetActionItem(
+                            label = "Set custom icon",
+                            icon = Icons.Rounded.Palette,
+                            onClick = { tabToPickIcon = target }
                         )
                     )
                 }
-                add(
-                    SheetActionItem(
-                        label = if (target.isPinned) "Edit pinned URL & label" else "Edit tab URL & label",
-                        icon = Icons.Rounded.Edit,
-                        onClick = { tabToEdit = target }
-                    )
-                )
-                add(
-                    SheetActionItem(
-                        label = "Set custom icon",
-                        icon = Icons.Rounded.Palette,
-                        onClick = { tabToPickIcon = target }
-                    )
-                )
             }
             add(
                 SheetActionItem(
                     label = if (target.isPinned) "Delete pin" else "Close tab",
                     icon = Icons.Rounded.DeleteOutline,
                     isDestructive = true,
-                    onClick = { onCloseTab(target.id) }
+                    onClick = {
+                        val essId = target.essentialId
+                        if (essId != null) {
+                            itemCallbacks.onCloseEssentialTab(essId)
+                        } else {
+                            onCloseTab(target.id)
+                        }
+                    }
                 )
             )
         }
@@ -1010,96 +923,6 @@ private fun SpacePillChip(
                 style = MaterialTheme.typography.labelMedium,
                 color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
             )
-        }
-    }
-}
-
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun CompactEssentialPill(
-    essential: EssentialEntity,
-    isLoaded: Boolean,
-    isActive: Boolean,
-    isPlayingMedia: Boolean,
-    isReorderMode: Boolean,
-    onClick: () -> Unit,
-    onLongClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val containerColor = when {
-        isActive -> MaterialTheme.colorScheme.primaryContainer
-        isLoaded -> MaterialTheme.colorScheme.surfaceContainerHigh
-        else -> MaterialTheme.colorScheme.surfaceContainer
-    }
-    val contentColor = when {
-        isActive -> MaterialTheme.colorScheme.onPrimaryContainer
-        isLoaded -> MaterialTheme.colorScheme.onSurface
-        else -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f)
-    }
-    val border = when {
-        isReorderMode -> BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
-        isActive -> BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
-        isLoaded -> BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.45f))
-        else -> BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
-    }
-
-    Surface(
-        shape = RoundedCornerShape(16.dp),
-        color = containerColor,
-        border = border,
-        modifier = modifier
-            .heightIn(min = 48.dp)
-            .clip(RoundedCornerShape(16.dp))
-            .then(
-                if (!isReorderMode) {
-                    Modifier.combinedClickable(
-                        onClick = onClick,
-                        onLongClick = onLongClick
-                    )
-                } else {
-                    Modifier
-                }
-            )
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            SiteIconBadge(
-                url = essential.url,
-                fallbackLabel = essential.title,
-                customIcon = essential.customIcon,
-                size = 24.dp,
-                iconSize = 18.dp,
-                shape = CircleShape,
-                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                fillImageToContainer = true,
-                modifier = Modifier.graphicsLayer { alpha = if (isLoaded || isActive || isReorderMode) 1f else 0.68f }
-            )
-            Text(
-                text = essential.title,
-                style = MaterialTheme.typography.labelMedium,
-                color = contentColor,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            if (isPlayingMedia && !isReorderMode) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Rounded.VolumeUp,
-                    contentDescription = "Playing media",
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(14.dp)
-                )
-            }
-            if (isLoaded && !isReorderMode) {
-                Box(
-                    modifier = Modifier
-                        .size(if (isActive) 8.dp else 7.dp)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.primary)
-                )
-            }
         }
     }
 }

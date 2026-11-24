@@ -213,13 +213,14 @@ object OmniboxCandidateBuilder {
             }
         }
 
+        val engineDisplayName = settings.searchEngine.displayName(settings.customSearchUrlTemplate)
         liveResult.searchQueries.forEach { suggestionText ->
             val url = OmniboxEngine.buildSearchUrl(suggestionText, settings)
             if (merged.none { it.title.equals(suggestionText, ignoreCase = true) }) {
                 merged += OmniboxSuggestion(
                     id = "live_$suggestionText",
                     title = suggestionText,
-                    subtitle = settings.searchEngine.label,
+                    subtitle = engineDisplayName,
                     targetUrl = url,
                     kind = SuggestionKind.SEARCH
                 )

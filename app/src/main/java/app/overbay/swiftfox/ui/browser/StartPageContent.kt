@@ -36,7 +36,6 @@ import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Refresh
-import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.SwapVert
 import androidx.compose.material.icons.rounded.Tab
 import androidx.compose.material3.AlertDialog
@@ -70,6 +69,7 @@ import app.overbay.swiftfox.data.prefs.AccentPreset
 import app.overbay.swiftfox.data.prefs.DevicePosture
 import app.overbay.swiftfox.data.prefs.SiteMode
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
+import app.overbay.swiftfox.features.omnibox.OmniboxSearchScope
 import app.overbay.swiftfox.ui.components.CustomIconPickerSheet
 import app.overbay.swiftfox.ui.components.DragAxis
 import app.overbay.swiftfox.ui.components.EditTitleAndUrlDialog
@@ -101,6 +101,8 @@ fun StartPageContent(
     onAddEssential: (String, String) -> Unit,
     onRemoveEssential: (String) -> Unit,
     onFocusOmniboxFromRect: (Rect?) -> Unit = { onFocusOmnibox() },
+    onFocusOmniboxWithScope: (Rect?, OmniboxSearchScope) -> Unit = { rect, _ -> onFocusOmniboxFromRect(rect) },
+    onOpenSearchSettings: () -> Unit = {},
     itemCallbacks: WorkspaceItemCallbacks = WorkspaceItemCallbacks(
         onAddEssential = onAddEssential,
         onRemoveEssential = onRemoveEssential
@@ -164,7 +166,7 @@ fun StartPageContent(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = if (isUnfolded) 12.dp else 6.dp),
+                    .padding(top = if (isUnfolded) 12.dp else 18.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
@@ -212,7 +214,7 @@ fun StartPageContent(
                 }
             }
 
-            // Primary Search Capsule (records bounds for smooth Omnibox morph expand)
+            // Primary Search Capsule (records bounds for smooth Omnibox morph expand + Firefox-style engine picker)
             Surface(
                 onClick = { onFocusOmniboxFromRect(searchCapsuleRect) },
                 shape = RoundedCornerShape(28.dp),
@@ -235,30 +237,23 @@ fun StartPageContent(
                     }
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                    modifier = Modifier.padding(start = 6.dp, end = 16.dp, top = 6.dp, bottom = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Surface(
-                        shape = CircleShape,
-                        color = if (isPrivate) {
-                            foxColors.privateContainer
-                        } else {
-                            MaterialTheme.colorScheme.primaryContainer
+                    SearchScopeSelectorAnchor(
+                        defaultEngine = state.settings.searchEngine,
+                        customSearchUrlTemplate = state.settings.customSearchUrlTemplate,
+                        activeScope = null,
+                        isPrivate = isPrivate,
+                        compact = false,
+                        onSelectScope = { scope ->
+                            onFocusOmniboxWithScope(searchCapsuleRect, scope)
                         },
-                        modifier = Modifier.size(32.dp)
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                                imageVector = Icons.Rounded.Search,
-                                contentDescription = null,
-                                tint = if (isPrivate) foxColors.privateAccent else MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                    }
+                        onOpenSearchSettings = onOpenSearchSettings
+                    )
                     Text(
-                        text = "Search ${state.settings.searchEngine.label} or type URL",
+                        text = "Search ${state.settings.searchEngine.displayName(state.settings.customSearchUrlTemplate)} or type URL",
                         style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,

@@ -72,13 +72,17 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import app.overbay.swiftfox.data.prefs.SearchEngineId
 import app.overbay.swiftfox.features.omnibox.InlineUrlAutocomplete
 import app.overbay.swiftfox.features.omnibox.OmniboxAutocompleteGate
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
+import app.overbay.swiftfox.features.omnibox.OmniboxSearchScope
 import app.overbay.swiftfox.features.omnibox.OmniboxSuggestion
 import app.overbay.swiftfox.features.omnibox.SuggestionKind
 import app.overbay.swiftfox.ui.components.SiteIconBadge
+import app.overbay.swiftfox.ui.theme.LocalSwiftfoxColors
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.yield
 
 @Composable
 fun OmniboxOverlay(
@@ -86,10 +90,15 @@ fun OmniboxOverlay(
     expandProgressProvider: () -> Float = { 1f },
     sourceRect: Rect? = null,
     query: String,
-    searchEngineLabel: String,
+    defaultSearchEngine: SearchEngineId,
+    customSearchUrlTemplate: String = "",
+    activeSearchScope: OmniboxSearchScope? = null,
+    isPrivate: Boolean = false,
     suggestions: List<OmniboxSuggestion>,
     inlineAutocomplete: InlineUrlAutocomplete? = null,
     onQueryChange: (String) -> Unit,
+    onSelectSearchScope: (OmniboxSearchScope?) -> Unit = {},
+    onOpenSearchSettings: () -> Unit = {},
     onSubmit: (String) -> Unit,
     onSelectSuggestion: (OmniboxSuggestion) -> Unit,
     onDismiss: () -> Unit
@@ -97,6 +106,7 @@ fun OmniboxOverlay(
     val focusRequester = remember { FocusRequester() }
     val focusManager = LocalFocusManager.current
     val density = LocalDensity.current
+    val foxColors = LocalSwiftfoxColors.current
     val quickBangs = remember { OmniboxEngine.bangs.take(7) }
     val quickTlds = remember { OmniboxEngine.quickTldShortcuts }
     var targetPillRect by remember { mutableStateOf<Rect?>(null) }
@@ -108,14 +118,22 @@ fun OmniboxOverlay(
         initialSelection = if (query.isNotEmpty()) TextRange(0, query.length) else TextRange.Zero
     )
     val currentText = textFieldState.text.toString()
-    val activeBang = remember(currentText) { OmniboxEngine.detectBang(currentText) }
+    val activeBang = remember(currentText, activeSearchScope) {
+        if (activeSearchScope == null || activeSearchScope is OmniboxSearchScope.Engine) {
+            OmniboxEngine.detectBang(currentText)
+        } else {
+            null
+        }
+    }
     val isAllSelected = currentText.isNotEmpty() &&
         textFieldState.selection.min == 0 &&
         textFieldState.selection.max == currentText.length
-    val showQuickTldChips = !isAllSelected && remember(currentText) {
+    val showQuickTldChips = activeSearchScope == null && !isAllSelected && remember(currentText) {
         OmniboxEngine.shouldShowQuickTldChips(currentText)
     }
     var lastSyncedExternalQuery by remember { mutableStateOf(query) }
+    var clearPrefilledUrlOnScopeSelect by remember { mutableStateOf(false) }
+    var focusRequestNonce by remember { mutableIntStateOf(0) }
     val autocompleteGate = remember { OmniboxAutocompleteGate(initialSuppressed = query.isNotEmpty()) }
     var gateVersion by remember { mutableIntStateOf(0) }
 
@@ -160,7 +178,15 @@ fun OmniboxOverlay(
             }
             focusRequester.requestFocus()
         } else {
+            clearPrefilledUrlOnScopeSelect = false
             focusManager.clearFocus(force = true)
+        }
+    }
+
+    LaunchedEffect(focusRequestNonce) {
+        if (focusRequestNonce > 0 && isVisible) {
+            yield()
+            focusRequester.requestFocus()
         }
     }
 
@@ -320,14 +346,15 @@ fun OmniboxOverlay(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(start = 14.dp, end = 6.dp),
+                            .padding(start = 6.dp, end = 6.dp, top = 4.dp, bottom = 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         if (activeBang != null) {
                             Surface(
                                 shape = RoundedCornerShape(14.dp),
-                                color = MaterialTheme.colorScheme.primaryContainer
+                                color = MaterialTheme.colorScheme.primaryContainer,
+                                modifier = Modifier.padding(start = 6.dp)
                             ) {
                                 Text(
                                     text = activeBang.bang.name,
@@ -337,11 +364,31 @@ fun OmniboxOverlay(
                                 )
                             }
                         } else {
-                            Icon(
-                                imageVector = Icons.Rounded.Search,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(20.dp)
+                            SearchScopeSelectorAnchor(
+                                defaultEngine = defaultSearchEngine,
+                                customSearchUrlTemplate = customSearchUrlTemplate,
+                                activeScope = activeSearchScope,
+                                isPrivate = isPrivate,
+                                compact = true,
+                                onMenuOpened = {
+                                    clearPrefilledUrlOnScopeSelect =
+                                        isAllSelected && OmniboxEngine.looksLikeUrl(currentText)
+                                },
+                                onSelectScope = { scope ->
+                                    val shouldClear = clearPrefilledUrlOnScopeSelect ||
+                                        (isAllSelected && OmniboxEngine.looksLikeUrl(currentText))
+                                    clearPrefilledUrlOnScopeSelect = false
+                                    if (shouldClear) {
+                                        autocompleteGate.onCleared()
+                                        gateVersion++
+                                        textFieldState.setTextAndPlaceCursorAtEnd("")
+                                        lastSyncedExternalQuery = ""
+                                        onQueryChange("")
+                                    }
+                                    onSelectSearchScope(scope)
+                                    focusRequestNonce++
+                                },
+                                onOpenSearchSettings = onOpenSearchSettings
                             )
                         }
 
@@ -353,15 +400,17 @@ fun OmniboxOverlay(
                             textStyle = MaterialTheme.typography.bodyLarge.copy(
                                 color = MaterialTheme.colorScheme.onSurface
                             ),
-                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                            cursorBrush = SolidColor(if (isPrivate) foxColors.privateAccent else MaterialTheme.colorScheme.primary),
                             keyboardOptions = KeyboardOptions(
-                                keyboardType = KeyboardType.Uri,
-                                imeAction = ImeAction.Go
+                                keyboardType = if (activeSearchScope != null) KeyboardType.Text else KeyboardType.Uri,
+                                imeAction = if (activeSearchScope != null) ImeAction.Search else ImeAction.Go
                             ),
                             onKeyboardAction = {
                                 val completion = activeAutocomplete
                                 val text = textFieldState.text.toString()
-                                if (completion != null) {
+                                if (activeSearchScope?.isLocalFilter == true) {
+                                    onSubmit(text)
+                                } else if (completion != null) {
                                     onSubmit(completion.targetUrl)
                                 } else if (text.isNotBlank()) {
                                     onSubmit(text)
@@ -369,8 +418,10 @@ fun OmniboxOverlay(
                             },
                             decorator = { inner ->
                                 if (currentText.isEmpty()) {
+                                    val placeholderText = activeSearchScope?.placeholder(customSearchUrlTemplate)
+                                        ?: "Search ${defaultSearchEngine.displayName(customSearchUrlTemplate)} or enter address"
                                     Text(
-                                        text = "Search $searchEngineLabel or enter address",
+                                        text = placeholderText,
                                         style = MaterialTheme.typography.bodyLarge,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         maxLines = 1,
@@ -418,12 +469,50 @@ fun OmniboxOverlay(
                         translationY = bodySlideMaxPx * (1f - bodyProgress)
                     }
             ) {
-                // Quick TLD shortcuts (while typing a single domain-like token) or Quick Bangs
+                // Active one-time scope reset chip, Quick TLD shortcuts, or Quick Bangs
                 LazyRow(
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    if (showQuickTldChips) {
+                    if (activeSearchScope != null) {
+                        item(key = "active_scope_chip", contentType = "active_scope_chip") {
+                            Surface(
+                                onClick = {
+                                    onSelectSearchScope(null)
+                                    focusRequestNonce++
+                                },
+                                shape = RoundedCornerShape(16.dp),
+                                color = if (isPrivate) foxColors.privateContainer else MaterialTheme.colorScheme.primaryContainer,
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (isPrivate) {
+                                        foxColors.privateAccent.copy(alpha = 0.5f)
+                                    } else {
+                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
+                                    }
+                                ),
+                                modifier = Modifier.heightIn(min = 48.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(start = 14.dp, end = 10.dp, top = 12.dp, bottom = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Text(
+                                        text = "Searching in ${activeSearchScope.displayLabel(customSearchUrlTemplate)}",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        color = if (isPrivate) foxColors.onPrivateContainer else MaterialTheme.colorScheme.onPrimaryContainer
+                                    )
+                                    Icon(
+                                        imageVector = Icons.Rounded.Close,
+                                        contentDescription = "Clear search engine filter",
+                                        tint = if (isPrivate) foxColors.privateAccent else MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
+                        }
+                    } else if (showQuickTldChips) {
                         items(
                             items = quickTlds,
                             key = { "tld_$it" },
@@ -516,20 +605,40 @@ fun OmniboxOverlay(
 
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
 
-                // Ranked suggestions with web favicons
-                LazyColumn(
-                    modifier = Modifier.weight(1f),
-                    contentPadding = PaddingValues(vertical = 8.dp)
-                ) {
-                    items(
-                        items = suggestions,
-                        key = { it.id },
-                        contentType = { it.kind }
-                    ) { suggestion ->
-                        SuggestionRow(
-                            suggestion = suggestion,
-                            onClick = { onSelectSuggestion(suggestion) }
+                // Ranked suggestions with web favicons (or helpful empty state for local scope filters)
+                if (activeSearchScope != null && activeSearchScope.isLocalFilter && suggestions.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .padding(horizontal = 24.dp, vertical = 32.dp),
+                        contentAlignment = Alignment.TopCenter
+                    ) {
+                        Text(
+                            text = if (currentText.isBlank()) {
+                                "No ${activeSearchScope.shortLabel.lowercase()} to show"
+                            } else {
+                                "No matching ${activeSearchScope.shortLabel.lowercase()} found"
+                            },
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(vertical = 8.dp)
+                    ) {
+                        items(
+                            items = suggestions,
+                            key = { it.id },
+                            contentType = { it.kind }
+                        ) { suggestion ->
+                            SuggestionRow(
+                                suggestion = suggestion,
+                                onClick = { onSelectSuggestion(suggestion) }
+                            )
+                        }
                     }
                 }
             }

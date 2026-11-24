@@ -2,6 +2,7 @@ package app.overbay.swiftfox.features.omnibox
 
 import app.overbay.swiftfox.BuildConfig
 import app.overbay.swiftfox.data.prefs.BrowserSettings
+import app.overbay.swiftfox.data.prefs.SearchEngineId
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -269,9 +270,13 @@ object OmniboxEngine {
         return true
     }
 
-    fun buildSearchUrl(query: String, settings: BrowserSettings): String {
+    fun buildSearchUrl(
+        query: String,
+        settings: BrowserSettings,
+        engineOverride: SearchEngineId? = null
+    ): String {
         val encoded = URLEncoder.encode(query.trim(), StandardCharsets.UTF_8.name())
-        return settings.resolvedSearchTemplate().replace("%s", encoded)
+        return settings.resolvedSearchTemplate(engineOverride).replace("%s", encoded)
     }
 
     fun bangHomepageUrl(bang: SearchBang): String {
@@ -283,7 +288,11 @@ object OmniboxEngine {
         }.getOrElse { bang.urlTemplate.replace("%s", "") }
     }
 
-    fun resolveInput(rawInput: String, settings: BrowserSettings): String {
+    fun resolveInput(
+        rawInput: String,
+        settings: BrowserSettings,
+        searchScope: OmniboxSearchScope? = null
+    ): String {
         val trimmed = rawInput.trim()
         if (trimmed.isEmpty()) return NEW_TAB_URL
 
@@ -295,6 +304,10 @@ object OmniboxEngine {
             } else {
                 bangHomepageUrl(bangMatch.bang)
             }
+        }
+
+        if (searchScope is OmniboxSearchScope.Engine) {
+            return buildSearchUrl(trimmed, settings, engineOverride = searchScope.engine)
         }
 
         if (looksLikeUrl(trimmed)) {
@@ -970,13 +983,16 @@ object OmniboxEngine {
 
     suspend fun fetchLiveSuggestionsResult(
         query: String,
-        settings: BrowserSettings
+        settings: BrowserSettings,
+        engineOverride: SearchEngineId? = null
     ): LiveSuggestionsResult = withContext(Dispatchers.IO) {
         val trimmed = query.trim()
         if (trimmed.length < 2 || !settings.searchSuggestionsEnabled) return@withContext LiveSuggestionsResult()
-        if (looksLikeUrl(trimmed) || detectBang(trimmed) != null) return@withContext LiveSuggestionsResult()
+        if (detectBang(trimmed) != null) return@withContext LiveSuggestionsResult()
+        if (engineOverride == null && looksLikeUrl(trimmed)) return@withContext LiveSuggestionsResult()
 
-        val template = settings.searchEngine.suggestUrlTemplate ?: return@withContext LiveSuggestionsResult()
+        val activeEngine = engineOverride ?: settings.searchEngine
+        val template = activeEngine.suggestUrlTemplate ?: return@withContext LiveSuggestionsResult()
         val encoded = URLEncoder.encode(trimmed, StandardCharsets.UTF_8.name())
         val requestUrl = template.replace("%s", encoded)
 

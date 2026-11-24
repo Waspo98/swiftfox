@@ -24,6 +24,7 @@ import app.overbay.swiftfox.features.adblock.AdblockEngineStatus
 import app.overbay.swiftfox.features.foldable.FoldableWindowState
 import app.overbay.swiftfox.features.omnibox.InlineUrlAutocomplete
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
+import app.overbay.swiftfox.features.omnibox.OmniboxSearchScope
 import app.overbay.swiftfox.features.omnibox.OmniboxSuggestion
 import app.overbay.swiftfox.features.reader.ReaderArticle
 import app.overbay.swiftfox.features.sync.RemoteDeviceTabsGroup
@@ -134,7 +135,10 @@ data class BrowserUiState(
     val isUnfoldedRailExpanded: Boolean = true,
     val isOmniboxFocused: Boolean = false,
     val omniboxQuery: String = "",
+    val omniboxSearchScope: OmniboxSearchScope? = null,
     val omniboxSuggestions: List<OmniboxSuggestion> = emptyList(),
+    val omniboxSuggestionsQuery: String = "",
+    val omniboxSuggestionsScope: OmniboxSearchScope? = null,
     val omniboxInlineAutocomplete: InlineUrlAutocomplete? = null,
     val isSiteRulesOpen: Boolean = false,
     val activeOverlay: BrowserOverlay = BrowserOverlay.NONE,
@@ -208,12 +212,41 @@ data class BrowserUiState(
     fun tabForZenPinned(zenPinnedId: String): BrowserTabUi? =
         tabs.firstOrNull { !it.isPrivate && it.zenPinnedId == zenPinnedId }
 
-    val loadedActiveEssentials: List<BrowserTabUi>
-        get() = if (isPrivateView) {
+    fun loadedEssentialsForSpace(spaceId: String): List<BrowserTabUi> =
+        if (isPrivateView) {
             emptyList()
         } else {
-            activeSpaceEssentials.mapNotNull { ess -> tabForEssential(ess.id) }
+            essentialsForSpace(spaceId).mapNotNull { ess -> tabForEssential(ess.id) }
         }
+
+    val loadedActiveEssentials: List<BrowserTabUi>
+        get() = loadedEssentialsForSpace(activeSpaceId)
+
+    /**
+     * Tabs rendered as visual preview cards in the Tab Switcher: includes loaded Essentials
+     * alongside the active Space's pinned and regular tabs so open Essentials look like any other tab.
+     */
+    val tabSwitcherTabs: List<BrowserTabUi>
+        get() = if (isPrivateView) {
+            tabs.filter { it.isPrivate }
+        } else {
+            loadedActiveEssentials + visibleTabs
+        }
+
+    /**
+     * Count badge shown on each Space pill inside the Tab Switcher, including loaded Essentials
+     * scoped to that Space so the pill count matches the open cards rendered for that Space.
+     */
+    fun tabSwitcherCountForSpace(spaceId: String): Int {
+        val loadedEssCount = essentialsForSpace(spaceId)
+            .mapNotNull { ess -> tabForEssential(ess.id)?.id }
+            .distinct()
+            .size
+        val spaceLoadedCount = tabs.count {
+            !it.isPrivate && !it.isUnloaded && !it.isEssentialTab && it.spaceId == spaceId
+        }
+        return loadedEssCount + spaceLoadedCount
+    }
 
     val loadedActiveZenPinned: List<BrowserTabUi>
         get() = if (isPrivateView) {
@@ -293,24 +326,26 @@ data class BrowserUiState(
     val activeSpaceZenPinned: List<ZenPinnedItemEntity>
         get() = zenPinnedItems.filter { it.spaceId == activeSpaceId }
 
-    val activeSpaceEssentials: List<EssentialEntity>
-        get() {
-            val separate = settings.syncZenSeparateEssentials
-            if (separate == false) return essentials
-            val spaceContainer = activeSpace?.zenContainerGuid?.takeIf { it.isNotBlank() }
-            val shouldSeparate = separate ?: essentials.any {
-                !it.zenContainerGuid.isNullOrBlank() && it.zenContainerGuid != "default"
-            }
-            return if (!shouldSeparate) {
-                essentials
-            } else {
-                essentials.filter { ess ->
-                    ess.syncGuid == null ||
-                        ess.zenContainerGuid.isNullOrBlank() ||
-                        ess.zenContainerGuid == (spaceContainer ?: "default")
-                }
+    fun essentialsForSpace(spaceId: String): List<EssentialEntity> {
+        val separate = settings.syncZenSeparateEssentials
+        if (separate == false) return essentials
+        val spaceContainer = spaces.firstOrNull { it.id == spaceId }?.zenContainerGuid?.takeIf { it.isNotBlank() }
+        val shouldSeparate = separate ?: essentials.any {
+            !it.zenContainerGuid.isNullOrBlank() && it.zenContainerGuid != "default"
+        }
+        return if (!shouldSeparate) {
+            essentials
+        } else {
+            essentials.filter { ess ->
+                ess.syncGuid == null ||
+                    ess.zenContainerGuid.isNullOrBlank() ||
+                    ess.zenContainerGuid == (spaceContainer ?: "default")
             }
         }
+    }
+
+    val activeSpaceEssentials: List<EssentialEntity>
+        get() = essentialsForSpace(activeSpaceId)
 }
 
 data class TabThumbnailsSnapshot(

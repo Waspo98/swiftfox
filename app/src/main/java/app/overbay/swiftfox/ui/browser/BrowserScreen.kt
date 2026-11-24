@@ -149,6 +149,7 @@ import app.overbay.swiftfox.engine.HttpsUpgradeErrorPrompt
 import app.overbay.swiftfox.engine.SitePermissionPrompt
 import app.overbay.swiftfox.engine.SwiftfoxWebView
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
+import app.overbay.swiftfox.features.omnibox.OmniboxSearchScope
 import app.overbay.swiftfox.features.omnibox.OmniboxSuggestion
 import app.overbay.swiftfox.features.reader.ReaderArticle
 import app.overbay.swiftfox.ui.reader.ReaderModeOverlay
@@ -429,6 +430,11 @@ fun BrowserScreen(
                 omniboxSourceRect = rect
                 viewModel.focusOmnibox(prefillCurrentUrl = prefillCurrentUrl)
             },
+            onFocusOmniboxWithScope = { rect, scope ->
+                omniboxSourceRect = rect
+                viewModel.focusOmnibox(prefillCurrentUrl = false, searchScope = scope)
+            },
+            onOpenSearchSettings = { viewModel.openSearchSettings() },
             onFocusSearchFresh = {
                 omniboxSourceRect = null
                 viewModel.focusOmnibox(prefillCurrentUrl = false)
@@ -991,10 +997,15 @@ fun BrowserScreen(
                 expandProgressProvider = { omniboxProgress.value },
                 sourceRect = omniboxSourceRect,
                 query = state.omniboxQuery,
-                searchEngineLabel = state.settings.searchEngine.label,
+                defaultSearchEngine = state.settings.searchEngine,
+                customSearchUrlTemplate = state.settings.customSearchUrlTemplate,
+                activeSearchScope = state.omniboxSearchScope,
+                isPrivate = activeTab?.isPrivate == true || state.isPrivateView,
                 suggestions = state.omniboxSuggestions,
                 inlineAutocomplete = state.omniboxInlineAutocomplete,
                 onQueryChange = { viewModel.onOmniboxQueryChanged(it) },
+                onSelectSearchScope = { viewModel.setOmniboxSearchScope(it) },
+                onOpenSearchSettings = { viewModel.openSearchSettings() },
                 onSubmit = { viewModel.submitOmnibox(it) },
                 onSelectSuggestion = { suggestion: OmniboxSuggestion ->
                     if (suggestion.tabId != null) {
@@ -1164,6 +1175,10 @@ fun BrowserShellLayout(
     onFocusOmniboxFromRect: (Rect?, Boolean) -> Unit = { _, prefill ->
         if (prefill) onFocusOmnibox() else onFocusSearchFresh()
     },
+    onFocusOmniboxWithScope: (Rect?, OmniboxSearchScope) -> Unit = { rect, _ ->
+        onFocusOmniboxFromRect(rect, false)
+    },
+    onOpenSearchSettings: () -> Unit = {},
     onGoBack: () -> Unit,
     onGoForward: () -> Unit,
     onReloadOrStop: () -> Unit,
@@ -1288,8 +1303,11 @@ fun BrowserShellLayout(
         color = MaterialTheme.colorScheme.background,
         contentColor = MaterialTheme.colorScheme.onBackground
     ) {
-        val hasTopToolbar = !hideChrome &&
-            (placement == ToolbarPlacement.TOP || placement == ToolbarPlacement.SPLIT)
+        val isStartPage = activeTab == null || activeTab.isStartPage
+        val hasTopToolbar = !hideChrome && (
+            placement == ToolbarPlacement.TOP ||
+                (placement == ToolbarPlacement.SPLIT && !isStartPage)
+        )
         val chromeHeights = remember { ChromeBarHeights() }
 
         Row(modifier = Modifier.fillMaxSize()) {
@@ -1327,10 +1345,11 @@ fun BrowserShellLayout(
                 },
                 statusBarStrip = {
                     if (!hideChrome) {
-                        val stripColor = if (hasTopToolbar) {
-                            MaterialTheme.colorScheme.surfaceContainerLow
-                        } else {
-                            MaterialTheme.colorScheme.surface
+                        val stripColor = when {
+                            hasTopToolbar && !(placement == ToolbarPlacement.TOP && isStartPage) ->
+                                MaterialTheme.colorScheme.surfaceContainerLow
+                            isStartPage -> MaterialTheme.colorScheme.background
+                            else -> MaterialTheme.colorScheme.surface
                         }
                         Spacer(
                             modifier = Modifier
@@ -1363,6 +1382,7 @@ fun BrowserShellLayout(
                                     isTop = true,
                                     showInlineNav = posture == DevicePosture.UNFOLDED,
                                     showTrailingActions = true,
+                                    showUrlPill = !isStartPage,
                                     showSidebarToggle = posture == DevicePosture.FOLDED,
                                     isSidebarOpen = state.isFoldedSidebarOpen,
                                     onToggleSidebar = onToggleWorkspaceSidebar,
@@ -1377,20 +1397,22 @@ fun BrowserShellLayout(
                                 )
                             }
                             ToolbarPlacement.SPLIT -> {
-                                FullOmniboxToolbar(
-                                    state = state,
-                                    isTop = true,
-                                    showInlineNav = false,
-                                    showTrailingActions = false,
-                                    onFocusOmnibox = { rect -> onFocusOmniboxFromRect(rect, true) },
-                                    onGoBack = onGoBack,
-                                    onGoForward = onGoForward,
-                                    onReloadOrStop = onReloadOrStop,
-                                    onOpenReaderMode = onOpenReaderMode,
-                                    onOpenSettings = onOpenSettings,
-                                    onOpenTabSwitcher = onOpenTabSwitcher,
-                                    onSwitchAdjacentTab = onSwitchAdjacentTab
-                                )
+                                if (!isStartPage) {
+                                    FullOmniboxToolbar(
+                                        state = state,
+                                        isTop = true,
+                                        showInlineNav = false,
+                                        showTrailingActions = false,
+                                        onFocusOmnibox = { rect -> onFocusOmniboxFromRect(rect, true) },
+                                        onGoBack = onGoBack,
+                                        onGoForward = onGoForward,
+                                        onReloadOrStop = onReloadOrStop,
+                                        onOpenReaderMode = onOpenReaderMode,
+                                        onOpenSettings = onOpenSettings,
+                                        onOpenTabSwitcher = onOpenTabSwitcher,
+                                        onSwitchAdjacentTab = onSwitchAdjacentTab
+                                    )
+                                }
                             }
                             ToolbarPlacement.BOTTOM, ToolbarPlacement.SIDE_RAIL -> Unit
                         }
@@ -1421,6 +1443,7 @@ fun BrowserShellLayout(
                                     isTop = false,
                                     showInlineNav = false,
                                     showTrailingActions = true,
+                                    showUrlPill = !isStartPage,
                                     showSidebarToggle = posture == DevicePosture.FOLDED,
                                     isSidebarOpen = state.isFoldedSidebarOpen,
                                     onToggleSidebar = onToggleWorkspaceSidebar,
@@ -1471,6 +1494,8 @@ fun BrowserShellLayout(
                                 state = state,
                                 onFocusOmnibox = onFocusSearchFresh,
                                 onFocusOmniboxFromRect = { rect -> onFocusOmniboxFromRect(rect, false) },
+                                onFocusOmniboxWithScope = onFocusOmniboxWithScope,
+                                onOpenSearchSettings = onOpenSearchSettings,
                                 onOpenUrl = onOpenUrl,
                                 onSelectSpace = onSelectSpace,
                                 onSelectTab = onSelectTab,
@@ -1819,6 +1844,7 @@ private fun FullOmniboxToolbar(
     onOpenSettings: () -> Unit,
     onOpenTabSwitcher: () -> Unit,
     onSwitchAdjacentTab: (Int) -> Unit,
+    showUrlPill: Boolean = true,
     showSidebarToggle: Boolean = false,
     isSidebarOpen: Boolean = false,
     onToggleSidebar: () -> Unit = {}
@@ -1867,9 +1893,14 @@ private fun FullOmniboxToolbar(
         Modifier
     }
 
+    val transparentStartTopChrome = isTop && !showUrlPill
     Surface(
-        color = MaterialTheme.colorScheme.surfaceContainerLow,
-        tonalElevation = 2.dp,
+        color = if (transparentStartTopChrome) {
+            MaterialTheme.colorScheme.background
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerLow
+        },
+        tonalElevation = if (transparentStartTopChrome) 0.dp else 2.dp,
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(
@@ -1949,115 +1980,124 @@ private fun FullOmniboxToolbar(
                     }
                 }
 
-                // Rounded Omnibox Capsule Pill (26dp radius + swipe tab switch + bounds tracking for morph expand)
-                var urlPillRect by remember { mutableStateOf<Rect?>(null) }
-                Surface(
-                    onClick = { onFocusOmnibox(urlPillRect) },
-                    shape = RoundedCornerShape(26.dp),
-                    color = if (isPrivate) {
-                        foxColors.privateContainer
-                    } else {
-                        MaterialTheme.colorScheme.surfaceContainerHigh
-                    },
-                    border = BorderStroke(
-                        width = 1.dp,
+                // Rounded Omnibox Capsule Pill (hidden on Start Page where the Start Page search bar is primary)
+                if (showUrlPill) {
+                    var urlPillRect by remember { mutableStateOf<Rect?>(null) }
+                    Surface(
+                        onClick = { onFocusOmnibox(urlPillRect) },
+                        shape = RoundedCornerShape(26.dp),
                         color = if (isPrivate) {
-                            foxColors.privateAccent.copy(alpha = 0.55f)
+                            foxColors.privateContainer
                         } else {
-                            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)
-                        }
-                    ),
-                    modifier = Modifier
-                        .weight(1f)
-                        .heightIn(min = 48.dp)
-                        .onGloballyPositioned { coords ->
-                            if (coords.isAttached) urlPillRect = coords.boundsInRoot()
-                        }
-                        .then(swipeModifier)
-                ) {
-                    Row(
+                            MaterialTheme.colorScheme.surfaceContainerHigh
+                        },
+                        border = BorderStroke(
+                            width = 1.dp,
+                            color = if (isPrivate) {
+                                foxColors.privateAccent.copy(alpha = 0.55f)
+                            } else {
+                                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)
+                            }
+                        ),
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(start = 12.dp, end = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            .weight(1f)
+                            .heightIn(min = 48.dp)
+                            .onGloballyPositioned { coords ->
+                                if (coords.isAttached) urlPillRect = coords.boundsInRoot()
+                            }
+                            .then(swipeModifier)
                     ) {
-                        // Shield / security indicator lit with Fox Amber
-                        Icon(
-                            imageVector = when {
-                                isPrivate -> Icons.Rounded.Shield
-                                activeTab == null || activeTab.isStartPage -> Icons.Rounded.Search
-                                activeTab.isSecureHttps -> Icons.Rounded.Security
-                                else -> Icons.Rounded.LockOpen
-                            },
-                            contentDescription = "Site security",
-                            tint = if (isPrivate) {
-                                foxColors.privateAccent
-                            } else {
-                                MaterialTheme.colorScheme.primary
-                            },
-                            modifier = Modifier.size(18.dp)
-                        )
-
-                        Text(
-                            text = when {
-                                activeTab == null || activeTab.isStartPage ->
-                                    "Enter URL or !bang"
-                                else -> activeTab.displayHost
-                            },
-                            style = MaterialTheme.typography.bodyMedium.copy(
-                                fontWeight = if (activeTab != null && !activeTab.isStartPage) {
-                                    FontWeight.Medium
-                                } else {
-                                    FontWeight.Normal
-                                }
-                            ),
-                            color = if (activeTab != null && !activeTab.isStartPage) {
-                                MaterialTheme.colorScheme.onSurface
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            },
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f)
-                        )
-
-                        if (activeTab != null && !activeTab.isStartPage && activeTab.resolvedSiteMode == SiteMode.DESKTOP) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = 12.dp, end = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            // Shield / security indicator lit with Fox Amber
                             Icon(
-                                imageVector = Icons.Rounded.DesktopWindows,
-                                contentDescription = "Desktop view active",
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(16.dp)
+                                imageVector = when {
+                                    isPrivate -> Icons.Rounded.Shield
+                                    activeTab == null || activeTab.isStartPage -> Icons.Rounded.Search
+                                    activeTab.isSecureHttps -> Icons.Rounded.Security
+                                    else -> Icons.Rounded.LockOpen
+                                },
+                                contentDescription = "Site security",
+                                tint = if (isPrivate) {
+                                    foxColors.privateAccent
+                                } else {
+                                    MaterialTheme.colorScheme.primary
+                                },
+                                modifier = Modifier.size(18.dp)
                             )
-                        }
 
-                        if (activeTab != null && !activeTab.isStartPage && activeTab.isReaderAvailable) {
-                            IconButton(
-                                onClick = onOpenReaderMode,
-                                modifier = Modifier.size(48.dp)
-                            ) {
+                            Text(
+                                text = when {
+                                    activeTab == null || activeTab.isStartPage ->
+                                        "Enter URL or !bang"
+                                    else -> activeTab.displayHost
+                                },
+                                style = MaterialTheme.typography.bodyMedium.copy(
+                                    fontWeight = if (activeTab != null && !activeTab.isStartPage) {
+                                        FontWeight.Medium
+                                    } else {
+                                        FontWeight.Normal
+                                    }
+                                ),
+                                color = if (activeTab != null && !activeTab.isStartPage) {
+                                    MaterialTheme.colorScheme.onSurface
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+
+                            if (activeTab != null && !activeTab.isStartPage && activeTab.resolvedSiteMode == SiteMode.DESKTOP) {
                                 Icon(
-                                    imageVector = Icons.AutoMirrored.Rounded.MenuBook,
-                                    contentDescription = "Reader mode",
+                                    imageVector = Icons.Rounded.DesktopWindows,
+                                    contentDescription = "Desktop view active",
                                     tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(20.dp)
+                                    modifier = Modifier.size(16.dp)
                                 )
                             }
-                        }
 
-                        if (activeTab != null && !activeTab.isStartPage) {
-                            IconButton(
-                                onClick = onReloadOrStop,
-                                modifier = Modifier.size(48.dp)
-                            ) {
-                                Icon(
-                                    imageVector = if (activeTab.isLoading) Icons.Rounded.Close else Icons.Rounded.Refresh,
-                                    contentDescription = if (activeTab.isLoading) "Stop loading" else "Reload page",
-                                    modifier = Modifier.size(20.dp)
-                                )
+                            if (activeTab != null && !activeTab.isStartPage && activeTab.isReaderAvailable) {
+                                IconButton(
+                                    onClick = onOpenReaderMode,
+                                    modifier = Modifier.size(48.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Rounded.MenuBook,
+                                        contentDescription = "Reader mode",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
+
+                            if (activeTab != null && !activeTab.isStartPage) {
+                                IconButton(
+                                    onClick = onReloadOrStop,
+                                    modifier = Modifier.size(48.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = if (activeTab.isLoading) Icons.Rounded.Close else Icons.Rounded.Refresh,
+                                        contentDescription = if (activeTab.isLoading) "Stop loading" else "Reload page",
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
                             }
                         }
                     }
+                } else {
+                    Spacer(
+                        modifier = Modifier
+                            .weight(1f)
+                            .heightIn(min = 48.dp)
+                            .then(swipeModifier)
+                    )
                 }
 
                 if (showTrailingActions) {
@@ -2086,7 +2126,8 @@ private fun FullOmniboxToolbar(
                 ToolbarProgressSlot(
                     isLoading = activeTab?.isLoading == true,
                     progress = activeTab?.progress ?: 0,
-                    dividerAlignment = Alignment.BottomCenter
+                    dividerAlignment = Alignment.BottomCenter,
+                    showIdleDivider = !transparentStartTopChrome
                 )
             }
         }

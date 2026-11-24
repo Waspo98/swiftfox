@@ -44,11 +44,14 @@ import app.overbay.swiftfox.engine.BackgroundMediaService
 import app.overbay.swiftfox.engine.BrowserSession
 import app.overbay.swiftfox.engine.ContextMenuHit
 import app.overbay.swiftfox.engine.ExternalAppPrompt
+import app.overbay.swiftfox.engine.GlobalPrepaintDarkConfig
 import app.overbay.swiftfox.engine.HttpsUpgradeErrorPrompt
+import app.overbay.swiftfox.engine.PrepaintDarkMode
 import app.overbay.swiftfox.engine.ScriptInjector
 import app.overbay.swiftfox.engine.SessionHostCallbacks
 import app.overbay.swiftfox.engine.SitePermissionPrompt
 import app.overbay.swiftfox.features.darkreader.DarkReaderConfig
+import app.overbay.swiftfox.features.darkreader.ResolvedWebDarkState
 import app.overbay.swiftfox.features.foldable.FoldableWindowState
 import app.overbay.swiftfox.features.foldable.SiteModeResolver
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
@@ -129,10 +132,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private val pageStartedInjectJobByTab = ConcurrentHashMap<String, Job>()
     private val pageFinishedInjectJobByTab = ConcurrentHashMap<String, Job>()
     private val privateSessionGeneration = AtomicLong(0L)
+    private val privateUserscriptStorageLock = Any()
     private val privateUserscriptStorage = ConcurrentHashMap<String, ConcurrentHashMap<String, String>>()
     private val privateDeletedUserscriptKeys = ConcurrentHashMap<String, MutableSet<String>>()
     private val tabDbMutex = Mutex()
-    private val siteOverrideMutex = Mutex()
+    private val siteOverrideWrites = SiteOverrideWriteCoordinator<Map<String, SiteOverrideEntity>>()
     private val syncPrefsMutex = Mutex()
     private val pendingCreatedSpaces = ConcurrentHashMap<String, SpaceEntity>()
     private val viewModelJson = Json { ignoreUnknownKeys = true }
@@ -154,20 +158,22 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private fun mergePrivateUserscriptStorage(
         scriptsWithStorage: List<Pair<UserscriptEntity, Map<String, String>>>
     ): List<Pair<UserscriptEntity, Map<String, String>>> {
-        if (privateUserscriptStorage.isEmpty() && privateDeletedUserscriptKeys.isEmpty()) {
-            return scriptsWithStorage
-        }
         if (scriptsWithStorage.isEmpty()) return scriptsWithStorage
-        return scriptsWithStorage.map { (script, persisted) ->
-            val ephemeral = privateUserscriptStorage[script.id]
-            val deleted = privateDeletedUserscriptKeys[script.id]
-            if (ephemeral.isNullOrEmpty() && deleted.isNullOrEmpty()) {
-                script to persisted
-            } else {
-                val merged = LinkedHashMap<String, String>(persisted)
-                deleted?.forEach { merged.remove(it) }
-                ephemeral?.forEach { (k, v) -> merged[k] = v }
-                script to merged
+        return synchronized(privateUserscriptStorageLock) {
+            if (privateUserscriptStorage.isEmpty() && privateDeletedUserscriptKeys.isEmpty()) {
+                return@synchronized scriptsWithStorage
+            }
+            scriptsWithStorage.map { (script, persisted) ->
+                val ephemeral = privateUserscriptStorage[script.id]
+                val deleted = privateDeletedUserscriptKeys[script.id]
+                if (ephemeral.isNullOrEmpty() && deleted.isNullOrEmpty()) {
+                    script to persisted
+                } else {
+                    val merged = LinkedHashMap<String, String>(persisted)
+                    deleted?.forEach { merged.remove(it) }
+                    ephemeral?.forEach { (k, v) -> merged[k] = v }
+                    script to merged
+                }
             }
         }
     }
@@ -274,7 +280,16 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     )
                 }
             }
-            applyResolvedSettingsToTab(tabId, reloadIfModeChanged = false)
+            val isHttpNavigation = url.startsWith("http://", ignoreCase = true) ||
+                url.startsWith("https://", ignoreCase = true)
+            // HTTP(S) navigations apply WebView surface/darkening and origin-guarded Dark Reader
+            // immediately next in onInjectOnPageStarted; skip redundant unguarded injection here.
+            applyResolvedSettingsToTab(
+                tabId = tabId,
+                reloadIfModeChanged = false,
+                updateWebDark = !isHttpNavigation,
+                applyIfWebDarkDirty = !isHttpNavigation
+            )
         }
 
         override fun onInjectOnPageStarted(tabId: String, url: String) {
@@ -292,11 +307,18 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 isChromeDark = isChromeDark()
             )
             val tokens = session.rotateTokensForOrigin(expectedOrigin)
-            val prepaintDarkCss = if (darkState.useDarkReader) {
-                ScriptInjector.buildPrepaintDarkCss(darkState.amoled)
-            } else {
-                ""
-            }
+            session.webDarkDirty = false
+            val (isDarkSurface, isAmoledSurface) = resolveWebSurfaceDarkColors(darkState)
+            session.applySurfaceBackground(isDarkSurface, isAmoledSurface)
+            session.applyWebDarkening(darkState.useAlgorithmicLite)
+            ScriptInjector.injectDarkReaderOnPageStarted(
+                webView = session.webView,
+                expectedOrigin = expectedOrigin,
+                tokens = tokens,
+                darkState = darkState,
+                darkReaderInjector = app.darkReaderInjector,
+                isDestroyed = { session.isDestroyed }
+            )
             pageStartedInjectJobByTab.remove(tabId)?.cancel()
             pageStartedInjectJobByTab[tabId] = viewModelScope.launch(Dispatchers.IO + ioExceptionHandler) {
                 val cosmetic = app.adblockEngine.cosmeticForUrl(
@@ -347,8 +369,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                         cosmeticCss = cosmetic.css,
                         zappedCss = zappedCss,
                         gmShimInitJs = gmShimInitJs,
-                        documentStartUserscriptSnippets = docStartSnippets,
-                        prepaintDarkCss = prepaintDarkCss
+                        documentStartUserscriptSnippets = docStartSnippets
                     )
                     ScriptInjector.injectOnPageStarted(
                         webView = session.webView,
@@ -356,8 +377,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                         cosmetic = cosmetic,
                         zappedRules = zappedRules,
                         zapperController = app.zapperController,
-                        darkState = darkState,
-                        darkReaderInjector = app.darkReaderInjector,
                         docStartUserscripts = docStartUserscripts,
                         userscriptBridge = app.userscriptBridge,
                         isDestroyed = { session.isDestroyed }
@@ -416,6 +435,14 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 isChromeDark = isChromeDark()
             )
             val tokens = session.rotateTokensForOrigin(expectedOrigin)
+            // Apply/confirm Dark Reader immediately on Main without waiting on Adblock/Room I/O
+            ScriptInjector.injectDarkReaderFastOrFull(
+                webView = session.webView,
+                tokens = tokens,
+                darkState = darkState,
+                darkReaderInjector = app.darkReaderInjector,
+                isDestroyed = { session.isDestroyed }
+            )
             // Cancel any still-pending page-started injection so it cannot wipe generic cosmetic CSS after page-finished
             pageStartedInjectJobByTab.remove(tabId)?.cancel()
             pageFinishedInjectJobByTab.remove(tabId)?.cancel()
@@ -458,8 +485,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                         runGenericCosmeticScan = runGenericScan,
                         zappedRules = zappedRules,
                         zapperController = app.zapperController,
-                        darkState = darkState,
-                        darkReaderInjector = app.darkReaderInjector,
                         docEndUserscripts = docEndUserscripts,
                         docIdleUserscripts = docIdleUserscripts,
                         userscriptBridge = app.userscriptBridge,
@@ -535,7 +560,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
 
         override fun onShowCustomView(view: View, callback: WebChromeClient.CustomViewCallback) {
-            _uiState.update { it.copy(isFullscreenVideo = true) }
+            _uiState.update { it.copy(isFullscreenVideo = true, isFoldedSidebarOpen = false) }
             onShowFullscreenViewBridge?.invoke(view, callback)
         }
 
@@ -849,7 +874,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                             scopeDepth = event.scopeDepth,
                             maxScopeDepth = event.maxScopeDepth,
                             matchCount = event.matchCount,
-                            selectedViewportCenterY = event.viewportCenterY
+                            selectedViewportCenterY = event.viewportCenterY,
+                            isPreviewing = event.isPreviewing
                         )
                     )
                 }
@@ -869,6 +895,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                             scopeDepth = 0,
                             maxScopeDepth = 0,
                             matchCount = 0,
+                            isPreviewing = false,
                             temporaryZapCount = event.temporaryZapCount,
                             lastTemporaryZapSummary = event.summary,
                             lastStatusMessage = "Hid ${event.summary.ifBlank { "element" }}"
@@ -923,6 +950,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                                 scopeDepth = 0,
                                 maxScopeDepth = 0,
                                 matchCount = 0,
+                                isPreviewing = false,
                                 lastStatusMessage = "Blocked $blockedLabel (Private)"
                             ),
                             snackbarMessage = null
@@ -959,6 +987,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                             scopeDepth = 0,
                             maxScopeDepth = 0,
                             matchCount = 0,
+                            isPreviewing = false,
                             lastStatusMessage = "Blocked $blockedLabel"
                         ),
                         snackbarMessage = null
@@ -1052,9 +1081,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                         return@launch
                     }
 
-                    val map = privateUserscriptStorage.computeIfAbsent(scriptId) { ConcurrentHashMap() }
-                    synchronized(map) {
+                    synchronized(privateUserscriptStorageLock) {
                         if (privateSessionGeneration.get() != sessionGen) return@synchronized
+                        val map = privateUserscriptStorage.computeIfAbsent(scriptId) { ConcurrentHashMap() }
                         if (!map.containsKey(key) && map.size >= 100) return@synchronized
                         val totalOther = map.entries
                             .filter { it.key != key }
@@ -1101,9 +1130,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     ) {
                         return@launch
                     }
-                    privateUserscriptStorage[scriptId]?.remove(key)
-                    // Tombstone so keys inherited from normal storage don't resurrect on reload
-                    privateDeletedUserscriptKeys.computeIfAbsent(scriptId) { ConcurrentHashMap.newKeySet() }.add(key)
+                    synchronized(privateUserscriptStorageLock) {
+                        if (privateSessionGeneration.get() != sessionGen) return@synchronized
+                        privateUserscriptStorage[scriptId]?.remove(key)
+                        // Tombstone so keys inherited from normal storage don't resurrect on reload
+                        privateDeletedUserscriptKeys.computeIfAbsent(scriptId) { ConcurrentHashMap.newKeySet() }.add(key)
+                    }
                 }
                 return
             }
@@ -1152,17 +1184,24 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     init {
+        pool.onThumbnailsEvicted = { evictedIds ->
+            _thumbnails.update { current ->
+                TabThumbnailsSnapshot(current.bitmaps - evictedIds)
+            }
+        }
         observePersistence()
     }
 
     private fun observePersistence() {
         viewModelScope.launch {
             prefs.settingsFlow.collectLatest { newSettings ->
+                val wasLoaded = _uiState.value.hasLoadedSettings
                 val oldSettings = _uiState.value.settings
                 val posture = _uiState.value.windowState.posture
                 val activePostureSiteModeChanged =
                     oldSettings.profileFor(posture).defaultSiteMode != newSettings.profileFor(posture).defaultSiteMode
-                val webDarkChanged = oldSettings.themeMode != newSettings.themeMode ||
+                val webDarkChanged = !wasLoaded ||
+                    oldSettings.themeMode != newSettings.themeMode ||
                     oldSettings.nightSurfaceStyle != newSettings.nightSurfaceStyle ||
                     oldSettings.webDarkMode != newSettings.webDarkMode ||
                     oldSettings.webDarkEngine != newSettings.webDarkEngine ||
@@ -1174,10 +1213,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 val thirdPartyCookiesChanged = oldSettings.blockThirdPartyCookies != newSettings.blockThirdPartyCookies
                 val bgMediaChanged = oldSettings.backgroundMediaEnabled != newSettings.backgroundMediaEnabled
 
-                _uiState.update { it.copy(settings = newSettings) }
+                _uiState.update { it.copy(settings = newSettings, hasLoadedSettings = true) }
                 if (!newSettings.backgroundMediaEnabled && oldSettings.backgroundMediaEnabled) {
                     activeMediaTabId = null
                     BackgroundMediaService.stop(app)
+                }
+                if (webDarkChanged) {
+                    syncGlobalPrepaintDarkScripts()
                 }
                 if (activePostureSiteModeChanged || webDarkChanged || thirdPartyCookiesChanged || bgMediaChanged) {
                     syncAllWarmSessionsWithSettings(
@@ -1300,10 +1342,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
         viewModelScope.launch {
             db.siteOverrideDao().observeAll().collectLatest { overrides ->
+                if (siteOverrideWrites.hasPendingWrites) return@collectLatest
                 val newMap = overrides.associateBy { o -> OmniboxEngine.normalizeHost(o.host) }
                 val oldMap = _uiState.value.siteOverrides
                 if (oldMap != newMap) {
                     _uiState.update { it.copy(siteOverrides = newMap) }
+                    syncGlobalPrepaintDarkScripts()
+                    refreshResolvedSiteModesForAllTabs(_uiState.value.activeProfile)
                     val activeId = _uiState.value.activeTabId
                     if (activeId != null) {
                         applyResolvedSettingsToTab(activeId, reloadIfModeChanged = false)
@@ -1314,6 +1359,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
         viewModelScope.launch {
             val currentSettings = prefs.settingsFlow.first()
+            val initialOverrides = db.siteOverrideDao().getAll()
+                .associateBy { o -> OmniboxEngine.normalizeHost(o.host) }
             val shouldSeed = !currentSettings.hasSeededDefaults
             db.seedDefaultsIfEmpty(seedInitialContent = shouldSeed)
             if (shouldSeed) {
@@ -1331,12 +1378,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                         selectImmediately = true
                     )
                 } else if (savedTabs.isNotEmpty()) {
-                    val profile = _uiState.value.activeProfile
+                    val profile = currentSettings.profileFor(_uiState.value.windowState.posture)
                     val restored = savedTabs.map { entity ->
                         val tabOverride = SiteModeResolver.parseOrNull(entity.siteModeOverride)
                         val host = OmniboxEngine.extractHost(entity.url)
                         val siteOverride = SiteModeResolver.parseOrNull(
-                            _uiState.value.siteOverrides[host]?.siteModeOverride
+                            initialOverrides[host]?.siteModeOverride
                         )
                         BrowserTabUi(
                             id = entity.id,
@@ -1366,7 +1413,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     val queued = pendingIncomingUrls.toList()
                     pendingIncomingUrls.clear()
                     queued.forEach { target ->
-                        createTab(url = target, isPrivate = false, selectImmediately = true)
+                        createTab(
+                            url = target,
+                            isPrivate = false,
+                            selectImmediately = true,
+                            dismissAllOverlays = true
+                        )
                     }
                 }
             }
@@ -1394,7 +1446,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         if (!isInitialEmission && previous == newState) return
 
         val postureChanged = previous.posture != newState.posture
-        _uiState.update { it.copy(windowState = newState) }
+        _uiState.update {
+            it.copy(
+                windowState = newState,
+                isFoldedSidebarOpen = if (postureChanged) false else it.isFoldedSidebarOpen
+            )
+        }
 
         if (isInitialEmission) {
             // Apply initial posture profile quietly without reloading or flashing a snackbar
@@ -1431,22 +1488,51 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun onPictureInPictureChanged(inPip: Boolean) {
-        _uiState.update { it.copy(isInPictureInPicture = inPip) }
+        _uiState.update {
+            it.copy(
+                isInPictureInPicture = inPip,
+                isFoldedSidebarOpen = if (inPip) false else it.isFoldedSidebarOpen
+            )
+        }
     }
+
+    fun getExistingSession(tabId: String): BrowserSession? = pool.getExisting(tabId)
 
     fun ensureSession(tab: BrowserTabUi, context: Context): BrowserSession {
         val spaceContainer = _uiState.value.spaces
             .firstOrNull { it.id == tab.spaceId }
             ?.containerProfileName
         val existed = pool.getExisting(tab.id) != null
+        val initialHost = OmniboxEngine.normalizeHost(tab.displayHost)
+        val initialOverride = if (initialHost.isBlank()) null else effectiveSiteOverride(initialHost, tab.isPrivate)
+        val initialDarkState = DarkReaderConfig.resolve(
+            settings = _uiState.value.settings,
+            siteOverride = initialOverride,
+            isChromeDark = isChromeDark()
+        )
+        val (initialDarkSurface, initialAmoledSurface) = resolveWebSurfaceDarkColors(initialDarkState)
+        val initialPrepaintScript = buildGlobalPrepaintDarkScript(tab.isPrivate)
         val session = pool.getOrCreate(
             tabId = tab.id,
             isPrivate = tab.isPrivate,
             spaceContainerProfile = spaceContainer,
             context = context,
-            callbacks = sessionCallbacks
+            callbacks = sessionCallbacks,
+            beforeRestore = { created ->
+                created.applySurfaceBackground(initialDarkSurface, initialAmoledSurface)
+                created.applyWebDarkening(initialDarkState.useAlgorithmicLite)
+                created.updateGlobalPrepaintDarkScript(initialPrepaintScript)
+                applySettingsToSession(
+                    tab = tab,
+                    session = created,
+                    reloadIfModeChanged = false,
+                    updateWebDark = false,
+                    applyIfWebDarkDirty = false
+                )
+            }
         )
-        session.applySurfaceBackground(isChromeDark(), isAmoledSurface())
+        session.applySurfaceBackground(initialDarkSurface, initialAmoledSurface)
+        session.updateGlobalPrepaintDarkScript(initialPrepaintScript)
         if (_uiState.value.activeTabId == tab.id) {
             pool.setActiveTab(tab.id)
         }
@@ -1454,7 +1540,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         pendingProgrammaticHttpsUpgrades.remove(tab.id)?.let { (upgraded, originalHttp) ->
             session.webViewClient.registerProgrammaticHttpsUpgrade(upgraded, originalHttp)
         }
-        if (!existed && !tab.isStartPage && session.webView.url.isNullOrBlank()) {
+        if (!existed && !tab.isStartPage && !tab.isPopupWindow && session.webView.url.isNullOrBlank()) {
             val target = resolveHttpsOnlyForProgrammaticLoad(tab.id, tab.url, session)
             session.loadUrl(target)
         }
@@ -1466,7 +1552,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         isPrivate: Boolean = _uiState.value.isPrivateView,
         spaceId: String = _uiState.value.activeSpaceId,
         selectImmediately: Boolean = true,
-        isPopupWindow: Boolean = false
+        isPopupWindow: Boolean = false,
+        closeFoldedSidebar: Boolean = true,
+        dismissAllOverlays: Boolean = false
     ): BrowserTabUi {
         if (selectImmediately) {
             stopActiveZapperIfRunning()
@@ -1504,11 +1592,20 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 activeTabId = if (selectImmediately) tab.id else state.activeTabId,
                 isPrivateView = if (selectImmediately) isPrivate else state.isPrivateView,
                 activeSpaceId = if (selectImmediately && !isPrivate) spaceId else state.activeSpaceId,
-                activeOverlay = if (selectImmediately && state.activeOverlay == BrowserOverlay.TAB_SWITCHER) {
+                isFoldedSidebarOpen = if (selectImmediately && closeFoldedSidebar) false else state.isFoldedSidebarOpen,
+                activeOverlay = if (selectImmediately && (dismissAllOverlays || state.activeOverlay == BrowserOverlay.TAB_SWITCHER)) {
                     BrowserOverlay.NONE
                 } else {
                     state.activeOverlay
                 },
+                overlayBackStack = if (selectImmediately && dismissAllOverlays) {
+                    emptyList()
+                } else {
+                    state.overlayBackStack
+                },
+                isSiteRulesOpen = if (selectImmediately && dismissAllOverlays) false else state.isSiteRulesOpen,
+                isQrPairingOpen = if (selectImmediately && dismissAllOverlays) false else state.isQrPairingOpen,
+                fxaAuthUrl = if (selectImmediately && dismissAllOverlays) null else state.fxaAuthUrl,
                 isOmniboxFocused = false,
                 omniboxSuggestions = if (selectImmediately) emptyList() else state.omniboxSuggestions,
                 findInPage = if (selectImmediately) FindInPageState() else state.findInPage,
@@ -1555,6 +1652,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 activeTabId = tabId,
                 isPrivateView = target.isPrivate,
                 activeSpaceId = if (!target.isPrivate) target.spaceId else state.activeSpaceId,
+                isFoldedSidebarOpen = false,
                 activeOverlay = BrowserOverlay.NONE,
                 overlayBackStack = emptyList(),
                 isOmniboxFocused = false,
@@ -1590,12 +1688,18 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         val state = _uiState.value
         val closing = state.tabs.firstOrNull { it.id == tabId } ?: return
         val remaining = state.tabs.filterNot { it.id == tabId }
+        val wasActiveClosing = state.activeTabId == tabId
+        val clearAllPrivateState = closing.isPrivate && remaining.none { it.isPrivate }
+        val keepExitingThumbnailBriefly = wasActiveClosing && !closing.isStartPage && !clearAllPrivateState
 
-        if (state.activeTabId == tabId) {
+        if (wasActiveClosing) {
             stopActiveZapperIfRunning()
             readerExtractJob?.cancel()
             readerExtractJob = null
             pool.getExisting(tabId)?.clearFindMatches()
+            if (keepExitingThumbnailBriefly) {
+                captureThumbnailFor(tabId)
+            }
         }
         pool.remove(tabId)
         lastRecordedHistoryUrlByTab.remove(tabId)
@@ -1606,15 +1710,28 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         spaCheckJobByTab.remove(tabId)?.cancel()
         pageStartedInjectJobByTab.remove(tabId)?.cancel()
         pageFinishedInjectJobByTab.remove(tabId)?.cancel()
-        _thumbnails.update { current ->
-            if (tabId in current.bitmaps) current.copy(bitmaps = current.bitmaps - tabId) else current
+        if (keepExitingThumbnailBriefly) {
+            // Keep the final snapshot long enough for the 280ms tab-strip slide-out transition
+            viewModelScope.launch {
+                delay(350)
+                _thumbnails.update { current ->
+                    if (tabId in current.bitmaps && _uiState.value.tabs.none { it.id == tabId }) {
+                        current.copy(bitmaps = current.bitmaps - tabId)
+                    } else {
+                        current
+                    }
+                }
+            }
+        } else {
+            _thumbnails.update { current ->
+                if (tabId in current.bitmaps) current.copy(bitmaps = current.bitmaps - tabId) else current
+            }
         }
 
         if (activeMediaTabId == tabId || closing.isPlayingMedia) {
             handoffOrStopMediaService(tabId, candidateTabs = remaining)
         }
 
-        val clearAllPrivateState = closing.isPrivate && remaining.none { it.isPrivate }
         if (!closing.isPrivate) {
             viewModelScope.launch {
                 tabDbMutex.withLock {
@@ -1622,10 +1739,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 }
             }
         } else if (clearAllPrivateState) {
-            privateSessionGeneration.incrementAndGet()
+            synchronized(privateUserscriptStorageLock) {
+                privateSessionGeneration.incrementAndGet()
+                privateUserscriptStorage.clear()
+                privateDeletedUserscriptKeys.clear()
+            }
             pool.clearPrivateProfileData()
-            privateUserscriptStorage.clear()
-            privateDeletedUserscriptKeys.clear()
         }
 
         val visibleRemaining = if (closing.isPrivate) {
@@ -1741,7 +1860,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     permissionPrompt = null
                 )
             }
-            createTab(spaceId = spaceId, isPrivate = false, selectImmediately = true)
+            createTab(spaceId = spaceId, isPrivate = false, selectImmediately = true, closeFoldedSidebar = false)
         }
     }
 
@@ -1777,7 +1896,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 pool.setActiveTab(nextTabId)
                 applyResolvedSettingsToTab(nextTabId, reloadIfModeChanged = true)
             } else {
-                createTab(isPrivate = true, selectImmediately = true)
+                createTab(isPrivate = true, selectImmediately = true, closeFoldedSidebar = false)
             }
         } else {
             val validSpaceId = _uiState.value.spaces
@@ -1921,6 +2040,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 isOmniboxFocused = false,
                 omniboxQuery = "",
                 omniboxSuggestions = emptyList(),
+                isFoldedSidebarOpen = false,
                 activeOverlay = BrowserOverlay.NONE,
                 overlayBackStack = emptyList(),
                 findInPage = FindInPageState(),
@@ -1935,7 +2055,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         updateTab(active.id) {
             it.copy(
                 url = effectiveUrl,
-                title = OmniboxEngine.extractHost(effectiveUrl).ifBlank { effectiveUrl },
+                title = if (effectiveUrl == OmniboxEngine.NEW_TAB_URL) {
+                    "New Tab"
+                } else {
+                    OmniboxEngine.extractHost(effectiveUrl).ifBlank { effectiveUrl }
+                },
                 isLoading = effectiveUrl != OmniboxEngine.NEW_TAB_URL,
                 progress = if (effectiveUrl == OmniboxEngine.NEW_TAB_URL) 0 else 10,
                 isPlayingMedia = false,
@@ -2014,7 +2138,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         if (!initialTabsLoaded) {
             pendingIncomingUrls += targetUrl
         } else {
-            createTab(url = targetUrl, isPrivate = false, selectImmediately = true)
+            createTab(
+                url = targetUrl,
+                isPrivate = false,
+                selectImmediately = true,
+                dismissAllOverlays = true
+            )
         }
     }
 
@@ -2030,7 +2159,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             it.copy(
                 isOmniboxFocused = true,
                 omniboxQuery = initialText,
-                isQuickControlsOpen = false,
+                isFoldedSidebarOpen = false,
                 isSiteRulesOpen = false
             )
         }
@@ -2268,15 +2397,31 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun toggleQuickControls(open: Boolean) {
-        _uiState.update { it.copy(isQuickControlsOpen = open) }
+    fun setFoldedSidebarOpen(open: Boolean) {
+        _uiState.update { it.copy(isFoldedSidebarOpen = open) }
+    }
+
+    fun toggleWorkspaceSidebar() {
+        val current = _uiState.value
+        if (current.windowState.posture == DevicePosture.FOLDED) {
+            _uiState.update { it.copy(isFoldedSidebarOpen = !it.isFoldedSidebarOpen) }
+        } else {
+            if (!current.activeProfile.showSpacesSidebar) {
+                setUnfoldedSpacesSidebar(true)
+                _uiState.update { it.copy(isUnfoldedRailExpanded = true) }
+            } else {
+                _uiState.update { it.copy(isUnfoldedRailExpanded = !it.isUnfoldedRailExpanded) }
+            }
+        }
     }
 
     fun toggleSiteRulesSheet(open: Boolean) {
         _uiState.update {
             it.copy(
                 isSiteRulesOpen = open,
-                isQuickControlsOpen = if (open) false else it.isQuickControlsOpen
+                isFoldedSidebarOpen = if (open) false else it.isFoldedSidebarOpen,
+                activeOverlay = if (open) BrowserOverlay.NONE else it.activeOverlay,
+                overlayBackStack = if (open) emptyList() else it.overlayBackStack
             )
         }
     }
@@ -2303,7 +2448,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                         BrowserOverlay.ZAPPED_RULES,
                         BrowserOverlay.SYNC,
                         BrowserOverlay.SYNCED_TABS,
-                        BrowserOverlay.BOOKMARKS
+                        BrowserOverlay.BOOKMARKS,
+                        BrowserOverlay.HISTORY,
+                        BrowserOverlay.DOWNLOADS
                     ) -> current.overlayBackStack + BrowserOverlay.SETTINGS
                 current.activeOverlay == BrowserOverlay.SYNC &&
                     overlay == BrowserOverlay.SYNCED_TABS ->
@@ -2316,7 +2463,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             current.copy(
                 activeOverlay = overlay,
                 overlayBackStack = nextStack,
-                isQuickControlsOpen = false,
+                isFoldedSidebarOpen = if (overlay != BrowserOverlay.NONE) false else current.isFoldedSidebarOpen,
                 isSiteRulesOpen = false,
                 isOmniboxFocused = false,
                 omniboxSuggestions = emptyList()
@@ -2423,12 +2570,26 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
         _uiState.update { it.copy(siteOverrides = it.siteOverrides + (normalizedHost to optimistic)) }
         onUpdated(optimistic)
+        val writeGen = siteOverrideWrites.beginWrite()
         viewModelScope.launch {
-            siteOverrideMutex.withLock {
-                val existingDb = db.siteOverrideDao().getByHost(normalizedHost) ?: SiteOverrideEntity(host = normalizedHost)
-                val saved = transform(existingDb)
-                db.siteOverrideDao().upsert(saved)
-            }
+            siteOverrideWrites.runSerializedWrite(
+                generation = writeGen,
+                writeToDb = {
+                    val existingDb = db.siteOverrideDao().getByHost(normalizedHost) ?: SiteOverrideEntity(host = normalizedHost)
+                    val saved = transform(existingDb)
+                    db.siteOverrideDao().upsert(saved)
+                },
+                readSettledFromDb = {
+                    db.siteOverrideDao().getAll()
+                        .associateBy { o -> OmniboxEngine.normalizeHost(o.host) }
+                },
+                onSettled = { settled ->
+                    if (_uiState.value.siteOverrides != settled) {
+                        _uiState.update { it.copy(siteOverrides = settled) }
+                        refreshResolvedSiteModesForAllTabs(_uiState.value.activeProfile)
+                    }
+                }
+            )
         }
     }
 
@@ -2442,12 +2603,18 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             mutateSiteOverride(
                 host = host,
                 onUpdated = { updated ->
+                    syncGlobalPrepaintDarkScripts()
+                    pool.markAllBackgroundWebDarkDirty(active.id)
                     val darkState = DarkReaderConfig.resolve(
                         settings = _uiState.value.settings,
                         siteOverride = updated,
                         isChromeDark = isChromeDark()
                     )
-                    pool.getExisting(active.id)?.applyWebDarkMode(darkState, app.darkReaderInjector)
+                    val (isDarkSurface, isAmoledSurface) = resolveWebSurfaceDarkColors(darkState)
+                    pool.getExisting(active.id)?.let { session ->
+                        session.applySurfaceBackground(isDarkSurface, isAmoledSurface)
+                        session.applyWebDarkMode(darkState, app.darkReaderInjector)
+                    }
                 }
             ) { it.copy(webDarkModeOverride = nextEnabled) }
             showSnackbar(if (nextEnabled) "Dark web view on for $host" else "Dark web view off for $host")
@@ -2492,9 +2659,15 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         if (normalizedHost.isBlank()) return
         mutateSiteOverride(normalizedHost, onUpdated = { updated ->
             val active = _uiState.value.activeTab
+            syncGlobalPrepaintDarkScripts()
+            pool.markAllBackgroundWebDarkDirty(active?.id)
             if (active != null && OmniboxEngine.normalizeHost(active.displayHost) == normalizedHost) {
                 val darkState = DarkReaderConfig.resolve(_uiState.value.settings, updated, isChromeDark())
-                pool.getExisting(active.id)?.applyWebDarkMode(darkState, app.darkReaderInjector)
+                val (isDarkSurface, isAmoledSurface) = resolveWebSurfaceDarkColors(darkState)
+                pool.getExisting(active.id)?.let { session ->
+                    session.applySurfaceBackground(isDarkSurface, isAmoledSurface)
+                    session.applyWebDarkMode(darkState, app.darkReaderInjector)
+                }
             }
         }) { it.copy(webDarkModeOverride = override) }
     }
@@ -2647,7 +2820,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         val session = pool.getExisting(active.id) ?: return
         _uiState.update {
             it.copy(
-                isQuickControlsOpen = false,
+                isFoldedSidebarOpen = false,
                 isSiteRulesOpen = false,
                 activeOverlay = BrowserOverlay.NONE,
                 overlayBackStack = emptyList(),
@@ -2684,6 +2857,20 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         val activeId = _uiState.value.activeTabId ?: return
         pool.getExisting(activeId)?.let { session ->
             session.evaluateJavascript(app.zapperController.buildSetScopeScript(depth, session.tokens.zapperKey))
+        }
+    }
+
+    fun setZapperPreview(enabled: Boolean) {
+        val current = _uiState.value
+        if (!current.zapper.isActive || current.zapper.selectedSelector == null) return
+        val activeId = current.activeTabId ?: return
+        _uiState.update { state ->
+            state.copy(zapper = state.zapper.copy(isPreviewing = enabled))
+        }
+        pool.getExisting(activeId)?.let { session ->
+            session.evaluateJavascript(
+                app.zapperController.buildSetPreviewScript(enabled, session.tokens.zapperKey)
+            )
         }
     }
 
@@ -2852,7 +3039,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun deleteUserscript(id: String) {
         viewModelScope.launch {
             app.userscriptRepository.deleteScript(id)
-            privateUserscriptStorage.remove(id)
+            synchronized(privateUserscriptStorageLock) {
+                privateUserscriptStorage.remove(id)
+                privateDeletedUserscriptKeys.remove(id)
+            }
             pool.clearAllDocumentStartScripts()
             showSnackbar("Deleted userscript")
         }
@@ -2870,7 +3060,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             showSnackbar("Open an article to enter Reader Mode")
             return
         }
+        val siteOverride = effectiveSiteOverride(active.displayHost, active.isPrivate)
+        if (siteOverride?.javascriptEnabled == false) {
+            showSnackbar("Enable JavaScript in Site Rules to use Reader Mode")
+            return
+        }
         val session = pool.getExisting(active.id) ?: return
+        if (session.isDestroyed) return
         val expectedTabId = active.id
         val expectedUrl = active.url
         val expectedOrigin = ScriptInjector.extractOrigin(expectedUrl)
@@ -2879,7 +3075,14 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         val requestId = readerRequestCounter.incrementAndGet()
         readerExtractJob?.cancel()
         readerExtractJob = null
-        _uiState.update { it.copy(isQuickControlsOpen = false, isReaderLoading = true) }
+        _uiState.update {
+            it.copy(
+                isFoldedSidebarOpen = false,
+                activeOverlay = BrowserOverlay.NONE,
+                overlayBackStack = emptyList(),
+                isReaderLoading = true
+            )
+        }
 
         fun handleExtracted(rawResult: String?) {
             if (readerRequestCounter.get() != requestId || !_uiState.value.isReaderLoading) {
@@ -3020,7 +3223,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun openFindInPage() {
         _uiState.update {
             it.copy(
-                isQuickControlsOpen = false,
+                isFoldedSidebarOpen = false,
+                activeOverlay = BrowserOverlay.NONE,
+                overlayBackStack = emptyList(),
                 findInPage = FindInPageState(visible = true)
             )
         }
@@ -3196,6 +3401,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun resetSiteOverride(host: String, forcePersistent: Boolean = false) {
         val normalizedHost = OmniboxEngine.normalizeHost(host)
         val isPrivate = !forcePersistent && (_uiState.value.activeTab?.isPrivate ?: _uiState.value.isPrivateView)
+        val prevOverride = effectiveSiteOverride(normalizedHost, isPrivate)
+        val hadAdblockDisabled = prevOverride?.adblockDisabled == true
         if (isPrivate) {
             // If persistent Room overrides exist for this host, store a clean default entry in
             // privateSiteOverrides to shadow them for this private session instead of falling back.
@@ -3212,21 +3419,41 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 .forEach { matching ->
                     updateTab(matching.id) { it.copy(siteModeOverride = null) }
                 }
+            pool.clearAllDocumentStartScripts()
+            syncGlobalPrepaintDarkScripts()
             val active = _uiState.value.activeTab
+            pool.markAllBackgroundWebDarkDirty(active?.id)
             if (active != null && OmniboxEngine.normalizeHost(active.displayHost) == normalizedHost) {
-                applyResolvedSettingsToTab(active.id, reloadIfModeChanged = true)
+                val reloaded = applyResolvedSettingsToTab(active.id, reloadIfModeChanged = true)
+                if (hadAdblockDisabled && !reloaded) {
+                    reloadActiveTabIfHost(normalizedHost)
+                }
             }
             showSnackbar("Reset site overrides for $normalizedHost")
             return
         }
         _uiState.update { it.copy(siteOverrides = it.siteOverrides - normalizedHost) }
+        val writeGen = siteOverrideWrites.beginWrite()
         viewModelScope.launch {
-            siteOverrideMutex.withLock {
-                db.siteOverrideDao().deleteByHost(host)
-                if (normalizedHost != host) {
-                    db.siteOverrideDao().deleteByHost(normalizedHost)
+            siteOverrideWrites.runSerializedWrite(
+                generation = writeGen,
+                writeToDb = {
+                    db.siteOverrideDao().deleteByHost(host)
+                    if (normalizedHost != host) {
+                        db.siteOverrideDao().deleteByHost(normalizedHost)
+                    }
+                },
+                readSettledFromDb = {
+                    db.siteOverrideDao().getAll()
+                        .associateBy { o -> OmniboxEngine.normalizeHost(o.host) }
+                },
+                onSettled = { settled ->
+                    if (_uiState.value.siteOverrides != settled) {
+                        _uiState.update { it.copy(siteOverrides = settled) }
+                        refreshResolvedSiteModesForAllTabs(_uiState.value.activeProfile)
+                    }
                 }
-            }
+            )
             withContext(Dispatchers.Main) {
                 // Also clear any tab-level siteModeOverride on matching tabs so posture defaults resume
                 _uiState.value.tabs
@@ -3235,9 +3462,15 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                         updateTab(matching.id) { it.copy(siteModeOverride = null) }
                         _uiState.value.tabs.firstOrNull { it.id == matching.id }?.let { persistTab(it) }
                     }
+                pool.clearAllDocumentStartScripts()
+                syncGlobalPrepaintDarkScripts()
                 val active = _uiState.value.activeTab
+                pool.markAllBackgroundWebDarkDirty(active?.id)
                 if (active != null && OmniboxEngine.normalizeHost(active.displayHost) == normalizedHost) {
-                    applyResolvedSettingsToTab(active.id, reloadIfModeChanged = true)
+                    val reloaded = applyResolvedSettingsToTab(active.id, reloadIfModeChanged = true)
+                    if (hadAdblockDisabled && !reloaded) {
+                        reloadActiveTabIfHost(normalizedHost)
+                    }
                 }
                 showSnackbar("Reset site overrides for $normalizedHost")
             }
@@ -3287,19 +3520,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun setToolbarPlacement(posture: DevicePosture, placement: ToolbarPlacement) =
         viewModelScope.launch { prefs.setToolbarPlacement(posture, placement) }
 
-    fun cycleCurrentPostureToolbarPlacement() {
-        val posture = _uiState.value.windowState.posture
-        val current = _uiState.value.activeProfile.toolbarPlacement
-        val choices = if (posture == DevicePosture.UNFOLDED) {
-            listOf(ToolbarPlacement.TOP, ToolbarPlacement.BOTTOM, ToolbarPlacement.SPLIT, ToolbarPlacement.SIDE_RAIL)
-        } else {
-            listOf(ToolbarPlacement.SPLIT, ToolbarPlacement.BOTTOM, ToolbarPlacement.TOP)
-        }
-        val next = choices[(choices.indexOf(current) + 1) % choices.size]
-        setToolbarPlacement(posture, next)
-        showSnackbar("${posture.label} toolbar: ${next.label}")
-    }
-
     fun setDefaultSiteMode(posture: DevicePosture, mode: SiteMode) = viewModelScope.launch {
         prefs.setDefaultSiteMode(posture, mode)
     }
@@ -3315,6 +3535,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun setExternalAppLinkPolicy(policy: ExternalAppLinkPolicy) = viewModelScope.launch { prefs.setExternalAppLinkPolicy(policy) }
     fun setPullToRefreshEnabled(enabled: Boolean) = viewModelScope.launch { prefs.setPullToRefreshEnabled(enabled) }
     fun setSwipeUrlBarSwitchTabs(enabled: Boolean) = viewModelScope.launch { prefs.setSwipeUrlBarSwitchTabs(enabled) }
+    fun setHideToolbarsOnScroll(enabled: Boolean) = viewModelScope.launch { prefs.setHideToolbarsOnScroll(enabled) }
     fun setBackgroundMediaEnabled(enabled: Boolean) = viewModelScope.launch { prefs.setBackgroundMediaEnabled(enabled) }
     fun setBlockThirdPartyCookies(enabled: Boolean) = viewModelScope.launch { prefs.setBlockThirdPartyCookies(enabled) }
 
@@ -3397,7 +3618,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             return
         }
         viewModelScope.launch {
-            _uiState.update { it.copy(isQuickControlsOpen = false) }
             app.mozillaSyncCoordinator.sendTabToZenSpace(
                 spaceSyncGuid = spaceGuid,
                 url = activeTab.url,
@@ -3532,6 +3752,73 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     private fun isAmoledSurface(): Boolean =
         isChromeDark() && _uiState.value.settings.nightSurfaceStyle == NightSurfaceStyle.AMOLED
+
+    private fun resolveWebSurfaceDarkColors(darkState: ResolvedWebDarkState): Pair<Boolean, Boolean> {
+        val chromeDark = isChromeDark()
+        val isDarkSurface = when {
+            darkState.isSiteOverride -> darkState.enabled
+            else -> darkState.enabled || chromeDark
+        }
+        val isAmoled = when {
+            !isDarkSurface -> false
+            darkState.useDarkReader -> darkState.amoled
+            else -> isAmoledSurface()
+        }
+        return isDarkSurface to isAmoled
+    }
+
+    private fun buildGlobalPrepaintDarkScript(isPrivate: Boolean): String {
+        val state = _uiState.value
+        val settings = state.settings
+        val globalDark = DarkReaderConfig.resolve(
+            settings = settings,
+            siteOverride = null,
+            isChromeDark = isChromeDark()
+        )
+        val effectiveOverrides = if (isPrivate) {
+            state.siteOverrides + state.privateSiteOverrides
+        } else {
+            state.siteOverrides
+        }
+        val excluded = mutableSetOf<String>()
+        val included = mutableSetOf<String>()
+        effectiveOverrides.forEach { (hostKey, entity) ->
+            val normalized = OmniboxEngine.normalizeHost(hostKey.ifBlank { entity.host })
+            if (normalized.isNotBlank()) {
+                when (entity.webDarkModeOverride) {
+                    false -> excluded += normalized
+                    true -> included += normalized
+                    null -> Unit
+                }
+            }
+        }
+        val mode = when (settings.webDarkEngine) {
+            WebDarkEngine.DARK_READER -> PrepaintDarkMode.DARK_READER
+            WebDarkEngine.ALGORITHMIC_LITE -> PrepaintDarkMode.ALGORITHMIC_LITE
+        }
+        val amoled = when (settings.webDarkEngine) {
+            WebDarkEngine.DARK_READER -> settings.darkReaderAmoled
+            WebDarkEngine.ALGORITHMIC_LITE -> isAmoledSurface()
+        }
+        return ScriptInjector.buildGlobalPrepaintDarkScript(
+            GlobalPrepaintDarkConfig(
+                mode = mode,
+                amoled = amoled,
+                globalEnabled = globalDark.enabled,
+                excludedHosts = excluded,
+                includedHosts = included
+            )
+        )
+    }
+
+    private fun syncGlobalPrepaintDarkScripts() {
+        val normalScript = buildGlobalPrepaintDarkScript(isPrivate = false)
+        val privateScript = buildGlobalPrepaintDarkScript(isPrivate = true)
+        pool.updateAllGlobalPrepaintDarkScripts(
+            normalScript = normalScript,
+            privateScript = privateScript
+        )
+    }
 
     private fun reloadActiveTabIfHost(host: String) {
         val active = _uiState.value.activeTab ?: return
@@ -3779,10 +4066,21 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    private fun applyResolvedSettingsToTab(tabId: String, reloadIfModeChanged: Boolean) {
-        val tab = _uiState.value.tabs.firstOrNull { it.id == tabId } ?: return
-        val session = pool.getExisting(tabId) ?: return
-        applySettingsToSession(tab, session, reloadIfModeChanged)
+    private fun applyResolvedSettingsToTab(
+        tabId: String,
+        reloadIfModeChanged: Boolean,
+        updateWebDark: Boolean = true,
+        applyIfWebDarkDirty: Boolean = true
+    ): Boolean {
+        val tab = _uiState.value.tabs.firstOrNull { it.id == tabId } ?: return false
+        val session = pool.getExisting(tabId) ?: return false
+        return applySettingsToSession(
+            tab = tab,
+            session = session,
+            reloadIfModeChanged = reloadIfModeChanged,
+            updateWebDark = updateWebDark,
+            applyIfWebDarkDirty = applyIfWebDarkDirty
+        )
     }
 
     private fun syncAllWarmSessionsWithSettings(
@@ -3797,8 +4095,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         val state = _uiState.value
         val activeId = state.activeTabId
         val chromeDark = isChromeDark()
-        val amoled = isAmoledSurface()
         if (updateWebDark) {
+            syncGlobalPrepaintDarkScripts()
             // Avoid broadcasting Dark Reader JS to every background WebView simultaneously;
             // apply immediately to the active tab and refresh background tabs lazily on switch.
             pool.markAllBackgroundWebDarkDirty(activeId)
@@ -3807,7 +4105,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             val session = pool.getExisting(tab.id) ?: return@forEach
             val isActive = tab.id == activeId
             if (updateWebDark) {
-                session.applySurfaceBackground(chromeDark, amoled)
+                val normalizedHost = OmniboxEngine.normalizeHost(tab.displayHost)
+                val siteOverrideEntity = if (normalizedHost.isBlank()) null else effectiveSiteOverride(normalizedHost, tab.isPrivate)
+                val darkState = DarkReaderConfig.resolve(state.settings, siteOverrideEntity, chromeDark)
+                val (isDarkSurface, isAmoledSurface) = resolveWebSurfaceDarkColors(darkState)
+                session.applySurfaceBackground(isDarkSurface, isAmoledSurface)
             }
             applySettingsToSession(
                 tab = tab,
@@ -3815,6 +4117,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 reloadIfModeChanged = reloadActiveOnSiteModeChange && isActive,
                 updateSiteOverrides = updateSiteOverrides,
                 updateWebDark = updateWebDark && isActive,
+                applyIfWebDarkDirty = isActive,
                 updateBgMedia = updateBgMedia
             )
         }
@@ -3826,11 +4129,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         reloadIfModeChanged: Boolean,
         updateSiteOverrides: Boolean = true,
         updateWebDark: Boolean = true,
+        applyIfWebDarkDirty: Boolean = true,
         updateBgMedia: Boolean = true
-    ) {
+    ): Boolean {
         val state = _uiState.value
         val normalizedHost = OmniboxEngine.normalizeHost(tab.displayHost)
         val siteOverrideEntity = if (normalizedHost.isBlank()) null else effectiveSiteOverride(normalizedHost, tab.isPrivate)
+        var didReload = false
 
         if (updateSiteOverrides) {
             val siteOverride = SiteModeResolver.parseOrNull(siteOverrideEntity?.siteModeOverride)
@@ -3842,7 +4147,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             if (tab.resolvedSiteMode != resolvedMode) {
                 updateTab(tab.id) { it.copy(resolvedSiteMode = resolvedMode) }
             }
-            session.applySiteOverrides(
+            didReload = session.applySiteOverrides(
                 mode = resolvedMode,
                 customUserAgent = siteOverrideEntity?.customUserAgent,
                 javascriptEnabled = siteOverrideEntity?.javascriptEnabled ?: true,
@@ -3853,24 +4158,27 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             )
         }
 
-        if (updateWebDark || session.webDarkDirty) {
+        if (updateWebDark || (applyIfWebDarkDirty && session.webDarkDirty)) {
             val chromeDark = isChromeDark()
-            session.applySurfaceBackground(chromeDark, isAmoledSurface())
             val darkState = DarkReaderConfig.resolve(
                 settings = state.settings,
                 siteOverride = siteOverrideEntity,
                 isChromeDark = chromeDark
             )
+            val (isDarkSurface, isAmoledSurface) = resolveWebSurfaceDarkColors(darkState)
+            session.applySurfaceBackground(isDarkSurface, isAmoledSurface)
             session.applyWebDarkMode(darkState, app.darkReaderInjector)
         }
 
         if (updateBgMedia) {
             session.applyBackgroundPlayback(state.settings.backgroundMediaEnabled)
         }
+        return didReload
     }
 
     override fun onCleared() {
         super.onCleared()
+        pool.onThumbnailsEvicted = null
         BackgroundMediaService.activeController = null
         suggestionJob?.cancel()
         readerExtractJob?.cancel()

@@ -624,6 +624,7 @@ private fun UserscriptRow(
                         tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
+                Spacer(Modifier.size(8.dp))
                 IconButton(
                     onClick = onDelete,
                     modifier = Modifier.size(48.dp)

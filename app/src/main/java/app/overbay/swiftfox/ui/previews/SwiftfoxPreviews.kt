@@ -29,7 +29,7 @@ import app.overbay.swiftfox.ui.browser.BrowserShellLayout
 import app.overbay.swiftfox.ui.browser.BrowserTabUi
 import app.overbay.swiftfox.ui.browser.BrowserUiState
 import app.overbay.swiftfox.ui.browser.TabThumbnailsSnapshot
-import app.overbay.swiftfox.ui.sheets.QuickControlsContent
+import app.overbay.swiftfox.ui.settings.QuickActionsSection
 import app.overbay.swiftfox.ui.sync.SyncOverlay
 import app.overbay.swiftfox.ui.tabs.SpacesTabSwitcher
 import app.overbay.swiftfox.ui.theme.SwiftfoxTheme
@@ -112,13 +112,17 @@ fun FoldedStartDarkPreview() {
             onGoForward = {},
             onReloadOrStop = {},
             onOpenReaderMode = {},
-            onOpenQuickControls = {},
             onOpenTabSwitcher = {},
             onOpenSettings = {},
             onSwitchAdjacentTab = {},
+            onToggleWorkspaceSidebar = {},
             onToggleUnfoldedRail = {},
+            onCloseFoldedSidebar = {},
+            onShareActiveTab = {},
             onSelectSpace = {},
             onTogglePrivate = {},
+            onCreateSpace = { _, _, _ -> },
+            onDeleteSpace = {},
             onSelectTab = {},
             onCloseTab = {},
             onCreateTab = {},
@@ -130,11 +134,12 @@ fun FoldedStartDarkPreview() {
             onCloseFind = {},
             onAdjustZapperScope = {},
             onSetZapperScopeDepth = {},
+            onSetZapperPreview = {},
             onZapOnce = {},
             onBlockPermanently = {},
             onUndoTemporaryZap = {},
             onStopZapper = {},
-            webContent = {}
+            tabWebContent = { _, _ -> }
         )
     }
 }
@@ -154,13 +159,17 @@ fun FoldedStartDayPreview() {
             onGoForward = {},
             onReloadOrStop = {},
             onOpenReaderMode = {},
-            onOpenQuickControls = {},
             onOpenTabSwitcher = {},
             onOpenSettings = {},
             onSwitchAdjacentTab = {},
+            onToggleWorkspaceSidebar = {},
             onToggleUnfoldedRail = {},
+            onCloseFoldedSidebar = {},
+            onShareActiveTab = {},
             onSelectSpace = {},
             onTogglePrivate = {},
+            onCreateSpace = { _, _, _ -> },
+            onDeleteSpace = {},
             onSelectTab = {},
             onCloseTab = {},
             onCreateTab = {},
@@ -172,11 +181,12 @@ fun FoldedStartDayPreview() {
             onCloseFind = {},
             onAdjustZapperScope = {},
             onSetZapperScopeDepth = {},
+            onSetZapperPreview = {},
             onZapOnce = {},
             onBlockPermanently = {},
             onUndoTemporaryZap = {},
             onStopZapper = {},
-            webContent = {}
+            tabWebContent = { _, _ -> }
         )
     }
 }
@@ -202,13 +212,17 @@ fun FoldedAmoledLargeFontPreview() {
             onGoForward = {},
             onReloadOrStop = {},
             onOpenReaderMode = {},
-            onOpenQuickControls = {},
             onOpenTabSwitcher = {},
             onOpenSettings = {},
             onSwitchAdjacentTab = {},
+            onToggleWorkspaceSidebar = {},
             onToggleUnfoldedRail = {},
+            onCloseFoldedSidebar = {},
+            onShareActiveTab = {},
             onSelectSpace = {},
             onTogglePrivate = {},
+            onCreateSpace = { _, _, _ -> },
+            onDeleteSpace = {},
             onSelectTab = {},
             onCloseTab = {},
             onCreateTab = {},
@@ -220,26 +234,77 @@ fun FoldedAmoledLargeFontPreview() {
             onCloseFind = {},
             onAdjustZapperScope = {},
             onSetZapperScopeDepth = {},
+            onSetZapperPreview = {},
             onZapOnce = {},
             onBlockPermanently = {},
             onUndoTemporaryZap = {},
             onStopZapper = {},
-            webContent = {}
+            tabWebContent = { _, _ -> }
         )
     }
 }
 
-@Preview(name = "Quick Controls Sheet", device = Devices.PHONE, showBackground = true)
+@Preview(name = "Folded Sidebar Drawer", device = Devices.PHONE, showSystemUi = true)
 @Composable
-fun QuickControlsSheetPreview() {
+fun FoldedSidebarDrawerPreview() {
     SwiftfoxTheme(
         themeMode = ThemeMode.NIGHT,
         nightSurfaceStyle = NightSurfaceStyle.DARK,
         accentPreset = AccentPreset.FOX_AMBER
     ) {
-        Surface(color = MaterialTheme.colorScheme.surfaceContainerLow) {
-            QuickControlsContent(
+        BrowserShellLayout(
+            state = previewState(DevicePosture.FOLDED, startPageActive = true).copy(isFoldedSidebarOpen = true),
+            onFocusOmnibox = {},
+            onFocusSearchFresh = {},
+            onGoBack = {},
+            onGoForward = {},
+            onReloadOrStop = {},
+            onOpenReaderMode = {},
+            onOpenTabSwitcher = {},
+            onOpenSettings = {},
+            onSwitchAdjacentTab = {},
+            onToggleWorkspaceSidebar = {},
+            onToggleUnfoldedRail = {},
+            onCloseFoldedSidebar = {},
+            onShareActiveTab = {},
+            onSelectSpace = {},
+            onTogglePrivate = {},
+            onCreateSpace = { _, _, _ -> },
+            onDeleteSpace = {},
+            onSelectTab = {},
+            onCloseTab = {},
+            onCreateTab = {},
+            onOpenUrl = {},
+            onAddEssential = { _, _ -> },
+            onRemoveEssential = {},
+            onFindQueryChange = {},
+            onFindNext = {},
+            onCloseFind = {},
+            onAdjustZapperScope = {},
+            onSetZapperScopeDepth = {},
+            onSetZapperPreview = {},
+            onZapOnce = {},
+            onBlockPermanently = {},
+            onUndoTemporaryZap = {},
+            onStopZapper = {},
+            tabWebContent = { _, _ -> }
+        )
+    }
+}
+
+@Preview(name = "Settings Quick Actions", device = Devices.PHONE, showBackground = true)
+@Composable
+fun QuickActionsSectionPreview() {
+    SwiftfoxTheme(
+        themeMode = ThemeMode.NIGHT,
+        nightSurfaceStyle = NightSurfaceStyle.DARK,
+        accentPreset = AccentPreset.FOX_AMBER
+    ) {
+        Surface(color = MaterialTheme.colorScheme.background) {
+            QuickActionsSection(
                 state = previewState(DevicePosture.FOLDED, startPageActive = false),
+                onGoBack = {},
+                onGoForward = {},
                 onToggleBookmark = {},
                 onShareCleanUrl = {},
                 onPrintPage = {},
@@ -252,9 +317,8 @@ fun QuickControlsSheetPreview() {
                 onOpenSiteRules = {},
                 onFindInPage = {},
                 onPinEssential = {},
-                onCycleToolbarPlacement = {},
-                onOpenOverlay = {},
-                modifier = Modifier.padding(top = 16.dp)
+                onSendToZenSpace = {},
+                modifier = Modifier.padding(16.dp)
             )
         }
     }
@@ -299,13 +363,17 @@ fun UnfoldedFoldableBrowserPreview() {
             onGoForward = {},
             onReloadOrStop = {},
             onOpenReaderMode = {},
-            onOpenQuickControls = {},
             onOpenTabSwitcher = {},
             onOpenSettings = {},
             onSwitchAdjacentTab = {},
+            onToggleWorkspaceSidebar = {},
             onToggleUnfoldedRail = {},
+            onCloseFoldedSidebar = {},
+            onShareActiveTab = {},
             onSelectSpace = {},
             onTogglePrivate = {},
+            onCreateSpace = { _, _, _ -> },
+            onDeleteSpace = {},
             onSelectTab = {},
             onCloseTab = {},
             onCreateTab = {},
@@ -317,11 +385,12 @@ fun UnfoldedFoldableBrowserPreview() {
             onCloseFind = {},
             onAdjustZapperScope = {},
             onSetZapperScopeDepth = {},
+            onSetZapperPreview = {},
             onZapOnce = {},
             onBlockPermanently = {},
             onUndoTemporaryZap = {},
             onStopZapper = {},
-            webContent = {
+            tabWebContent = { tab, _ ->
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -329,7 +398,7 @@ fun UnfoldedFoldableBrowserPreview() {
                     contentAlignment = Alignment.Center
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("arstechnica.com", style = MaterialTheme.typography.headlineSmall)
+                        Text(tab.displayHost.ifBlank { "arstechnica.com" }, style = MaterialTheme.typography.headlineSmall)
                         Text(
                             "120Hz Android WebView Viewport · Desktop Mode",
                             style = MaterialTheme.typography.bodyMedium,

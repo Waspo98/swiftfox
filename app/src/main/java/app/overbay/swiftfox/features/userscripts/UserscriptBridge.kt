@@ -436,8 +436,11 @@ class UserscriptBridge internal constructor(
                 return@launch
             }
 
-            val timeoutMs = (reqObj["timeout"]?.jsonPrimitive?.longOrNull ?: DEFAULT_XHR_TIMEOUT_MS)
-                .coerceIn(MIN_XHR_TIMEOUT_MS, MAX_XHR_TIMEOUT_MS)
+            val rawTimeout = reqObj["timeout"]?.jsonPrimitive?.longOrNull
+            val timeoutMs = when {
+                rawTimeout == null || rawTimeout <= 0L -> DEFAULT_XHR_TIMEOUT_MS
+                else -> rawTimeout.coerceIn(MIN_XHR_TIMEOUT_MS, MAX_XHR_TIMEOUT_MS)
+            }
             val data = reqObj["data"]?.jsonPrimitive?.contentOrNull
             if (data != null && data.toByteArray(Charsets.UTF_8).size > MAX_XHR_REQUEST_BYTES) {
                 dispatchResolveXhr(

@@ -1,25 +1,34 @@
 package app.overbay.swiftfox.ui.browser
 
-import android.content.Context
 import android.view.ViewGroup
-import android.widget.FrameLayout
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.ContentTransform
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -35,6 +44,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -55,6 +65,7 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import androidx.compose.material.icons.automirrored.rounded.MenuBook
 import androidx.compose.material.icons.automirrored.rounded.OpenInNew
+import androidx.compose.material.icons.automirrored.rounded.ViewSidebar
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ContentCopy
@@ -70,7 +81,6 @@ import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Shield
-import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -89,21 +99,30 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -111,6 +130,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
@@ -122,6 +142,7 @@ import app.overbay.swiftfox.engine.ContextMenuHit
 import app.overbay.swiftfox.engine.ExternalAppPrompt
 import app.overbay.swiftfox.engine.HttpsUpgradeErrorPrompt
 import app.overbay.swiftfox.engine.SitePermissionPrompt
+import app.overbay.swiftfox.engine.SwiftfoxWebView
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
 import app.overbay.swiftfox.features.omnibox.OmniboxSuggestion
 import app.overbay.swiftfox.ui.reader.ReaderModeOverlay
@@ -131,19 +152,19 @@ import app.overbay.swiftfox.ui.settings.FilterListsOverlay
 import app.overbay.swiftfox.ui.settings.HistoryOverlay
 import app.overbay.swiftfox.ui.settings.SettingsScreen
 import app.overbay.swiftfox.ui.settings.UserscriptsOverlay
-import app.overbay.swiftfox.ui.sheets.QuickControlsSheet
 import app.overbay.swiftfox.ui.sheets.SiteRulesSheet
 import app.overbay.swiftfox.ui.sync.FxAAuthWebViewOverlay
 import app.overbay.swiftfox.ui.sync.QrPairingOverlay
 import app.overbay.swiftfox.ui.sync.SyncOverlay
 import app.overbay.swiftfox.ui.sync.SyncedTabsOverlay
+import app.overbay.swiftfox.ui.tabs.ArcSpacesSidebar
 import app.overbay.swiftfox.ui.tabs.SpacesTabSwitcher
-import app.overbay.swiftfox.ui.tabs.UnfoldedSpacesSidebar
 import app.overbay.swiftfox.ui.theme.LocalSwiftfoxColors
 import app.overbay.swiftfox.ui.theme.rememberReduceMotion
 import app.overbay.swiftfox.ui.zapper.ZappedRulesOverlay
 import app.overbay.swiftfox.ui.zapper.ZapperHudOverlay
 import java.util.Locale
+import kotlin.math.roundToInt
 
 @Composable
 fun BrowserScreen(
@@ -164,7 +185,7 @@ fun BrowserScreen(
         activeTab != null &&
         !activeTab.isStartPage &&
         activeTab.displayHost.isNotBlank()
-    val isModalSheetShowing = state.isQuickControlsOpen || isSiteRulesVisible
+    val isModalSheetShowing = isSiteRulesVisible
 
     LaunchedEffect(state.snackbarId, state.snackbarMessage, isModalSheetShowing) {
         val msg = state.snackbarMessage
@@ -200,33 +221,27 @@ fun BrowserScreen(
         state.readerArticle != null ||
         state.isSiteRulesOpen ||
         state.isOmniboxFocused ||
-        state.isQuickControlsOpen ||
         state.activeOverlay != BrowserOverlay.NONE ||
+        state.isFoldedSidebarOpen ||
         state.findInPage.visible ||
         (state.activeTab?.canGoBack == true)
 
     BackHandler(enabled = shouldHandleBack) {
-        // Match visual Z-order: top-most visible overlay/sheet closes before hidden Zapper underneath
+        // Match visual Z-order: top-most visible overlay/sheet closes before drawer/WebView underneath
         when {
             state.isFullscreenVideo -> onExitFullscreenVideo()
             state.fxaAuthUrl != null -> viewModel.cancelFxAAuth()
             state.isQrPairingOpen -> viewModel.closeQrPairing()
             state.isSiteRulesOpen -> viewModel.toggleSiteRulesSheet(false)
-            state.isQuickControlsOpen -> viewModel.toggleQuickControls(false)
             state.isOmniboxFocused -> viewModel.dismissOmnibox()
             state.isReaderLoading -> viewModel.cancelReaderLoading()
             state.readerArticle != null -> viewModel.closeReaderMode()
             state.activeOverlay != BrowserOverlay.NONE -> viewModel.navigateBackFromOverlay()
+            state.isFoldedSidebarOpen -> viewModel.setFoldedSidebarOpen(false)
             state.zapper.isActive -> viewModel.stopElementZapper()
             state.findInPage.visible -> viewModel.closeFindInPage()
             else -> viewModel.goBack()
         }
-    }
-
-    val activeSession: BrowserSession? = if (activeTab != null && !activeTab.isStartPage) {
-        remember(activeTab.id, activeTab.sessionRevision) { viewModel.ensureSession(activeTab, context) }
-    } else {
-        null
     }
 
     val primaryArgb = MaterialTheme.colorScheme.primary.toArgb()
@@ -253,22 +268,114 @@ fun BrowserScreen(
         state.readerArticle != null ||
         state.isOmniboxFocused
 
+    val density = LocalDensity.current
+    val collapseScope = rememberCoroutineScope()
+    val collapseBridge = remember(density) {
+        with(density) {
+            ToolbarCollapseBridge(
+                controller = ToolbarScrollCollapseController(
+                    topRevealThresholdPx = 8.dp.roundToPx()
+                ),
+                sideRailTravelPx = 56.dp.toPx(),
+                minExtraOverflowPx = 48.dp.roundToPx(),
+                minScrollableFloorPx = 160.dp.roundToPx(),
+                refreshSpinnerDropPx = 64.dp.roundToPx()
+            )
+        }
+    }
+    val toolbarsCollapsed by remember(collapseBridge) {
+        derivedStateOf { collapseBridge.progressState.floatValue >= 0.5f }
+    }
+
+    val forceExpandToolbars = hideChrome ||
+        !state.settings.hideToolbarsOnScroll ||
+        activeTab == null ||
+        activeTab.isStartPage ||
+        isAnyFullscreenOverlayOpen ||
+        state.isSiteRulesOpen ||
+        state.isFoldedSidebarOpen ||
+        state.findInPage.visible ||
+        state.zapper.isActive ||
+        state.isReaderLoading ||
+        state.externalAppPrompt != null ||
+        state.httpsErrorPrompt != null ||
+        state.permissionPrompt != null
+
+    val currentHideToolbarsOnScroll by rememberUpdatedState(state.settings.hideToolbarsOnScroll)
+    val currentForceExpandToolbars by rememberUpdatedState(forceExpandToolbars)
+    val currentActiveTabId by rememberUpdatedState(activeTab?.id)
+    val currentReduceMotion by rememberUpdatedState(reduceMotion)
+
+    fun animateCollapseTo(target: Float, instant: Boolean = false) {
+        collapseBridge.snapJob?.cancel()
+        val clampedTarget = target.coerceIn(0f, 1f)
+        if (instant || currentReduceMotion) {
+            collapseBridge.applyProgress(clampedTarget, expandedViewport = clampedTarget > 0.001f)
+            return
+        }
+        val start = collapseBridge.controller.collapseProgress
+        if (kotlin.math.abs(start - clampedTarget) < 0.002f) {
+            collapseBridge.applyProgress(clampedTarget, expandedViewport = clampedTarget > 0.001f)
+            return
+        }
+        collapseBridge.snapJob = collapseScope.launch {
+            val anim = Animatable(start)
+            val remainingFraction = kotlin.math.abs(clampedTarget - start)
+            val durationMs = (170f * remainingFraction).roundToInt().coerceIn(70, 170)
+            anim.animateTo(
+                targetValue = clampedTarget,
+                animationSpec = tween(durationMillis = durationMs, easing = EmphasizedDecelerateEasing)
+            ) {
+                collapseBridge.applyProgress(value, expandedViewport = true)
+            }
+            collapseBridge.applyProgress(clampedTarget, expandedViewport = clampedTarget > 0.001f)
+        }
+    }
+
+    LaunchedEffect(forceExpandToolbars, activeTab?.id, effectivePlacement, posture) {
+        if (forceExpandToolbars) {
+            animateCollapseTo(0f, instant = true)
+        } else if (collapseBridge.controller.collapseProgress > 0f) {
+            animateCollapseTo(0f, instant = false)
+        }
+    }
+    LaunchedEffect(activeTab?.id, activeTab?.isLoading) {
+        if (activeTab?.isLoading == true && collapseBridge.controller.collapseProgress > 0f) {
+            animateCollapseTo(0f, instant = false)
+        }
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         BrowserShellLayout(
             state = state,
+            toolbarsCollapsed = toolbarsCollapsed,
+            toolbarCollapseProgressProvider = { collapseBridge.progressState.floatValue },
+            onChromeHeightsMeasured = { topPx, bottomPx ->
+                collapseBridge.onChromeHeightsMeasured(topPx, bottomPx)
+            },
             onFocusOmnibox = { viewModel.focusOmnibox(prefillCurrentUrl = true) },
             onFocusSearchFresh = { viewModel.focusOmnibox(prefillCurrentUrl = false) },
             onGoBack = { viewModel.goBack() },
             onGoForward = { viewModel.goForward() },
             onReloadOrStop = { viewModel.reloadOrStop() },
             onOpenReaderMode = { viewModel.openReaderMode() },
-            onOpenQuickControls = { viewModel.toggleQuickControls(true) },
             onOpenTabSwitcher = { viewModel.setOverlay(BrowserOverlay.TAB_SWITCHER) },
             onOpenSettings = { viewModel.setOverlay(BrowserOverlay.SETTINGS) },
             onSwitchAdjacentTab = { dir -> viewModel.switchAdjacentTab(dir) },
+            onToggleWorkspaceSidebar = { viewModel.toggleWorkspaceSidebar() },
             onToggleUnfoldedRail = { viewModel.toggleUnfoldedRailExpanded() },
+            onCloseFoldedSidebar = { viewModel.setFoldedSidebarOpen(false) },
+            onShareActiveTab = {
+                viewModel.setFoldedSidebarOpen(false)
+                viewModel.getCleanSharePayload()?.let { (clean, count) ->
+                    onCopyText(clean)
+                    onShareUrl(clean, count)
+                }
+            },
             onSelectSpace = { viewModel.selectSpace(it) },
             onTogglePrivate = { viewModel.togglePrivateView(it) },
+            onCreateSpace = { name, icon, isolated -> viewModel.createSpace(name, icon, isolated) },
+            onDeleteSpace = { spaceId -> viewModel.deleteSpace(spaceId) },
             onSelectTab = { viewModel.selectTab(it) },
             onCloseTab = { viewModel.closeTab(it) },
             onCreateTab = { viewModel.createTab() },
@@ -281,13 +388,21 @@ fun BrowserScreen(
             onCloseFind = { viewModel.closeFindInPage() },
             onAdjustZapperScope = { viewModel.adjustZapperScope(it) },
             onSetZapperScopeDepth = { viewModel.setZapperScopeDepth(it) },
+            onSetZapperPreview = { viewModel.setZapperPreview(it) },
             onZapOnce = { viewModel.zapSelectedElementOnce() },
             onBlockPermanently = { viewModel.blockSelectedElementPermanently() },
             onUndoTemporaryZap = { viewModel.undoZapperTemporaryZap() },
             onStopZapper = { viewModel.stopElementZapper() },
-            webContent = {
-                if (activeSession != null && activeTab != null) {
-                    key(activeSession.tabId, activeTab.sessionRevision) {
+            tabWebContent = { tab, isExiting ->
+                val session: BrowserSession? = remember(tab.id, tab.sessionRevision, isExiting) {
+                    if (isExiting) {
+                        viewModel.getExistingSession(tab.id)?.takeUnless { it.isDestroyed }
+                    } else {
+                        viewModel.ensureSession(tab, context)
+                    }
+                }?.takeUnless { it.isDestroyed }
+                if (session != null) {
+                    key(tab.id, tab.sessionRevision) {
                         AndroidView(
                             modifier = Modifier.fillMaxSize(),
                             factory = { ctx ->
@@ -312,9 +427,15 @@ fun BrowserScreen(
                                     addView(webContainer)
                                     setOnChildScrollUpCallback { _, _ ->
                                         val childWebView = webContainer.getChildAt(0)
-                                        childWebView != null &&
-                                            (childWebView.scrollY > 0 || childWebView.canScrollVertically(-1))
+                                        webContainer.currentCollapseProgress > 0.001f ||
+                                            (childWebView != null &&
+                                                (childWebView.scrollY > 0 || childWebView.canScrollVertically(-1)))
                                     }
+                                    setProgressViewOffset(
+                                        false,
+                                        collapseBridge.topBarHeightPx,
+                                        collapseBridge.topBarHeightPx + collapseBridge.refreshSpinnerDropPx
+                                    )
                                     setOnRefreshListener {
                                         viewModel.reloadActiveTab()
                                         isRefreshing = false
@@ -322,7 +443,22 @@ fun BrowserScreen(
                                 }
                             },
                             update = { swipeLayout ->
-                                val shouldEnablePullToRefresh = state.settings.pullToRefreshEnabled &&
+                                if (session.isDestroyed) {
+                                    val container = findWebViewContainer(swipeLayout)
+                                    if (collapseBridge.activeWebContainer === container) {
+                                        collapseBridge.activeWebContainer = null
+                                        collapseBridge.activeSwipeLayout = null
+                                    }
+                                    container?.clearGestureCallbacks()
+                                    (container?.getChildAt(0) as? SwiftfoxWebView)?.apply {
+                                        onScrollMetricsChanged = null
+                                        translationY = 0f
+                                    }
+                                    container?.removeAllViews()
+                                    return@AndroidView
+                                }
+                                val shouldEnablePullToRefresh = !isExiting &&
+                                    state.settings.pullToRefreshEnabled &&
                                     !state.zapper.isActive &&
                                     state.readerArticle == null
                                 if (swipeLayout.isEnabled != shouldEnablePullToRefresh) {
@@ -339,7 +475,7 @@ fun BrowserScreen(
                                     webContainer.lastSurfaceArgb = surfaceArgb
                                 }
 
-                                val targetWebView = activeSession.webView
+                                val targetWebView = session.webView
                                 if (targetWebView.parent !== webContainer) {
                                     (targetWebView.parent as? ViewGroup)?.removeView(targetWebView)
                                     webContainer.removeAllViews()
@@ -352,32 +488,159 @@ fun BrowserScreen(
                                     )
                                     // Resume & invalidate after re-attaching a warm WebView so Chromium's
                                     // compositor immediately repaints instead of staying blank until scroll.
-                                    activeSession.resumeIfActive()
+                                    if (!isExiting) {
+                                        session.resumeIfActive()
+                                    }
                                     targetWebView.requestLayout()
                                     targetWebView.invalidate()
                                 }
+                                val isActiveTab = !isExiting && tab.id == currentActiveTabId
+                                if (isActiveTab) {
+                                    collapseBridge.activeWebContainer = webContainer
+                                    collapseBridge.activeSwipeLayout = swipeLayout
+                                    val progress = collapseBridge.controller.collapseProgress
+                                    webContainer.updateChromeMetrics(
+                                        topBarHeightPx = collapseBridge.topBarHeightPx,
+                                        bottomBarHeightPx = collapseBridge.bottomBarHeightPx,
+                                        collapseProgress = progress,
+                                        expandedViewport = progress > 0.001f || collapseBridge.isUserDragging
+                                    )
+                                    swipeLayout.setProgressViewOffset(
+                                        false,
+                                        collapseBridge.topBarHeightPx,
+                                        collapseBridge.topBarHeightPx + collapseBridge.refreshSpinnerDropPx
+                                    )
+                                    webContainer.onGestureStart = {
+                                        collapseBridge.isUserDragging = true
+                                        collapseBridge.snapJob?.cancel()
+                                    }
+                                    webContainer.onGestureDragDelta = { rawDeltaY, wv ->
+                                        val consumed = collapseBridge.controller.onDragDelta(
+                                            rawDeltaY = rawDeltaY,
+                                            travelDistancePx = collapseBridge.effectiveTravelDistancePx(),
+                                            scrollRange = wv.verticalScrollRangePx,
+                                            scrollExtent = wv.verticalScrollExtentPx,
+                                            minScrollableOverflowPx = collapseBridge.minScrollableOverflowPx(),
+                                            enabled = currentHideToolbarsOnScroll,
+                                            forceExpanded = currentForceExpandToolbars
+                                        )
+                                        val next = collapseBridge.controller.collapseProgress
+                                        collapseBridge.progressState.floatValue = next
+                                        webContainer.updateChromeMetrics(
+                                            topBarHeightPx = collapseBridge.topBarHeightPx,
+                                            bottomBarHeightPx = collapseBridge.bottomBarHeightPx,
+                                            collapseProgress = next,
+                                            expandedViewport = webContainer.isViewportExpanded || next > 0.001f
+                                        )
+                                        consumed
+                                    }
+                                    webContainer.onGestureEnd = { velocityY, wv, handoffFling ->
+                                        collapseBridge.isUserDragging = false
+                                        val target = collapseBridge.controller.resolveSnapTarget(
+                                            velocityY = velocityY,
+                                            minFlingVelocityPxPerSec = webContainer.minFlingVelocityPx,
+                                            scrollY = wv.scrollY,
+                                            scrollRange = wv.verticalScrollRangePx,
+                                            scrollExtent = wv.verticalScrollExtentPx,
+                                            minScrollableOverflowPx = collapseBridge.minScrollableOverflowPx(),
+                                            enabled = currentHideToolbarsOnScroll,
+                                            forceExpanded = currentForceExpandToolbars
+                                        )
+                                        animateCollapseTo(target)
+                                        if (handoffFling) {
+                                            wv.flingScroll(0, (-velocityY).roundToInt())
+                                        }
+                                    }
+                                    targetWebView.onScrollMetricsChanged = { scrollY, deltaY, scrollRange, scrollExtent ->
+                                        if (!collapseBridge.isUserDragging && collapseBridge.snapJob?.isActive != true) {
+                                            val snapTarget = collapseBridge.controller.onFlingScroll(
+                                                scrollY = scrollY,
+                                                deltaY = deltaY,
+                                                travelDistancePx = collapseBridge.effectiveTravelDistancePx(),
+                                                scrollRange = scrollRange,
+                                                scrollExtent = scrollExtent,
+                                                minScrollableOverflowPx = collapseBridge.minScrollableOverflowPx(),
+                                                enabled = currentHideToolbarsOnScroll,
+                                                forceExpanded = currentForceExpandToolbars
+                                            )
+                                            if (snapTarget != null) {
+                                                animateCollapseTo(snapTarget)
+                                            } else {
+                                                val next = collapseBridge.controller.collapseProgress
+                                                if (collapseBridge.progressState.floatValue != next) {
+                                                    collapseBridge.progressState.floatValue = next
+                                                    webContainer.updateChromeMetrics(
+                                                        topBarHeightPx = collapseBridge.topBarHeightPx,
+                                                        bottomBarHeightPx = collapseBridge.bottomBarHeightPx,
+                                                        collapseProgress = next,
+                                                        expandedViewport = next > 0.001f
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    if (collapseBridge.activeWebContainer === webContainer) {
+                                        collapseBridge.activeWebContainer = null
+                                        collapseBridge.activeSwipeLayout = null
+                                    }
+                                    webContainer.clearGestureCallbacks()
+                                    targetWebView.onScrollMetricsChanged = null
+                                    // Keep exiting tab aligned at its current top bar offset during slide-out
+                                    webContainer.updateChromeMetrics(
+                                        topBarHeightPx = collapseBridge.topBarHeightPx,
+                                        bottomBarHeightPx = collapseBridge.bottomBarHeightPx,
+                                        collapseProgress = 0f,
+                                        expandedViewport = false
+                                    )
+                                }
                             },
                             onRelease = { swipeLayout ->
-                                findWebViewContainer(swipeLayout)?.removeAllViews()
+                                val webContainer = findWebViewContainer(swipeLayout)
+                                if (collapseBridge.activeWebContainer === webContainer) {
+                                    collapseBridge.activeWebContainer = null
+                                    collapseBridge.activeSwipeLayout = null
+                                }
+                                webContainer?.clearGestureCallbacks()
+                                (webContainer?.getChildAt(0) as? SwiftfoxWebView)?.apply {
+                                    onScrollMetricsChanged = null
+                                    translationY = 0f
+                                }
+                                webContainer?.removeAllViews()
                             }
                         )
                     }
+                } else {
+                    ExitingTabThumbnailFallback(
+                        tabId = tab.id,
+                        thumbnailsFlow = thumbnailsFlow,
+                        modifier = Modifier.insetByChromeHeights(collapseBridge.chromeHeights)
+                    )
                 }
             }
         )
 
-        // Fullscreen overlays with smooth GPU-backed transitions
+        // Fullscreen overlays with smooth bottom-up slide transitions (clip = false avoids top-left clip bug)
         AnimatedContent(
             targetState = state.activeOverlay,
+            modifier = Modifier.fillMaxSize(),
             transitionSpec = {
                 if (reduceMotion) {
-                    EnterTransition.None togetherWith ExitTransition.None
+                    (EnterTransition.None togetherWith ExitTransition.None) using SizeTransform(clip = false)
                 } else if (targetState == BrowserOverlay.NONE) {
-                    EnterTransition.None togetherWith (fadeOut(tween(130)) + slideOutVertically(tween(150)) { it / 28 })
+                    ContentTransform(
+                        targetContentEnter = EnterTransition.None,
+                        initialContentExit = fadeOut(tween(160)) +
+                            slideOutVertically(tween(210, easing = EmphasizedAccelerateEasing)) { (it * 0.25f).toInt() },
+                        targetContentZIndex = -1f,
+                        sizeTransform = SizeTransform(clip = false)
+                    )
                 } else if (initialState == BrowserOverlay.NONE) {
-                    (fadeIn(tween(160)) + slideInVertically(tween(180)) { it / 28 }) togetherWith ExitTransition.None
+                    (fadeIn(tween(180)) +
+                        slideInVertically(tween(280, easing = EmphasizedDecelerateEasing)) { (it * 0.32f).toInt() }
+                    ) togetherWith ExitTransition.None using SizeTransform(clip = false)
                 } else {
-                    fadeIn(tween(150)) togetherWith fadeOut(tween(120))
+                    (fadeIn(tween(160)) togetherWith fadeOut(tween(120))) using SizeTransform(clip = false)
                 }
             },
             label = "browser_overlay_transition"
@@ -415,6 +678,14 @@ fun BrowserScreen(
                 SettingsScreen(
                     state = state,
                     viewModel = viewModel,
+                    primaryAccentHex = primaryAccentHex,
+                    onShareCleanUrl = {
+                        viewModel.getCleanSharePayload()?.let { (clean, count) ->
+                            onShareUrl(clean, count)
+                        }
+                    },
+                    onPrintPage = onPrintPage,
+                    onEnterPip = onEnterPip,
                     onBack = { viewModel.navigateBackFromOverlay() },
                     onOpenDefaultBrowserSettings = onOpenDefaultBrowserSettings
                 )
@@ -596,44 +867,6 @@ fun BrowserScreen(
             )
         }
 
-        // Quick Controls Bottom Sheet (Signature Move)
-        if (state.isQuickControlsOpen) {
-            QuickControlsSheet(
-                state = state,
-                onDismiss = { viewModel.toggleQuickControls(false) },
-                onToggleBookmark = { viewModel.toggleBookmarkForActiveTab() },
-                onShareCleanUrl = {
-                    viewModel.toggleQuickControls(false)
-                    viewModel.getCleanSharePayload()?.let { (clean, count) ->
-                        onShareUrl(clean, count)
-                    }
-                },
-                onPrintPage = {
-                    viewModel.toggleQuickControls(false)
-                    onPrintPage()
-                },
-                onToggleSiteMode = { viewModel.toggleActiveTabSiteMode() },
-                onToggleWebDarkMode = { viewModel.toggleActiveSiteWebDarkMode() },
-                onToggleShieldAdblock = { viewModel.toggleActiveSiteAdblock() },
-                onEnterPip = {
-                    viewModel.toggleQuickControls(false)
-                    onEnterPip()
-                },
-                onLaunchZapper = { viewModel.startElementZapper(primaryAccentHex) },
-                onOpenReaderMode = { viewModel.openReaderMode() },
-                onOpenSiteRules = { viewModel.toggleSiteRulesSheet(true) },
-                onFindInPage = { viewModel.openFindInPage() },
-                onPinEssential = {
-                    viewModel.pinCurrentTabToEssentials()
-                    viewModel.toggleQuickControls(false)
-                },
-                onCycleToolbarPlacement = { viewModel.cycleCurrentPostureToolbarPlacement() },
-                onOpenOverlay = { viewModel.setOverlay(it) },
-                onSendToZenSpace = { viewModel.sendActiveTabToZenSpace() },
-                onClearSnackbar = { viewModel.clearSnackbar() }
-            )
-        }
-
         // Per-Site Rules & Overrides Sheet
         if (isSiteRulesVisible) {
             val siteRulesTab = activeTab
@@ -749,7 +982,7 @@ fun BrowserScreen(
             isAnyFullscreenOverlayOpen -> 16.dp
             state.zapper.isActive && hasBottomToolbar -> 156.dp
             state.zapper.isActive -> 100.dp
-            hasBottomToolbar -> 72.dp
+            hasBottomToolbar && !toolbarsCollapsed -> 72.dp
             else -> 12.dp
         }
         SnackbarHost(
@@ -763,6 +996,15 @@ fun BrowserScreen(
     }
 }
 
+private class TabStripNavTracker {
+    var lastTabId: String? = null
+    var lastVisibleIds: List<String> = emptyList()
+    var lastSpaceKey: String = ""
+    var lastFullscreenOverlayOpen: Boolean = false
+    var lastTabsRef: List<BrowserTabUi>? = null
+    val cachedTabsById = LinkedHashMap<String, BrowserTabUi>(32)
+}
+
 @Composable
 fun BrowserShellLayout(
     state: BrowserUiState,
@@ -772,13 +1014,17 @@ fun BrowserShellLayout(
     onGoForward: () -> Unit,
     onReloadOrStop: () -> Unit,
     onOpenReaderMode: () -> Unit,
-    onOpenQuickControls: () -> Unit,
     onOpenTabSwitcher: () -> Unit,
     onOpenSettings: () -> Unit,
     onSwitchAdjacentTab: (Int) -> Unit,
+    onToggleWorkspaceSidebar: () -> Unit,
     onToggleUnfoldedRail: () -> Unit,
+    onCloseFoldedSidebar: () -> Unit,
+    onShareActiveTab: () -> Unit,
     onSelectSpace: (String) -> Unit,
     onTogglePrivate: (Boolean) -> Unit,
+    onCreateSpace: (String, String, Boolean) -> Unit,
+    onDeleteSpace: (String) -> Unit,
     onSelectTab: (String) -> Unit,
     onCloseTab: (String) -> Unit,
     onCreateTab: () -> Unit,
@@ -791,11 +1037,15 @@ fun BrowserShellLayout(
     onCloseFind: () -> Unit,
     onAdjustZapperScope: (Int) -> Unit,
     onSetZapperScopeDepth: (Int) -> Unit,
+    onSetZapperPreview: (Boolean) -> Unit,
     onZapOnce: () -> Unit,
     onBlockPermanently: () -> Unit,
     onUndoTemporaryZap: () -> Unit,
     onStopZapper: () -> Unit,
-    webContent: @Composable () -> Unit
+    tabWebContent: @Composable (tab: BrowserTabUi, isExiting: Boolean) -> Unit,
+    toolbarsCollapsed: Boolean = false,
+    toolbarCollapseProgressProvider: () -> Float = { 0f },
+    onChromeHeightsMeasured: (topBarPx: Int, bottomBarPx: Int) -> Unit = { _, _ -> }
 ) {
     val reduceMotion = rememberReduceMotion()
     val posture = state.windowState.posture
@@ -805,11 +1055,71 @@ fun BrowserShellLayout(
     } else {
         profile.toolbarPlacement
     }
-    val showSpacesSidebar = posture == DevicePosture.UNFOLDED && profile.showSpacesSidebar && !state.isInPictureInPicture
+    val showUnfoldedSidebar = posture == DevicePosture.UNFOLDED && profile.showSpacesSidebar && !state.isInPictureInPicture
     val hideChrome = state.isInPictureInPicture || state.isFullscreenVideo
     val activeTab = state.activeTab
 
     val hasBottomToolbar = !hideChrome && (placement == ToolbarPlacement.SPLIT || placement == ToolbarPlacement.BOTTOM)
+    val isFullscreenOverlayOpen = state.activeOverlay != BrowserOverlay.NONE ||
+        state.isQrPairingOpen ||
+        state.fxaAuthUrl != null ||
+        state.readerArticle != null ||
+        state.isOmniboxFocused
+
+    val navTracker = remember { TabStripNavTracker() }
+
+    val currentTabId = activeTab?.id
+    val currentVisibleIds = remember(state.tabs, state.activeSpaceId, state.isPrivateView) {
+        state.visibleTabs.map { it.id }
+    }
+    val currentSpaceKey = if (state.isPrivateView) "private" else state.activeSpaceId
+    val slideDirection = resolveTabSlideDirection(
+        previousTabId = navTracker.lastTabId,
+        nextTabId = currentTabId,
+        previousVisibleIds = navTracker.lastVisibleIds,
+        nextVisibleIds = currentVisibleIds,
+        previousSpaceKey = navTracker.lastSpaceKey,
+        nextSpaceKey = currentSpaceKey,
+        wasFullscreenOverlayOpen = navTracker.lastFullscreenOverlayOpen,
+        reduceMotion = reduceMotion
+    )
+
+    SideEffect {
+        val prevId = navTracker.lastTabId
+        val tabsChanged = state.tabs !== navTracker.lastTabsRef
+        if (tabsChanged) {
+            navTracker.lastTabsRef = state.tabs
+            val hasAnyPrivateTabs = state.tabs.any { it.isPrivate }
+            state.tabs.forEach { navTracker.cachedTabsById[it.id] = it }
+            if (navTracker.cachedTabsById.size > state.tabs.size) {
+                val openIds = state.tabs.mapTo(HashSet(state.tabs.size * 2)) { it.id }
+                val iterator = navTracker.cachedTabsById.entries.iterator()
+                while (iterator.hasNext()) {
+                    val (id, cachedTab) = iterator.next()
+                    if (id !in openIds) {
+                        // Purge closed private tabs immediately once all private tabs are gone,
+                        // and keep at most the single currently-exiting tab during its 280ms transition.
+                        val keepBriefly = id == prevId && (!cachedTab.isPrivate || hasAnyPrivateTabs)
+                        if (!keepBriefly) {
+                            iterator.remove()
+                        }
+                    }
+                }
+            }
+        }
+        navTracker.lastTabId = currentTabId
+        navTracker.lastVisibleIds = currentVisibleIds
+        navTracker.lastSpaceKey = currentSpaceKey
+        navTracker.lastFullscreenOverlayOpen = isFullscreenOverlayOpen
+    }
+
+    val currentOpenTabs by rememberUpdatedState(state.tabs)
+    LaunchedEffect(currentTabId, state.tabs.size) {
+        if (navTracker.cachedTabsById.size <= currentOpenTabs.size) return@LaunchedEffect
+        delay(350)
+        val openIds = currentOpenTabs.mapTo(HashSet(currentOpenTabs.size * 2)) { it.id }
+        navTracker.cachedTabsById.keys.retainAll(openIds)
+    }
 
     Surface(
         modifier = Modifier
@@ -818,223 +1128,314 @@ fun BrowserShellLayout(
         color = MaterialTheme.colorScheme.background,
         contentColor = MaterialTheme.colorScheme.onBackground
     ) {
+        val hasTopToolbar = !hideChrome &&
+            (placement == ToolbarPlacement.TOP || placement == ToolbarPlacement.SPLIT)
+        val chromeHeights = remember { ChromeBarHeights() }
+
         Row(modifier = Modifier.fillMaxSize()) {
-            // Optional collapsible Zen-style vertical Spaces sidebar when unfolded
-            if (showSpacesSidebar && !hideChrome) {
-                UnfoldedSpacesSidebar(
+            // Optional collapsible Arc/Zen vertical Spaces sidebar when unfolded
+            if (showUnfoldedSidebar && !hideChrome) {
+                ArcSpacesSidebar(
                     state = state,
                     expanded = state.isUnfoldedRailExpanded,
+                    isOverlayDrawer = false,
+                    bottomBarPresent = false,
                     onToggleExpanded = onToggleUnfoldedRail,
+                    onCloseDrawer = onCloseFoldedSidebar,
                     onSelectSpace = onSelectSpace,
                     onTogglePrivate = onTogglePrivate,
                     onSelectTab = onSelectTab,
                     onCloseTab = onCloseTab,
                     onCreateTab = onCreateTab,
+                    onCreatePrivateTab = onCreatePrivateTab,
                     onOpenEssential = onOpenUrl,
-                    onCreatePrivateTab = onCreatePrivateTab
+                    onCreateSpace = onCreateSpace,
+                    onDeleteSpace = onDeleteSpace
                 )
             }
 
-            // Main content column (top toolbar + WebView/StartPage + bottom toolbar)
-            Column(
+            // Main browser column with 1:1 scroll-linked overlay toolbars & edge-to-edge transparent nav bar
+            BrowserChromeViewportLayout(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxHeight()
-            ) {
-                if (!hideChrome) {
-                    when (placement) {
-                        ToolbarPlacement.TOP -> {
-                            FullOmniboxToolbar(
+                    .clipToBounds(),
+                collapseProgressProvider = toolbarCollapseProgressProvider,
+                onChromeHeightsMeasured = { topPx, bottomPx ->
+                    chromeHeights.update(topPx, bottomPx)
+                    onChromeHeightsMeasured(topPx, bottomPx)
+                },
+                statusBarStrip = {
+                    if (!hideChrome) {
+                        val stripColor = if (hasTopToolbar) {
+                            MaterialTheme.colorScheme.surfaceContainerLow
+                        } else {
+                            MaterialTheme.colorScheme.surface
+                        }
+                        Spacer(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .windowInsetsTopHeight(WindowInsets.statusBars)
+                                .background(stripColor)
+                        )
+                    }
+                },
+                findBar = {
+                    AnimatedVisibility(
+                        visible = state.findInPage.visible && !hideChrome,
+                        enter = if (reduceMotion) EnterTransition.None else (slideInVertically { -it } + fadeIn()),
+                        exit = if (reduceMotion) ExitTransition.None else (slideOutVertically { -it } + fadeOut())
+                    ) {
+                        FindInPageBar(
+                            state = state.findInPage,
+                            onQueryChange = onFindQueryChange,
+                            onFindNext = onFindNext,
+                            onClose = onCloseFind
+                        )
+                    }
+                },
+                topBar = {
+                    if (!hideChrome) {
+                        when (placement) {
+                            ToolbarPlacement.TOP -> {
+                                FullOmniboxToolbar(
+                                    state = state,
+                                    isTop = true,
+                                    showInlineNav = posture == DevicePosture.UNFOLDED,
+                                    showTrailingActions = true,
+                                    showSidebarToggle = posture == DevicePosture.FOLDED,
+                                    isSidebarOpen = state.isFoldedSidebarOpen,
+                                    onToggleSidebar = onToggleWorkspaceSidebar,
+                                    onFocusOmnibox = onFocusOmnibox,
+                                    onGoBack = onGoBack,
+                                    onGoForward = onGoForward,
+                                    onReloadOrStop = onReloadOrStop,
+                                    onOpenReaderMode = onOpenReaderMode,
+                                    onOpenSettings = onOpenSettings,
+                                    onOpenTabSwitcher = onOpenTabSwitcher,
+                                    onSwitchAdjacentTab = onSwitchAdjacentTab
+                                )
+                            }
+                            ToolbarPlacement.SPLIT -> {
+                                FullOmniboxToolbar(
+                                    state = state,
+                                    isTop = true,
+                                    showInlineNav = false,
+                                    showTrailingActions = false,
+                                    onFocusOmnibox = onFocusOmnibox,
+                                    onGoBack = onGoBack,
+                                    onGoForward = onGoForward,
+                                    onReloadOrStop = onReloadOrStop,
+                                    onOpenReaderMode = onOpenReaderMode,
+                                    onOpenSettings = onOpenSettings,
+                                    onOpenTabSwitcher = onOpenTabSwitcher,
+                                    onSwitchAdjacentTab = onSwitchAdjacentTab
+                                )
+                            }
+                            ToolbarPlacement.BOTTOM, ToolbarPlacement.SIDE_RAIL -> Unit
+                        }
+                    }
+                },
+                bottomBar = {
+                    if (!hideChrome) {
+                        when (placement) {
+                            ToolbarPlacement.SPLIT -> {
+                                SplitBottomActionBar(
+                                    state = state,
+                                    isSidebarOpen = if (posture == DevicePosture.FOLDED) {
+                                        state.isFoldedSidebarOpen
+                                    } else {
+                                        profile.showSpacesSidebar && state.isUnfoldedRailExpanded
+                                    },
+                                    onToggleSidebar = onToggleWorkspaceSidebar,
+                                    onShareActiveTab = onShareActiveTab,
+                                    onCreateTab = onCreateTab,
+                                    onCreatePrivateTab = onCreatePrivateTab,
+                                    onOpenTabSwitcher = onOpenTabSwitcher,
+                                    onOpenSettings = onOpenSettings
+                                )
+                            }
+                            ToolbarPlacement.BOTTOM -> {
+                                FullOmniboxToolbar(
+                                    state = state,
+                                    isTop = false,
+                                    showInlineNav = false,
+                                    showTrailingActions = true,
+                                    showSidebarToggle = posture == DevicePosture.FOLDED,
+                                    isSidebarOpen = state.isFoldedSidebarOpen,
+                                    onToggleSidebar = onToggleWorkspaceSidebar,
+                                    onFocusOmnibox = onFocusOmnibox,
+                                    onGoBack = onGoBack,
+                                    onGoForward = onGoForward,
+                                    onReloadOrStop = onReloadOrStop,
+                                    onOpenReaderMode = onOpenReaderMode,
+                                    onOpenSettings = onOpenSettings,
+                                    onOpenTabSwitcher = onOpenTabSwitcher,
+                                    onSwitchAdjacentTab = onSwitchAdjacentTab
+                                )
+                            }
+                            ToolbarPlacement.TOP, ToolbarPlacement.SIDE_RAIL -> Unit
+                        }
+                    }
+                },
+                content = {
+                    AnimatedContent(
+                        targetState = currentTabId,
+                        modifier = Modifier.fillMaxSize(),
+                        transitionSpec = {
+                            when {
+                                reduceMotion || navTracker.lastFullscreenOverlayOpen ->
+                                    (EnterTransition.None togetherWith ExitTransition.None) using SizeTransform(clip = false)
+                                slideDirection > 0 ->
+                                    (slideInHorizontally(tween(280, easing = EmphasizedDecelerateEasing)) { it } togetherWith
+                                        slideOutHorizontally(tween(280, easing = EmphasizedDecelerateEasing)) { -it }) using
+                                        SizeTransform(clip = false)
+                                slideDirection < 0 ->
+                                    (slideInHorizontally(tween(280, easing = EmphasizedDecelerateEasing)) { -it } togetherWith
+                                        slideOutHorizontally(tween(280, easing = EmphasizedDecelerateEasing)) { it }) using
+                                        SizeTransform(clip = false)
+                                else ->
+                                    (fadeIn(tween(140)) togetherWith fadeOut(tween(120))) using SizeTransform(clip = false)
+                            }
+                        },
+                        label = "tab_strip_slide"
+                    ) { renderedTabId ->
+                        val renderedTab = if (renderedTabId == currentTabId) {
+                            activeTab
+                        } else {
+                            state.tabs.firstOrNull { it.id == renderedTabId }
+                                ?: renderedTabId?.let { navTracker.cachedTabsById[it] }
+                        }
+                        if (renderedTab == null || renderedTab.isStartPage) {
+                            StartPageContent(
                                 state = state,
-                                isTop = true,
-                                showInlineNav = true,
-                                showTrailingActions = true,
-                                onFocusOmnibox = onFocusOmnibox,
-                                onGoBack = onGoBack,
-                                onGoForward = onGoForward,
-                                onReloadOrStop = onReloadOrStop,
-                                onOpenReaderMode = onOpenReaderMode,
-                                onOpenQuickControls = onOpenQuickControls,
-                                onOpenTabSwitcher = onOpenTabSwitcher,
-                                onSwitchAdjacentTab = onSwitchAdjacentTab
+                                onFocusOmnibox = onFocusSearchFresh,
+                                onOpenUrl = onOpenUrl,
+                                onSelectSpace = onSelectSpace,
+                                onSelectTab = onSelectTab,
+                                onAddEssential = onAddEssential,
+                                onRemoveEssential = onRemoveEssential,
+                                addBottomNavInset = !hasBottomToolbar && !hideChrome,
+                                modifier = Modifier.insetByChromeHeights(chromeHeights)
+                            )
+                        } else {
+                            tabWebContent(renderedTab, renderedTabId != currentTabId)
+                        }
+                    }
+                },
+                hudOverlay = {
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        // Loading progress indicator in Side Rail mode (no top/bottom bar)
+                        if (!hideChrome && placement == ToolbarPlacement.SIDE_RAIL) {
+                            ToolbarProgressSlot(
+                                isLoading = activeTab?.isLoading == true,
+                                progress = activeTab?.progress ?: 0,
+                                dividerAlignment = Alignment.TopCenter,
+                                showIdleDivider = false,
+                                modifier = Modifier.align(Alignment.TopCenter)
                             )
                         }
-                        ToolbarPlacement.SPLIT -> {
-                            FullOmniboxToolbar(
-                                state = state,
-                                isTop = true,
-                                showInlineNav = false,
-                                showTrailingActions = false,
-                                onFocusOmnibox = onFocusOmnibox,
-                                onGoBack = onGoBack,
-                                onGoForward = onGoForward,
-                                onReloadOrStop = onReloadOrStop,
-                                onOpenReaderMode = onOpenReaderMode,
-                                onOpenQuickControls = onOpenQuickControls,
-                                onOpenTabSwitcher = onOpenTabSwitcher,
-                                onSwitchAdjacentTab = onSwitchAdjacentTab
-                            )
-                        }
-                        ToolbarPlacement.BOTTOM, ToolbarPlacement.SIDE_RAIL -> {
-                            // Clean status bar protection strip when top bar is absent
-                            Spacer(
+
+                        // Compact top domain badge when Side Rail placement is active on unfolded display
+                        if (!hideChrome && placement == ToolbarPlacement.SIDE_RAIL && activeTab != null && !activeTab.isStartPage) {
+                            Surface(
+                                onClick = onFocusOmnibox,
+                                enabled = !toolbarsCollapsed,
+                                shape = RoundedCornerShape(24.dp),
+                                color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.94f),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)),
                                 modifier = Modifier
-                                    .fillMaxWidth()
-                                    .windowInsetsTopHeight(WindowInsets.statusBars)
-                                    .background(MaterialTheme.colorScheme.surface)
-                            )
-                        }
-                    }
-                }
-
-                // Find-in-page bar
-                AnimatedVisibility(
-                    visible = state.findInPage.visible && !hideChrome,
-                    enter = if (reduceMotion) EnterTransition.None else (slideInVertically { -it } + fadeIn()),
-                    exit = if (reduceMotion) ExitTransition.None else (slideOutVertically { -it } + fadeOut())
-                ) {
-                    FindInPageBar(
-                        state = state.findInPage,
-                        onQueryChange = onFindQueryChange,
-                        onFindNext = onFindNext,
-                        onClose = onCloseFind
-                    )
-                }
-
-                // Primary Viewport: Live WebView or calm Swiftfox Start Page
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
-                        .then(if (!hasBottomToolbar && !hideChrome) Modifier.navigationBarsPadding() else Modifier)
-                ) {
-                    if (activeTab == null || activeTab.isStartPage) {
-                        StartPageContent(
-                            state = state,
-                            onFocusOmnibox = onFocusSearchFresh,
-                            onOpenUrl = onOpenUrl,
-                            onSelectSpace = onSelectSpace,
-                            onSelectTab = onSelectTab,
-                            onAddEssential = onAddEssential,
-                            onRemoveEssential = onRemoveEssential
-                        )
-                    } else {
-                        webContent()
-                    }
-
-                    // Loading progress indicator in Side Rail mode (no top/bottom bar)
-                    if (!hideChrome && placement == ToolbarPlacement.SIDE_RAIL) {
-                        ToolbarProgressSlot(
-                            isLoading = activeTab?.isLoading == true,
-                            progress = activeTab?.progress ?: 0,
-                            dividerAlignment = Alignment.TopCenter,
-                            showIdleDivider = false,
-                            modifier = Modifier.align(Alignment.TopCenter)
-                        )
-                    }
-
-                    // Compact top domain badge when Side Rail placement is active on unfolded display
-                    if (!hideChrome && placement == ToolbarPlacement.SIDE_RAIL && activeTab != null && !activeTab.isStartPage) {
-                        Surface(
-                            onClick = onFocusOmnibox,
-                            shape = RoundedCornerShape(24.dp),
-                            color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.94f),
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)),
-                            modifier = Modifier
-                                .align(Alignment.TopCenter)
-                                .padding(top = 8.dp)
-                                .heightIn(min = 48.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    .align(Alignment.TopCenter)
+                                    .padding(top = 8.dp)
+                                    .heightIn(min = 48.dp)
+                                    .graphicsLayer {
+                                        val progress = toolbarCollapseProgressProvider().coerceIn(0f, 1f)
+                                        translationY = -(size.height + 24f) * progress
+                                        alpha = (1f - progress).coerceIn(0f, 1f)
+                                    }
                             ) {
-                                Icon(
-                                    imageVector = if (activeTab.isSecureHttps) Icons.Rounded.Lock else Icons.Rounded.LockOpen,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Text(
-                                    text = activeTab.displayHost,
-                                    style = MaterialTheme.typography.labelLarge,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = if (activeTab.isSecureHttps) Icons.Rounded.Lock else Icons.Rounded.LockOpen,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Text(
+                                        text = activeTab.displayHost,
+                                        style = MaterialTheme.typography.labelLarge,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
                             }
                         }
-                    }
 
-                    if (state.isReaderLoading) {
-                        Surface(
-                            shape = RoundedCornerShape(24.dp),
-                            color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                            tonalElevation = 4.dp,
-                            modifier = Modifier
-                                .align(Alignment.Center)
-                                .padding(20.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        if (state.isReaderLoading) {
+                            Surface(
+                                shape = RoundedCornerShape(24.dp),
+                                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                tonalElevation = 4.dp,
+                                modifier = Modifier
+                                    .align(Alignment.Center)
+                                    .padding(20.dp)
                             ) {
-                                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.5.dp)
-                                Text("Preparing Reader Mode", style = MaterialTheme.typography.labelLarge)
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                ) {
+                                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.5.dp)
+                                    Text("Preparing Reader Mode", style = MaterialTheme.typography.labelLarge)
+                                }
                             }
                         }
-                    }
 
-                    if (state.zapper.isActive && !hideChrome) {
-                        val dockTop = state.zapper.selectedSelector != null &&
-                            state.zapper.selectedViewportCenterY > 0.55f
-                        ZapperHudOverlay(
-                            state = state.zapper,
-                            onAdjustScope = onAdjustZapperScope,
-                            onSetScopeDepth = onSetZapperScopeDepth,
-                            onZapOnce = onZapOnce,
-                            onBlockPermanently = onBlockPermanently,
-                            onUndoTemporaryZap = onUndoTemporaryZap,
-                            onDone = onStopZapper,
-                            modifier = Modifier.align(if (dockTop) Alignment.TopCenter else Alignment.BottomCenter)
-                        )
-                    }
-                }
-
-                // Bottom toolbar variants (TOP and SIDE_RAIL render WebView truly edge-to-edge under transparent gesture bar)
-                if (!hideChrome) {
-                    when (placement) {
-                        ToolbarPlacement.SPLIT -> {
-                            SplitBottomActionBar(
-                                state = state,
-                                onGoBack = onGoBack,
-                                onGoForward = onGoForward,
-                                onOpenQuickControls = onOpenQuickControls,
-                                onOpenTabSwitcher = onOpenTabSwitcher,
-                                onOpenSettings = onOpenSettings
+                        if (state.zapper.isActive && !hideChrome) {
+                            val dockTop = state.zapper.selectedSelector != null &&
+                                state.zapper.selectedViewportCenterY > 0.55f
+                            ZapperHudOverlay(
+                                state = state.zapper,
+                                onAdjustScope = onAdjustZapperScope,
+                                onSetScopeDepth = onSetZapperScopeDepth,
+                                onSetPreview = onSetZapperPreview,
+                                onZapOnce = onZapOnce,
+                                onBlockPermanently = onBlockPermanently,
+                                onUndoTemporaryZap = onUndoTemporaryZap,
+                                onDone = onStopZapper,
+                                modifier = Modifier
+                                    .align(if (dockTop) Alignment.TopCenter else Alignment.BottomCenter)
+                                    .then(if (!dockTop && !hasBottomToolbar) Modifier.navigationBarsPadding() else Modifier)
                             )
                         }
-                        ToolbarPlacement.BOTTOM -> {
-                            FullOmniboxToolbar(
+                    }
+                },
+                foldedDrawer = {
+                    if (posture == DevicePosture.FOLDED && !hideChrome) {
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            FoldedSidebarDrawerOverlay(
                                 state = state,
-                                isTop = false,
-                                showInlineNav = false,
-                                showTrailingActions = true,
-                                onFocusOmnibox = onFocusOmnibox,
-                                onGoBack = onGoBack,
-                                onGoForward = onGoForward,
-                                onReloadOrStop = onReloadOrStop,
-                                onOpenReaderMode = onOpenReaderMode,
-                                onOpenQuickControls = onOpenQuickControls,
-                                onOpenTabSwitcher = onOpenTabSwitcher,
-                                onSwitchAdjacentTab = onSwitchAdjacentTab
+                                reduceMotion = reduceMotion,
+                                hasBottomToolbar = hasBottomToolbar,
+                                onCloseFoldedSidebar = onCloseFoldedSidebar,
+                                onSelectSpace = onSelectSpace,
+                                onTogglePrivate = onTogglePrivate,
+                                onSelectTab = onSelectTab,
+                                onCloseTab = onCloseTab,
+                                onCreateTab = onCreateTab,
+                                onCreatePrivateTab = onCreatePrivateTab,
+                                onOpenUrl = onOpenUrl,
+                                onCreateSpace = onCreateSpace,
+                                onDeleteSpace = onDeleteSpace
                             )
                         }
-                        ToolbarPlacement.TOP, ToolbarPlacement.SIDE_RAIL -> Unit
                     }
                 }
-            }
+            )
 
             // Unfolded right-edge ergonomic Side Rail
             if (!hideChrome && placement == ToolbarPlacement.SIDE_RAIL) {
@@ -1045,11 +1446,141 @@ fun BrowserShellLayout(
                     onGoForward = onGoForward,
                     onReloadOrStop = onReloadOrStop,
                     onOpenReaderMode = onOpenReaderMode,
-                    onOpenQuickControls = onOpenQuickControls,
+                    onOpenSettings = onOpenSettings,
                     onOpenTabSwitcher = onOpenTabSwitcher,
                     onCreateTab = onCreateTab
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun BoxScope.FoldedSidebarDrawerOverlay(
+    state: BrowserUiState,
+    reduceMotion: Boolean,
+    hasBottomToolbar: Boolean,
+    onCloseFoldedSidebar: () -> Unit,
+    onSelectSpace: (String) -> Unit,
+    onTogglePrivate: (Boolean) -> Unit,
+    onSelectTab: (String) -> Unit,
+    onCloseTab: (String) -> Unit,
+    onCreateTab: () -> Unit,
+    onCreatePrivateTab: () -> Unit,
+    onOpenUrl: (String) -> Unit,
+    onCreateSpace: (String, String, Boolean) -> Unit,
+    onDeleteSpace: (String) -> Unit
+) {
+    AnimatedVisibility(
+        visible = state.isFoldedSidebarOpen,
+        enter = if (reduceMotion) EnterTransition.None else fadeIn(tween(240)),
+        exit = if (reduceMotion) ExitTransition.None else fadeOut(tween(200))
+    ) {
+        val scrimInteractionSource = remember { MutableInteractionSource() }
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.48f))
+                .clickable(
+                    interactionSource = scrimInteractionSource,
+                    indication = null,
+                    onClick = onCloseFoldedSidebar
+                )
+        )
+    }
+
+    val drawerDragOffsetPx = remember { Animatable(0f) }
+    val drawerScope = rememberCoroutineScope()
+    val dismissThresholdPx = with(LocalDensity.current) { 72.dp.toPx() }
+    val currentOnCloseFoldedSidebar by rememberUpdatedState(onCloseFoldedSidebar)
+    val currentReduceMotion by rememberUpdatedState(reduceMotion)
+    LaunchedEffect(state.isFoldedSidebarOpen) {
+        if (state.isFoldedSidebarOpen) {
+            drawerDragOffsetPx.snapTo(0f)
+        }
+    }
+
+    AnimatedVisibility(
+        visible = state.isFoldedSidebarOpen,
+        enter = if (reduceMotion) {
+            EnterTransition.None
+        } else {
+            slideInHorizontally(tween(280, easing = EmphasizedDecelerateEasing)) { -it }
+        },
+        exit = if (reduceMotion) {
+            ExitTransition.None
+        } else {
+            slideOutHorizontally(tween(220, easing = EmphasizedAccelerateEasing)) { -it }
+        },
+        modifier = Modifier.align(Alignment.CenterStart)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxHeight()
+                .offset { IntOffset(drawerDragOffsetPx.value.roundToInt(), 0) }
+                .pointerInput(dismissThresholdPx) {
+                    var currentDragOffset = 0f
+                    detectHorizontalDragGestures(
+                        onDragStart = {
+                            currentDragOffset = drawerDragOffsetPx.value
+                        },
+                        onDragEnd = {
+                            if (currentDragOffset < -dismissThresholdPx) {
+                                currentOnCloseFoldedSidebar()
+                            } else {
+                                currentDragOffset = 0f
+                                drawerScope.launch {
+                                    if (currentReduceMotion) {
+                                        drawerDragOffsetPx.snapTo(0f)
+                                    } else {
+                                        drawerDragOffsetPx.animateTo(
+                                            0f,
+                                            tween(180, easing = EmphasizedDecelerateEasing)
+                                        )
+                                    }
+                                }
+                            }
+                        },
+                        onDragCancel = {
+                            currentDragOffset = 0f
+                            drawerScope.launch {
+                                if (currentReduceMotion) {
+                                    drawerDragOffsetPx.snapTo(0f)
+                                } else {
+                                    drawerDragOffsetPx.animateTo(
+                                        0f,
+                                        tween(180, easing = EmphasizedDecelerateEasing)
+                                    )
+                                }
+                            }
+                        },
+                        onHorizontalDrag = { _, dragAmount ->
+                            currentDragOffset = (currentDragOffset + dragAmount).coerceAtMost(0f)
+                            val target = currentDragOffset
+                            drawerScope.launch {
+                                drawerDragOffsetPx.snapTo(target)
+                            }
+                        }
+                    )
+                }
+        ) {
+            ArcSpacesSidebar(
+                state = state,
+                expanded = true,
+                isOverlayDrawer = true,
+                bottomBarPresent = hasBottomToolbar,
+                onToggleExpanded = onCloseFoldedSidebar,
+                onCloseDrawer = onCloseFoldedSidebar,
+                onSelectSpace = onSelectSpace,
+                onTogglePrivate = onTogglePrivate,
+                onSelectTab = onSelectTab,
+                onCloseTab = onCloseTab,
+                onCreateTab = onCreateTab,
+                onCreatePrivateTab = onCreatePrivateTab,
+                onOpenEssential = onOpenUrl,
+                onCreateSpace = onCreateSpace,
+                onDeleteSpace = onDeleteSpace
+            )
         }
     }
 }
@@ -1070,14 +1601,19 @@ private fun FullOmniboxToolbar(
     onGoForward: () -> Unit,
     onReloadOrStop: () -> Unit,
     onOpenReaderMode: () -> Unit,
-    onOpenQuickControls: () -> Unit,
+    onOpenSettings: () -> Unit,
     onOpenTabSwitcher: () -> Unit,
-    onSwitchAdjacentTab: (Int) -> Unit
+    onSwitchAdjacentTab: (Int) -> Unit,
+    showSidebarToggle: Boolean = false,
+    isSidebarOpen: Boolean = false,
+    onToggleSidebar: () -> Unit = {}
 ) {
     val activeTab = state.activeTab
     val foxColors = LocalSwiftfoxColors.current
     val isPrivate = activeTab?.isPrivate == true || state.isPrivateView
     val tabCount = state.visibleTabs.size.coerceAtLeast(1)
+    val accentTint = if (isPrivate) foxColors.privateAccent else MaterialTheme.colorScheme.primary
+    val accentContainer = if (isPrivate) foxColors.privateContainer else MaterialTheme.colorScheme.primaryContainer
 
     val density = LocalDensity.current
     val horizontalSwipeThresholdPx = with(density) { 48.dp.toPx() }
@@ -1129,9 +1665,9 @@ private fun FullOmniboxToolbar(
                 )
                 .then(
                     if (isTop) {
-                        Modifier
-                            .statusBarsPadding()
-                            .windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Horizontal))
+                        Modifier.windowInsetsPadding(
+                            WindowInsets.navigationBars.only(WindowInsetsSides.Horizontal)
+                        )
                     } else {
                         Modifier.navigationBarsPadding()
                     }
@@ -1152,6 +1688,29 @@ private fun FullOmniboxToolbar(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                if (showSidebarToggle) {
+                    Surface(
+                        onClick = onToggleSidebar,
+                        shape = CircleShape,
+                        color = if (isSidebarOpen) accentContainer else Color.Transparent,
+                        border = if (isSidebarOpen) BorderStroke(1.dp, accentTint.copy(alpha = 0.45f)) else null,
+                        modifier = Modifier.size(48.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Rounded.ViewSidebar,
+                                contentDescription = if (isSidebarOpen) {
+                                    "Close workspace sidebar"
+                                } else {
+                                    "Open workspace sidebar"
+                                },
+                                tint = if (isSidebarOpen) accentTint else MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.graphicsLayer { scaleX = -1f }
+                            )
+                        }
+                    }
+                }
+
                 if (showInlineNav) {
                     IconButton(
                         onClick = onGoBack,
@@ -1290,14 +1849,14 @@ private fun FullOmniboxToolbar(
                         onClick = onOpenTabSwitcher
                     )
 
-                    // Quick Controls trigger (Icons.Rounded.Tune exclusively for Quick Controls)
+                    // Settings & Quick Actions trigger
                     IconButton(
-                        onClick = onOpenQuickControls,
+                        onClick = onOpenSettings,
                         modifier = Modifier.size(48.dp)
                     ) {
                         Icon(
-                            imageVector = Icons.Rounded.Tune,
-                            contentDescription = "Quick Controls",
+                            imageVector = Icons.Rounded.Settings,
+                            contentDescription = "Settings & Quick Actions",
                             tint = MaterialTheme.colorScheme.primary
                         )
                     }
@@ -1359,38 +1918,38 @@ private fun ToolbarProgressSlot(
     }
 }
 
-private class WebViewContainer(context: Context) : FrameLayout(context) {
-    var lastPrimaryArgb: Int? = null
-    var lastSurfaceArgb: Int? = null
-}
-
-private fun findWebViewContainer(swipeLayout: SwipeRefreshLayout): WebViewContainer? {
-    for (i in 0 until swipeLayout.childCount) {
-        val child = swipeLayout.getChildAt(i)
-        if (child is WebViewContainer) return child
-    }
-    return null
-}
-
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun SplitBottomActionBar(
     state: BrowserUiState,
-    onGoBack: () -> Unit,
-    onGoForward: () -> Unit,
-    onOpenQuickControls: () -> Unit,
+    isSidebarOpen: Boolean,
+    onToggleSidebar: () -> Unit,
+    onShareActiveTab: () -> Unit,
+    onCreateTab: () -> Unit,
+    onCreatePrivateTab: () -> Unit,
     onOpenTabSwitcher: () -> Unit,
     onOpenSettings: () -> Unit
 ) {
     val activeTab = state.activeTab
+    val foxColors = LocalSwiftfoxColors.current
     val isPrivate = activeTab?.isPrivate == true || state.isPrivateView
     val tabCount = state.visibleTabs.size.coerceAtLeast(1)
+    val accentTint = if (isPrivate) foxColors.privateAccent else MaterialTheme.colorScheme.primary
+    val accentContainer = if (isPrivate) foxColors.privateContainer else MaterialTheme.colorScheme.primaryContainer
 
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainerLow,
         tonalElevation = 2.dp,
         modifier = Modifier.fillMaxWidth()
     ) {
-        Column(modifier = Modifier.navigationBarsPadding()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .windowInsetsPadding(
+                    WindowInsets.displayCutout.only(WindowInsetsSides.Horizontal)
+                )
+                .navigationBarsPadding()
+        ) {
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
             Row(
                 modifier = Modifier
@@ -1399,55 +1958,73 @@ private fun SplitBottomActionBar(
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(
-                    onClick = onGoBack,
-                    enabled = activeTab?.canGoBack == true,
-                    modifier = Modifier.size(48.dp)
-                ) {
-                    Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back")
-                }
-
-                IconButton(
-                    onClick = onGoForward,
-                    enabled = activeTab?.canGoForward == true,
-                    modifier = Modifier.size(48.dp)
-                ) {
-                    Icon(Icons.AutoMirrored.Rounded.ArrowForward, contentDescription = "Forward")
-                }
-
-                // Center signature Quick Controls / Shield pill in Fox Amber
+                // 1. Leftmost: Arc/Zen left workspace sidebar toggle
                 Surface(
-                    onClick = onOpenQuickControls,
-                    shape = RoundedCornerShape(24.dp),
-                    color = MaterialTheme.colorScheme.primaryContainer,
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)),
-                    modifier = Modifier.heightIn(min = 48.dp)
+                    onClick = onToggleSidebar,
+                    shape = CircleShape,
+                    color = if (isSidebarOpen) accentContainer else Color.Transparent,
+                    border = if (isSidebarOpen) BorderStroke(1.dp, accentTint.copy(alpha = 0.45f)) else null,
+                    modifier = Modifier.size(48.dp)
                 ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
+                    Box(contentAlignment = Alignment.Center) {
                         Icon(
-                            imageVector = Icons.Rounded.Tune,
-                            contentDescription = "Quick Controls & Shield",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Text(
-                            text = "Controls",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                            imageVector = Icons.AutoMirrored.Rounded.ViewSidebar,
+                            contentDescription = if (isSidebarOpen) {
+                                "Close workspace sidebar"
+                            } else {
+                                "Open workspace sidebar"
+                            },
+                            tint = if (isSidebarOpen) accentTint else MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.graphicsLayer { scaleX = -1f }
                         )
                     }
                 }
 
+                // 2. Copy & Share clean URL
+                IconButton(
+                    onClick = onShareActiveTab,
+                    enabled = activeTab != null && !activeTab.isStartPage,
+                    modifier = Modifier.size(48.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Share,
+                        contentDescription = "Copy and share link"
+                    )
+                }
+
+                // 3. Center: New Tab (+) — tap for Start Page tab, long-press for Private tab
+                Surface(
+                    shape = CircleShape,
+                    color = accentContainer,
+                    border = BorderStroke(1.dp, accentTint.copy(alpha = 0.45f)),
+                    modifier = Modifier
+                        .size(48.dp)
+                        .clip(CircleShape)
+                        .combinedClickable(
+                            onClick = onCreateTab,
+                            onLongClick = onCreatePrivateTab,
+                            onClickLabel = "New tab",
+                            onLongClickLabel = "New private tab"
+                        )
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Rounded.Add,
+                            contentDescription = "New tab",
+                            tint = accentTint,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+                }
+
+                // 4. Tab switcher count badge
                 TabCountBadgeButton(
                     count = tabCount,
                     isPrivate = isPrivate,
                     onClick = onOpenTabSwitcher
                 )
 
+                // 5. Settings (with Quick Actions at top)
                 IconButton(
                     onClick = onOpenSettings,
                     modifier = Modifier.size(48.dp)
@@ -1467,7 +2044,7 @@ private fun ErgonomicSideRail(
     onGoForward: () -> Unit,
     onReloadOrStop: () -> Unit,
     onOpenReaderMode: () -> Unit,
-    onOpenQuickControls: () -> Unit,
+    onOpenSettings: () -> Unit,
     onOpenTabSwitcher: () -> Unit,
     onCreateTab: () -> Unit
 ) {
@@ -1557,15 +2134,15 @@ private fun ErgonomicSideRail(
                     )
                 }
                 Surface(
-                    onClick = onOpenQuickControls,
+                    onClick = onOpenSettings,
                     shape = RoundedCornerShape(16.dp),
                     color = MaterialTheme.colorScheme.primaryContainer,
                     modifier = Modifier.size(48.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
-                            imageVector = Icons.Rounded.Tune,
-                            contentDescription = "Quick Controls",
+                            imageVector = Icons.Rounded.Settings,
+                            contentDescription = "Settings & Quick Actions",
                             tint = MaterialTheme.colorScheme.primary
                         )
                     }

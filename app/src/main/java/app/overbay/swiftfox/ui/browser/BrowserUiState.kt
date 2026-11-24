@@ -83,6 +83,7 @@ data class FindInPageState(
 
 data class BrowserUiState(
     val settings: BrowserSettings = BrowserSettings(),
+    val hasLoadedSettings: Boolean = false,
     val windowState: FoldableWindowState = FoldableWindowState(),
     val spaces: List<SpaceEntity> = emptyList(),
     val activeSpaceId: String = "space_personal",
@@ -90,11 +91,11 @@ data class BrowserUiState(
     val tabs: List<BrowserTabUi> = emptyList(),
     val activeTabId: String? = null,
     val isPrivateView: Boolean = false,
+    val isFoldedSidebarOpen: Boolean = false,
     val isUnfoldedRailExpanded: Boolean = true,
     val isOmniboxFocused: Boolean = false,
     val omniboxQuery: String = "",
     val omniboxSuggestions: List<OmniboxSuggestion> = emptyList(),
-    val isQuickControlsOpen: Boolean = false,
     val isSiteRulesOpen: Boolean = false,
     val activeOverlay: BrowserOverlay = BrowserOverlay.NONE,
     val overlayBackStack: List<BrowserOverlay> = emptyList(),

@@ -280,6 +280,11 @@ class ZenSpacesCodecTest {
                 """{"storageVersion":5,"engines":{"spaces":{"version":2}}}"""
             )
         )
+        assertFalse(
+            ZenSpacesCodec.metaGlobalAllowsSpacesWrite(
+                """{"storageVersion":5,"declined":["spaces"],"engines":{"spaces":{"version":1}}}"""
+            )
+        )
         assertFalse(ZenSpacesCodec.metaGlobalAllowsSpacesWrite(null))
         assertFalse(ZenSpacesCodec.metaGlobalAllowsSpacesWrite("not-json"))
         assertTrue(ZenSpacesCodec.isDeletedTombstone(obj("""{"deleted":true}""")))

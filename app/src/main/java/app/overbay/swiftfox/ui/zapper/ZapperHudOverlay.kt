@@ -18,6 +18,7 @@ import androidx.compose.material.icons.rounded.AutoFixHigh
 import androidx.compose.material.icons.rounded.Block
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Remove
+import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
@@ -49,6 +50,7 @@ fun ZapperHudOverlay(
     state: ZapperUiState,
     onAdjustScope: (Int) -> Unit,
     onSetScopeDepth: (Int) -> Unit,
+    onSetPreview: (Boolean) -> Unit,
     onZapOnce: () -> Unit,
     onBlockPermanently: () -> Unit,
     onUndoTemporaryZap: () -> Unit,
@@ -70,7 +72,9 @@ fun ZapperHudOverlay(
         tonalElevation = 3.dp,
         border = BorderStroke(
             width = 1.5.dp,
-            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.65f)
+            color = MaterialTheme.colorScheme.primary.copy(
+                alpha = if (state.isPreviewing) 0.95f else 0.65f
+            )
         ),
         modifier = containerModifier
     ) {
@@ -85,6 +89,7 @@ fun ZapperHudOverlay(
                 state = state,
                 onAdjustScope = onAdjustScope,
                 onSetScopeDepth = onSetScopeDepth,
+                onSetPreview = onSetPreview,
                 onZapOnce = onZapOnce,
                 onBlockPermanently = onBlockPermanently,
                 onUndoTemporaryZap = onUndoTemporaryZap,
@@ -167,6 +172,7 @@ private fun SelectedZapperHudContent(
     state: ZapperUiState,
     onAdjustScope: (Int) -> Unit,
     onSetScopeDepth: (Int) -> Unit,
+    onSetPreview: (Boolean) -> Unit,
     onZapOnce: () -> Unit,
     onBlockPermanently: () -> Unit,
     onUndoTemporaryZap: () -> Unit,
@@ -179,7 +185,7 @@ private fun SelectedZapperHudContent(
     var lastDispatchedDepth by remember(maxDepth) { mutableIntStateOf(clampedDepth) }
     var isDraggingSlider by remember(maxDepth) { mutableStateOf(false) }
 
-    LaunchedEffect(clampedDepth, maxDepth) {
+    LaunchedEffect(clampedDepth, maxDepth, isDraggingSlider) {
         if (!isDraggingSlider) {
             sliderDepth = clampedDepth.toFloat()
             lastDispatchedDepth = clampedDepth
@@ -257,29 +263,44 @@ private fun SelectedZapperHudContent(
             )
         }
 
-        // Parent / Child scope controls
-        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        // Parent / Child scope controls + Live Preview toggle
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = "Parent / Child scope",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                if (maxDepth > 0) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
                     Text(
-                        text = "${displayedDepth + 1} / ${maxDepth + 1}",
+                        text = "Parent / Child scope",
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
+                    val scopeStatus = when {
+                        maxDepth > 0 && state.isPreviewing -> "${displayedDepth + 1} / ${maxDepth + 1} · Live preview"
+                        maxDepth > 0 -> "${displayedDepth + 1} / ${maxDepth + 1}"
+                        state.isPreviewing -> "Live preview"
+                        else -> null
+                    }
+                    if (scopeStatus != null) {
+                        Text(
+                            text = scopeStatus,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
+                ZapperPreviewTogglePill(
+                    isPreviewing = state.isPreviewing,
+                    onSetPreview = onSetPreview
+                )
             }
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -359,7 +380,7 @@ private fun SelectedZapperHudContent(
         ) {
             ZapperActionPill(
                 label = "Zap once",
-                icon = Icons.Rounded.VisibilityOff,
+                icon = Icons.Rounded.AutoFixHigh,
                 containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
                 contentColor = MaterialTheme.colorScheme.onSurface,
                 iconTint = MaterialTheme.colorScheme.primary,
@@ -390,6 +411,66 @@ private fun SelectedZapperHudContent(
                     )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun ZapperPreviewTogglePill(
+    isPreviewing: Boolean,
+    onSetPreview: (Boolean) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val containerColor = if (isPreviewing) {
+        MaterialTheme.colorScheme.primaryContainer
+    } else {
+        MaterialTheme.colorScheme.surfaceContainerHigh
+    }
+    val contentColor = if (isPreviewing) {
+        MaterialTheme.colorScheme.onPrimaryContainer
+    } else {
+        MaterialTheme.colorScheme.onSurface
+    }
+    val borderColor = if (isPreviewing) {
+        MaterialTheme.colorScheme.primary.copy(alpha = 0.75f)
+    } else {
+        MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
+    }
+
+    Surface(
+        checked = isPreviewing,
+        onCheckedChange = onSetPreview,
+        shape = RoundedCornerShape(24.dp),
+        color = containerColor,
+        contentColor = contentColor,
+        border = BorderStroke(
+            width = if (isPreviewing) 1.5.dp else 1.dp,
+            color = borderColor
+        ),
+        modifier = modifier.heightIn(min = 48.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally)
+        ) {
+            Icon(
+                imageVector = if (isPreviewing) {
+                    Icons.Rounded.VisibilityOff
+                } else {
+                    Icons.Rounded.Visibility
+                },
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(18.dp)
+            )
+            Text(
+                text = if (isPreviewing) "Previewing" else "Preview",
+                style = MaterialTheme.typography.labelLarge,
+                color = contentColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }

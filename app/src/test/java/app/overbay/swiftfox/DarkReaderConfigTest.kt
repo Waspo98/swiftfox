@@ -4,6 +4,9 @@ import app.overbay.swiftfox.data.db.SiteOverrideEntity
 import app.overbay.swiftfox.data.prefs.BrowserSettings
 import app.overbay.swiftfox.data.prefs.WebDarkEngine
 import app.overbay.swiftfox.data.prefs.WebDarkModePreference
+import app.overbay.swiftfox.engine.GlobalPrepaintDarkConfig
+import app.overbay.swiftfox.engine.PrepaintDarkMode
+import app.overbay.swiftfox.engine.ScriptInjector
 import app.overbay.swiftfox.features.darkreader.DarkReaderConfig
 import app.overbay.swiftfox.features.darkreader.DarkReaderInjector
 import app.overbay.swiftfox.features.darkreader.DarkReaderStatusEvent
@@ -142,6 +145,8 @@ class DarkReaderConfigTest {
         assertTrue(fastScript.contains("window[\"drKey1\"]"))
         assertTrue(fastScript.contains("rt.apply("))
         assertTrue(fastScript.contains("\"amoled\":true"))
+        assertTrue(fastScript.contains("return 'ok'"))
+        assertTrue(fastScript.contains("return 'missing'"))
         assertTrue(fastScript.length < 400)
 
         assertEquals(
@@ -154,5 +159,81 @@ class DarkReaderConfigTest {
         )
         assertNull(injector.parseStatusJson("not-json"))
         assertNull(injector.parseStatusJson(""))
+    }
+
+    @Test
+    fun globalPrepaintScriptHonorsGlobalModeOverridesAmoledAndStaysTokenFree() {
+        assertEquals(
+            "",
+            ScriptInjector.buildGlobalPrepaintDarkScript(
+                GlobalPrepaintDarkConfig(
+                    mode = PrepaintDarkMode.NONE,
+                    globalEnabled = true
+                )
+            )
+        )
+        assertEquals(
+            "",
+            ScriptInjector.buildGlobalPrepaintDarkScript(
+                GlobalPrepaintDarkConfig(
+                    mode = PrepaintDarkMode.DARK_READER,
+                    globalEnabled = false,
+                    includedHosts = emptySet()
+                )
+            )
+        )
+
+        val darkReaderGlobal = ScriptInjector.buildGlobalPrepaintDarkScript(
+            GlobalPrepaintDarkConfig(
+                mode = PrepaintDarkMode.DARK_READER,
+                amoled = true,
+                globalEnabled = true,
+                excludedHosts = setOf("WWW.Example.com", "light.org")
+            )
+        )
+        assertTrue(darkReaderGlobal.contains("swiftfox-prepaint-dark"))
+        assertTrue(darkReaderGlobal.contains("#000000!important"))
+        assertTrue(darkReaderGlobal.contains("color-scheme:dark!important"))
+        assertTrue(darkReaderGlobal.contains("\"example.com\""))
+        assertTrue(darkReaderGlobal.contains("\"light.org\""))
+        assertTrue(darkReaderGlobal.contains("list.indexOf(host) !== -1"))
+        assertTrue(darkReaderGlobal.contains("window !== window.top"))
+        assertFalse(darkReaderGlobal.contains("SwiftfoxNativeChannel"))
+
+        val allowlistOnly = ScriptInjector.buildGlobalPrepaintDarkScript(
+            GlobalPrepaintDarkConfig(
+                mode = PrepaintDarkMode.DARK_READER,
+                amoled = false,
+                globalEnabled = false,
+                includedHosts = setOf("www.news.ycombinator.com")
+            )
+        )
+        assertTrue(allowlistOnly.contains("#18161b!important"))
+        assertTrue(allowlistOnly.contains("\"news.ycombinator.com\""))
+        assertTrue(allowlistOnly.contains("list.indexOf(host) === -1"))
+
+        val liteGlobal = ScriptInjector.buildGlobalPrepaintDarkScript(
+            GlobalPrepaintDarkConfig(
+                mode = PrepaintDarkMode.ALGORITHMIC_LITE,
+                amoled = false,
+                globalEnabled = true
+            )
+        )
+        assertTrue(liteGlobal.contains("html{background-color:#18161b;color-scheme:dark;}"))
+        assertFalse(liteGlobal.contains("!important"))
+        assertTrue(liteGlobal.contains("DOMContentLoaded"))
+    }
+
+    @Test
+    fun wrapOriginGuardedScriptGuardsExecutionToExactOrigin() {
+        assertEquals("", ScriptInjector.wrapOriginGuardedScript("", "alert(1);"))
+        assertEquals("", ScriptInjector.wrapOriginGuardedScript("https://example.com", ""))
+
+        val wrapped = ScriptInjector.wrapOriginGuardedScript(
+            expectedOrigin = "https://example.com:8443",
+            script = "window.__dr();"
+        )
+        assertTrue(wrapped.contains("""if (!window.location || window.location.origin !== "https://example.com:8443") return;"""))
+        assertTrue(wrapped.contains("window.__dr();"))
     }
 }

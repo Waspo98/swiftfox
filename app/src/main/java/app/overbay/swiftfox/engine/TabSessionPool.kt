@@ -19,6 +19,8 @@ class TabSessionPool(
     private var currentHostContext: Context? = null
     @Volatile
     private var currentActiveTabId: String? = null
+    @Volatile
+    var onThumbnailsEvicted: ((Set<String>) -> Unit)? = null
 
     fun setActiveTab(tabId: String?) {
         currentActiveTabId = tabId
@@ -46,6 +48,7 @@ class TabSessionPool(
         evictThumbnails: Boolean = true
     ) {
         val evicted = mutableListOf<BrowserSession>()
+        val evictedThumbKeys = mutableSetOf<String>()
         synchronized(lock) {
             val keysToEvict = warmSessions.entries
                 .filter { (id, session) ->
@@ -61,12 +64,18 @@ class TabSessionPool(
             }
             if (evictThumbnails) {
                 val thumbKeysToClear = thumbnails.keys.filter { it != keepTabId }
-                thumbKeysToClear.forEach { thumbnails.remove(it) }
+                thumbKeysToClear.forEach {
+                    thumbnails.remove(it)
+                    evictedThumbKeys += it
+                }
             }
         }
         evicted.forEach { session ->
             (session.webView.parent as? ViewGroup)?.removeView(session.webView)
             session.destroy()
+        }
+        if (evictedThumbKeys.isNotEmpty()) {
+            onThumbnailsEvicted?.invoke(evictedThumbKeys)
         }
     }
 
@@ -105,7 +114,8 @@ class TabSessionPool(
         isPrivate: Boolean,
         spaceContainerProfile: String?,
         context: Context,
-        callbacks: SessionHostCallbacks
+        callbacks: SessionHostCallbacks,
+        beforeRestore: (BrowserSession) -> Unit = {}
     ): BrowserSession {
         val profileName = when {
             isPrivate -> BrowserSession.PRIVATE_PROFILE_NAME
@@ -147,6 +157,7 @@ class TabSessionPool(
         var duplicateCreated = false
         val winner: BrowserSession
         val evicted = mutableListOf<BrowserSession>()
+        var savedBundle: Bundle? = null
         synchronized(lock) {
             val raceWinner = warmSessions[tabId]
             if (raceWinner != null && raceWinner.profileName == profileName) {
@@ -157,9 +168,7 @@ class TabSessionPool(
                     warmSessions.remove(tabId)
                     evicted += raceWinner
                 }
-                hibernatedBundles.remove(tabId)?.let { saved ->
-                    created.restoreState(saved)
-                }
+                savedBundle = hibernatedBundles.remove(tabId)
                 warmSessions[tabId] = created
                 evictIfNeededLocked(activeTabId = tabId, outEvicted = evicted)
                 winner = created
@@ -168,6 +177,13 @@ class TabSessionPool(
         if (duplicateCreated) {
             created.destroy()
             winner.rebindContext(hostCtx)
+        } else {
+            // Apply posture UA, site overrides, JS/cookie policies, and surface background
+            // BEFORE restoreState() triggers Chromium's navigation load.
+            beforeRestore(created)
+            savedBundle?.let { saved ->
+                created.restoreState(saved)
+            }
         }
         evicted.forEach { session ->
             (session.webView.parent as? ViewGroup)?.removeView(session.webView)
@@ -183,6 +199,13 @@ class TabSessionPool(
     fun clearAllDocumentStartScripts() {
         val snapshot = synchronized(lock) { warmSessions.values.toList() }
         snapshot.forEach { it.clearDocumentStartScripts() }
+    }
+
+    fun updateAllGlobalPrepaintDarkScripts(normalScript: String, privateScript: String) {
+        val snapshot = synchronized(lock) { warmSessions.values.toList() }
+        snapshot.forEach { session ->
+            session.updateGlobalPrepaintDarkScript(if (session.isPrivate) privateScript else normalScript)
+        }
     }
 
     fun discardHibernatedState(tabId: String) {

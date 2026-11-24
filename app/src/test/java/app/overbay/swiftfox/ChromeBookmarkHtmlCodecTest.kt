@@ -26,7 +26,7 @@ class ChromeBookmarkHtmlCodecTest {
                         <DT><A HREF="https://kotlinlang.org" ADD_DATE="1700000400">Kotlin &#39;Docs&#x27; &lt;2.3&gt;</A>
                     </DL><p>
                 </DL><p>
-                <DT><A HREF="http://192.168.86.200:8080" ADD_DATE="1700000500">Homelab</A>
+                <DT><A HREF="http://192.168.1.10:8080" ADD_DATE="1700000500">Homelab</A>
             </DL><p>
         """.trimIndent()
 

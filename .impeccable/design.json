@@ -332,15 +332,15 @@
       },
       "title-large": {
         "displayName": "Title Large (19sp Sora SemiBold)",
-        "purpose": "TopAppBar titles, Quick Controls sheet page header, Essential tile monograms, and empty-state headings."
+        "purpose": "TopAppBar titles, Essential tile monograms, and empty-state headings."
       },
       "title-medium": {
         "displayName": "Title Medium (16sp Sora SemiBold)",
-        "purpose": "Settings section headings, Start Page section titles, and compact headers."
+        "purpose": "Settings section headings (including Quick Actions), Start Page section titles, and compact headers."
       },
       "title-small": {
         "displayName": "Title Small (14sp SemiBold)",
-        "purpose": "Quick Control tile titles, Tab Preview card titles, jump cards, and Settings row labels."
+        "purpose": "Quick Actions page & tile titles, Tab Preview card titles, jump cards, and Settings row labels."
       },
       "body-large": {
         "displayName": "Body Large (16sp Regular)",
@@ -352,11 +352,11 @@
       },
       "body-small": {
         "displayName": "Body Small (12sp Regular)",
-        "purpose": "Quick Control tile subtitles, page HTTPS/posture meta line, Settings subtitles, and suggestion URLs."
+        "purpose": "Quick Actions tile subtitles, page HTTPS/posture meta line, Settings subtitles, and suggestion URLs."
       },
       "label-large": {
         "displayName": "Label Large (14sp SemiBold)",
-        "purpose": "Space pills, Quick Action pills, Split-bar Controls pill, Extended FAB, sidebar tab titles, and Settings groups."
+        "purpose": "Space pills, Quick Action pills, Extended FAB, sidebar tab titles, and Settings groups."
       },
       "label-medium": {
         "displayName": "Label Medium (12sp SemiBold / Bold count)",
@@ -371,7 +371,7 @@
       {
         "name": "tonal-level-1",
         "value": "none",
-        "purpose": "UnfoldedSpacesSidebar uses 1dp Material 3 tonal surface stepping (surfaceContainerLow) with no drop shadow."
+        "purpose": "Docked ArcSpacesSidebar uses 1dp Material 3 tonal surface stepping (surfaceContainerLow) with no drop shadow."
       },
       {
         "name": "tonal-level-2",
@@ -381,7 +381,7 @@
       {
         "name": "tonal-level-3",
         "value": "none",
-        "purpose": "FindInPageBar steps to surfaceContainerHigh with 3dp tonal elevation."
+        "purpose": "FindInPageBar and overlay ArcSpacesSidebar step to 3dp tonal elevation."
       },
       {
         "name": "fab-resting",
@@ -391,7 +391,7 @@
       {
         "name": "modal-sheet-scrim",
         "value": "0 -8px 28px rgba(0, 0, 0, 0.42)",
-        "purpose": "QuickControlsSheet and ContextMenuBottomSheet modal bottom sheet separation above dimmed browser viewport."
+        "purpose": "SiteRulesSheet and ContextMenuBottomSheet modal bottom sheet separation above dimmed browser viewport."
       }
     ],
     "motion": [
@@ -425,17 +425,17 @@
       {
         "name": "folded",
         "value": "<600dp (0px–599px)",
-        "purpose": "Cover screen one-handed posture: SPLIT toolbar default, MOBILE site mode, no sidebar, 540dp Start Page max width, 4-column Essentials."
+        "purpose": "Cover screen one-handed posture: SPLIT toolbar default, MOBILE site mode, slide-over ArcSpacesSidebar drawer, 540dp Start Page max width, 4-column Essentials."
       },
       {
         "name": "unfolded-compact",
         "value": "600dp–779dp (or FoldingFeature FLAT / HALF_OPENED)",
-        "purpose": "Inner foldable posture: TOP toolbar default, DESKTOP site mode, SIDE_RAIL (68dp) unlocked, UnfoldedSpacesSidebar 72dp collapsed / 216dp expanded."
+        "purpose": "Inner foldable posture: TOP toolbar default, DESKTOP site mode, SIDE_RAIL (68dp) unlocked, ArcSpacesSidebar 72dp collapsed / 232dp expanded."
       },
       {
         "name": "unfolded-expanded",
         "value": ">=780dp",
-        "purpose": "Wide foldable / tablet posture: UnfoldedSpacesSidebar expands to 248dp, Start Page widens to 720dp (4–5 column Essentials), adaptive 164dp tab card grid."
+        "purpose": "Wide foldable / tablet posture: ArcSpacesSidebar expands to 264dp, Start Page widens to 720dp (4–5 column Essentials), adaptive 164dp tab card grid."
       }
     ]
   },
@@ -460,7 +460,7 @@
       "name": "Quick Control Tile (Active)",
       "kind": "card",
       "refersTo": "quick-control-tile-active",
-      "description": "Enabled toggle inside the Quick Controls 2x2 bottom-sheet grid with roasted Fox Amber container and circular icon badge.",
+      "description": "Enabled toggle inside the Settings Quick Actions 2x2 grid with roasted Fox Amber container and circular icon badge.",
       "html": "<button class=\"ds-qc-tile-active\" type=\"button\"><span class=\"ds-qc-tile-active-badge\" aria-hidden=\"true\"><svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"currentColor\"><path d=\"M21 2H3a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h7v2H8v2h8v-2h-2v-2h7a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2zm0 14H3V4h18v12z\"/></svg></span><span class=\"ds-qc-tile-active-text\"><span class=\"ds-qc-tile-active-title\">Desktop site</span><span class=\"ds-qc-tile-active-sub\">Unfolded: Desktop</span></span></button>",
       "css": ".ds-qc-tile-active { display: inline-flex; align-items: center; gap: 12px; min-width: 196px; min-height: 82px; padding: 14px; border-radius: 20px; background: #3A1F0D; color: #FFDEC7; border: 1.5px solid rgba(255, 145, 71, 0.55); font-family: Roboto, system-ui, sans-serif; text-align: left; cursor: pointer; transition: background 180ms ease, border-color 180ms ease, transform 120ms ease; } .ds-qc-tile-active:hover { background: #482711; border-color: #FF9147; } .ds-qc-tile-active:active { transform: scale(0.985); } .ds-qc-tile-active:focus-visible { outline: 2px solid #FF9147; outline-offset: 2px; } .ds-qc-tile-active-badge { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; border-radius: 9999px; background: rgba(255, 145, 71, 0.16); color: #FF9147; flex-shrink: 0; } .ds-qc-tile-active-text { display: flex; flex-direction: column; gap: 2px; } .ds-qc-tile-active-title { font-size: 14px; font-weight: 600; line-height: 20px; letter-spacing: 0.1px; } .ds-qc-tile-active-sub { font-size: 12px; font-weight: 400; line-height: 16px; color: rgba(255, 222, 199, 0.88); }"
     },
@@ -468,7 +468,7 @@
       "name": "Quick Control Tile (Inactive)",
       "kind": "card",
       "refersTo": "quick-control-tile",
-      "description": "Resting neutral toggle inside the Quick Controls 2x2 grid stepping onto surfaceContainerHigh.",
+      "description": "Resting neutral toggle inside the Settings Quick Actions 2x2 grid stepping onto surfaceContainerHigh.",
       "html": "<button class=\"ds-qc-tile\" type=\"button\"><span class=\"ds-qc-tile-badge\" aria-hidden=\"true\"><svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"currentColor\"><path d=\"M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a5.389 5.389 0 0 1-4.4 2.26 5.403 5.403 0 0 1-3.14-9.8c-.44-.06-.9-.1-1.36-.1z\"/></svg></span><span class=\"ds-qc-tile-text\"><span class=\"ds-qc-tile-title\">Web dark</span><span class=\"ds-qc-tile-sub\">Site native</span></span></button>",
       "css": ".ds-qc-tile { display: inline-flex; align-items: center; gap: 12px; min-width: 196px; min-height: 82px; padding: 14px; border-radius: 20px; background: #2D2933; color: #ECE7F0; border: 1px solid rgba(62, 57, 71, 0.35); font-family: Roboto, system-ui, sans-serif; text-align: left; cursor: pointer; transition: background 180ms ease, border-color 180ms ease, transform 120ms ease; } .ds-qc-tile:hover { background: #383340; border-color: rgba(255, 145, 71, 0.4); } .ds-qc-tile:active { transform: scale(0.985); } .ds-qc-tile:focus-visible { outline: 2px solid #FF9147; outline-offset: 2px; } .ds-qc-tile-badge { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; border-radius: 9999px; background: #383340; color: #C2BAC9; flex-shrink: 0; } .ds-qc-tile-text { display: flex; flex-direction: column; gap: 2px; } .ds-qc-tile-title { font-size: 14px; font-weight: 600; line-height: 20px; letter-spacing: 0.1px; } .ds-qc-tile-sub { font-size: 12px; font-weight: 400; line-height: 16px; color: #C2BAC9; }"
     },
@@ -507,18 +507,18 @@
   ],
   "narrative": {
     "northStar": "The Warm Amber Cockpit",
-    "overview": "Swiftfox is a native Android Material Design 3 browser engineered for 120Hz foldable hardware. Its chrome behaves like a calm, responsive cockpit wrapped around live web content: warm tonal surfaces stay visually quiet so scrolling pages hold center stage, while generous splashes of Fox Amber light up the controls that matter right now—active Space pills, the Tab Count badge, security indicators, focused search rings, and tactile Quick Control toggles.\n\nRather than forcing a single layout across cover and inner displays, Swiftfox treats folded one-handed reach and unfolded tablet browsing as independent ergonomic states. Every surface avoids sterile flat-grey utility chrome and harsh right-angle corners, favoring soft pill capsules, generous `48dp` thumb targets, and clear tonal elevation across Day, Dark, and true AMOLED Black themes.",
+    "overview": "Swiftfox is a native Android Material Design 3 browser engineered for 120Hz foldable hardware. Its chrome behaves like a calm, responsive cockpit wrapped around live web content: warm tonal surfaces stay visually quiet so scrolling pages hold center stage, while generous splashes of Fox Amber light up the controls that matter right now—active Space pills, the Tab Count badge, security indicators, focused search rings, and tactile Quick Actions toggles.\n\nRather than forcing a single layout across cover and inner displays, Swiftfox treats folded one-handed reach and unfolded tablet browsing as independent ergonomic states. Every surface avoids sterile flat-grey utility chrome and harsh right-angle corners, favoring soft pill capsules, generous `48dp` thumb targets, and clear tonal elevation across Day, Dark, and true AMOLED Black themes.",
     "keyCharacteristics": [
       "Webpage-first tonal chrome in Warm Paper Day, Charcoal-Plum Dark, and true `#000000` AMOLED Black.",
       "Deliberate Fox Amber accent splashes on active state, switchable across Midnight Indigo, Forest, Monochrome, and Android Material You dynamic color.",
       "Unmistakable violet chrome shift for `ProfileStore`-isolated Private browsing sessions.",
-      "Rounded capsule geometry (`10dp`–`28dp`) culminating in the 2×2 Quick Controls modal bottom sheet.",
+      "Rounded capsule geometry (`10dp`–`28dp`) culminating in the 2×2 Quick Actions card inside Settings and the Arc/Zen Spaces sidebar.",
       "Independent Folded and Unfolded toolbar profiles, collapsible Spaces sidebar, `sp` system font scaling, and `ANIMATOR_DURATION_SCALE` reduced-motion compliance."
     ],
     "rules": [
       {
         "name": "The Warm Splash Rule",
-        "body": "Reserve saturated accent fills (`primaryContainer` paired with `primary` icons and tinted borders) for live state—active Quick Control tiles, selected Space pills, the Tab Count badge, the Split-bar Controls pill, focused omnibox borders, and primary CTAs—so resting toolbars remain calm and webpage-first.",
+        "body": "Reserve saturated accent fills (`primaryContainer` paired with `primary` icons and tinted borders) for live state—active Quick Actions tiles, selected Space pills, the Tab Count badge, the Split-bar New Tab button, focused omnibox borders, and primary CTAs—so resting toolbars remain calm and webpage-first.",
         "section": "colors"
       },
       {
@@ -568,7 +568,7 @@
       },
       {
         "name": "The Hairline State Ring Rule",
-        "body": "Use `1dp` `outlineVariant` borders at `35%–55%` alpha only to define resting shapes on dark and AMOLED surfaces, escalating to `1.5dp–2dp` `primary` (or `privateAccent`) borders strictly to signal active selection, enabled Quick Controls, or omnibox focus.",
+        "body": "Use `1dp` `outlineVariant` borders at `35%–55%` alpha only to define resting shapes on dark and AMOLED surfaces, escalating to `1.5dp–2dp` `primary` (or `privateAccent`) borders strictly to signal active selection, enabled Quick Actions toggles, or omnibox focus.",
         "section": "elevation"
       },
       {

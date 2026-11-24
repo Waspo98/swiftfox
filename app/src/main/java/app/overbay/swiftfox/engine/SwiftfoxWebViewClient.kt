@@ -458,11 +458,16 @@ class SwiftfoxWebViewClient(
         }
     }
 
+    fun resetPendingMainFrameUrl() {
+        lastRequestedMainFrameUrl = committedMainFrameUrl
+    }
+
     override fun onPageFinished(view: WebView, url: String?) {
         super.onPageFinished(view, url)
         val safeUrl = url.orEmpty()
         if (safeUrl.isNotBlank()) {
             committedMainFrameUrl = safeUrl
+            lastRequestedMainFrameUrl = safeUrl
         }
         upgradedFromHttpByUrl.remove(safeUrl)
         val finishedHost = OmniboxEngine.extractHost(safeUrl)
@@ -486,6 +491,7 @@ class SwiftfoxWebViewClient(
         super.doUpdateVisitedHistory(view, url, isReload)
         if (!url.isNullOrBlank()) {
             committedMainFrameUrl = url
+            lastRequestedMainFrameUrl = url
             callbacks.onVisitedHistoryUpdated(tabId, url, view.canGoBack(), view.canGoForward())
         }
     }
@@ -508,6 +514,7 @@ class SwiftfoxWebViewClient(
     ) {
         super.onReceivedError(view, request, error)
         if (!request.isForMainFrame) return
+        lastRequestedMainFrameUrl = committedMainFrameUrl
         val failedUrl = request.url?.toString().orEmpty()
         val match = consumeUpgradedOriginal(failedUrl) ?: return
         val (host, originalHttp) = match
@@ -529,6 +536,9 @@ class SwiftfoxWebViewClient(
     override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {
         handler.cancel()
         val failedUrl = error.url.orEmpty()
+        if (failedUrl.isNotBlank() && failedUrl == lastRequestedMainFrameUrl) {
+            lastRequestedMainFrameUrl = committedMainFrameUrl
+        }
         val match = consumeUpgradedOriginal(failedUrl) ?: return
         val (host, originalHttp) = match
         callbacks.onHttpsOnlyFailure(

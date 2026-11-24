@@ -21,6 +21,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -428,6 +429,7 @@ class MozillaSyncCoordinator(
         _status.update { it.copy(accountState = SyncAccountState.Authenticating, lastSyncError = null) }
         val deferred = CompletableDeferred<Result<Unit>>()
         pendingAuthCompletion = deferred
+        var completedSuccessfully = false
         try {
             val result = try {
                 val uri = Uri.parse(redirectUrl)
@@ -449,6 +451,7 @@ class MozillaSyncCoordinator(
                 val authResult = withTimeoutOrNull(20_000L) { deferred.await() }
                     ?: throw IOException("Mozilla authentication timed out")
                 authResult.getOrThrow()
+                completedSuccessfully = true
                 Result.success(Unit)
             } catch (ce: CancellationException) {
                 throw ce
@@ -471,6 +474,17 @@ class MozillaSyncCoordinator(
         } finally {
             if (pendingAuthCompletion === deferred) {
                 pendingAuthCompletion = null
+            }
+            if (!completedSuccessfully && _status.value.accountState == SyncAccountState.Authenticating) {
+                _status.update {
+                    it.copy(
+                        accountState = when (previousState) {
+                            is SyncAccountState.Connected,
+                            is SyncAccountState.NeedsReauth -> previousState
+                            else -> SyncAccountState.SignedOut
+                        }
+                    )
+                }
             }
         }
     }
@@ -507,8 +521,10 @@ class MozillaSyncCoordinator(
                         }
                     }
                     if (settings.syncHistoryEnabled && !settings.syncLocalHistorySeeded) {
-                        pushRecentLocalHistoryToPlaces()
-                        prefs.setSyncLocalHistorySeeded(true)
+                        historyMirrorMutex.withLock {
+                            pushRecentLocalHistoryToPlaces()
+                            prefs.setSyncLocalHistorySeeded(true)
+                        }
                     }
                     if (settings.syncTabsEnabled) {
                         pushLocalOpenTabsToPlaces()
@@ -544,7 +560,9 @@ class MozillaSyncCoordinator(
                         summaryParts += "$count bookmarks"
                     }
                     if (settings.syncHistoryEnabled) {
-                        val count = pullPlacesHistoryIntoRoom()
+                        val count = historyMirrorMutex.withLock {
+                            pullPlacesHistoryIntoRoom()
+                        }
                         summaryParts += "$count history"
                     }
                     if (settings.syncTabsEnabled) {
@@ -624,6 +642,9 @@ class MozillaSyncCoordinator(
                 }
             } finally {
                 isOrchestratedSync = false
+                if (_status.value.isSyncing) {
+                    _status.update { it.copy(isSyncing = false) }
+                }
             }
         }
     }
@@ -735,7 +756,11 @@ class MozillaSyncCoordinator(
                     pullPlacesBookmarksIntoRoom()
                 }
             }
-            if (settings.syncHistoryEnabled) pullPlacesHistoryIntoRoom()
+            if (settings.syncHistoryEnabled) {
+                historyMirrorMutex.withLock {
+                    pullPlacesHistoryIntoRoom()
+                }
+            }
             if (settings.syncTabsEnabled) pullRemoteTabsIntoRoom(account)
         } catch (ce: CancellationException) {
             throw ce
@@ -775,13 +800,13 @@ class MozillaSyncCoordinator(
         }
     }
 
-    suspend fun signOut() = signOutMutex.withLock {
-        syncMutex.withLock {
-            bookmarkMirrorMutex.withLock {
-                historyMirrorMutex.withLock {
-                    isSigningOut.set(true)
-                    try {
-                        withContext(Dispatchers.IO) {
+    suspend fun signOut() = withContext(NonCancellable + Dispatchers.IO) {
+        signOutMutex.withLock {
+            syncMutex.withLock {
+                bookmarkMirrorMutex.withLock {
+                    historyMirrorMutex.withLock {
+                        isSigningOut.set(true)
+                        try {
                             authGeneration.incrementAndGet()
                             pendingDeletedBookmarkGuids.clear()
                             runCatching { accountManager?.logout() }
@@ -814,8 +839,10 @@ class MozillaSyncCoordinator(
                             }
 
                             // Wipe staged local tabs + cached remote device tabs in tabs.sqlite
-                            runCatching { remoteTabsStorage?.store(emptyList()) }
-                            runCatching { remoteTabsStorage?.cleanup() }
+                            val oldRemoteTabs = remoteTabsStorage
+                            remoteTabsStorage = null
+                            runCatching { oldRemoteTabs?.store(emptyList()) }
+                            runCatching { oldRemoteTabs?.cleanup() }
                             listOf("tabs.sqlite", "tabs.sqlite-wal", "tabs.sqlite-shm").forEach { name ->
                                 runCatching { File(context.filesDir, name).delete() }
                             }
@@ -849,9 +876,9 @@ class MozillaSyncCoordinator(
                                     isEngineAvailable = it.isEngineAvailable
                                 )
                             }
+                        } finally {
+                            isSigningOut.set(false)
                         }
-                    } finally {
-                        isSigningOut.set(false)
                     }
                 }
             }
@@ -898,7 +925,6 @@ class MozillaSyncCoordinator(
             bookmarkMirrorMutex.withLock {
                 if (authGeneration.get() != gen || accountManager?.connectedAccount() == null) return@withLock
                 val folderCache = mutableMapOf<String, String>()
-                val chunk = mutableListOf<BookmarkEntity>()
                 for (entity in entities) {
                     if (authGeneration.get() != gen) break
                     // Skip if user already deleted this bookmark before the mirror coroutine ran
@@ -914,23 +940,20 @@ class MozillaSyncCoordinator(
                         position = null
                     ).getOrNull() ?: continue
                     if (authGeneration.get() != gen) break
-                    // Re-verify row wasn't deleted during Places write to avoid resurrection
+                    // Re-verify row wasn't deleted during Places write to avoid resurrection,
+                    // then persist immediately so a concurrent user delete before batch end
+                    // sees syncGuid and is never resurrected by a deferred chunk flush.
                     if (db.bookmarkDao().findById(stillPresent.id) == null) {
                         runCatching { store.deleteNode(createdGuid) }
                         continue
                     }
-                    chunk += stillPresent.copy(
-                        syncGuid = createdGuid,
-                        parentGuid = parentGuid,
-                        updatedAt = System.currentTimeMillis()
+                    db.bookmarkDao().upsert(
+                        stillPresent.copy(
+                            syncGuid = createdGuid,
+                            parentGuid = parentGuid,
+                            updatedAt = System.currentTimeMillis()
+                        )
                     )
-                    if (chunk.size >= 25) {
-                        db.bookmarkDao().upsertAll(chunk.toList())
-                        chunk.clear()
-                    }
-                }
-                if (chunk.isNotEmpty() && authGeneration.get() == gen) {
-                    db.bookmarkDao().upsertAll(chunk)
                 }
             }
         }

@@ -132,8 +132,8 @@ class FilterListRepository(
         )
     }
 
-    suspend fun toggleList(id: String, enabled: Boolean): Result<FilterListEntity?> {
-        val existing = dao.getById(id) ?: return Result.success(null)
+    suspend fun toggleList(id: String, enabled: Boolean): Result<FilterListEntity?> = bulkUpdateMutex.withLock {
+        val existing = dao.getById(id) ?: return@withLock Result.success(null)
         dao.upsert(existing.copy(enabled = enabled, lastError = if (enabled) existing.lastError else null))
         var downloadFailure: Throwable? = null
         if (enabled && !withContext(Dispatchers.IO) { listFile(existing.id).isFile }) {
@@ -148,7 +148,7 @@ class FilterListRepository(
         )
         val latest = dao.getById(id)
         val err = downloadFailure
-        return if (err != null) {
+        if (err != null) {
             Result.failure(err)
         } else {
             Result.success(latest)

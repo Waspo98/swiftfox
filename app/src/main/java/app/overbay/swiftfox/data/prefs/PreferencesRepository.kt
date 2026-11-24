@@ -58,6 +58,7 @@ class PreferencesRepository(private val context: Context) {
         val EXTERNAL_APP_POLICY = stringPreferencesKey("external_app_policy")
         val PULL_TO_REFRESH = booleanPreferencesKey("pull_to_refresh")
         val SWIPE_URL_BAR_TABS = booleanPreferencesKey("swipe_url_bar_tabs")
+        val HIDE_TOOLBARS_ON_SCROLL = booleanPreferencesKey("hide_toolbars_on_scroll")
         val BACKGROUND_MEDIA = booleanPreferencesKey("background_media")
         val BLOCK_THIRD_PARTY_COOKIES = booleanPreferencesKey("block_third_party_cookies")
 
@@ -121,6 +122,7 @@ class PreferencesRepository(private val context: Context) {
                 ),
                 pullToRefreshEnabled = prefs[Keys.PULL_TO_REFRESH] ?: true,
                 swipeUrlBarSwitchTabs = prefs[Keys.SWIPE_URL_BAR_TABS] ?: true,
+                hideToolbarsOnScroll = prefs[Keys.HIDE_TOOLBARS_ON_SCROLL] ?: true,
                 backgroundMediaEnabled = prefs[Keys.BACKGROUND_MEDIA] ?: true,
                 blockThirdPartyCookies = prefs[Keys.BLOCK_THIRD_PARTY_COOKIES] ?: true,
                 syncBookmarksEnabled = prefs[Keys.SYNC_BOOKMARKS] ?: true,
@@ -262,6 +264,10 @@ class PreferencesRepository(private val context: Context) {
 
     suspend fun setSwipeUrlBarSwitchTabs(enabled: Boolean) {
         context.swiftfoxDataStore.edit { it[Keys.SWIPE_URL_BAR_TABS] = enabled }
+    }
+
+    suspend fun setHideToolbarsOnScroll(enabled: Boolean) {
+        context.swiftfoxDataStore.edit { it[Keys.HIDE_TOOLBARS_ON_SCROLL] = enabled }
     }
 
     suspend fun setBackgroundMediaEnabled(enabled: Boolean) {

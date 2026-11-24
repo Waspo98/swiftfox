@@ -64,6 +64,11 @@ class ZapperController(private val context: Context? = null) {
         return "(function(){var rt = window[$keyLit]; rt && rt.adjustScope($delta);})();"
     }
 
+    fun buildSetPreviewScript(enabled: Boolean, runtimeKey: String = DEFAULT_RUNTIME_KEY): String {
+        val keyLit = jsStringLiteral(runtimeKey)
+        return "(function(){var rt = window[$keyLit]; rt && rt.setPreview($enabled);})();"
+    }
+
     fun buildZapOnceScript(runtimeKey: String = DEFAULT_RUNTIME_KEY): String {
         val keyLit = jsStringLiteral(runtimeKey)
         return "(function(){var rt = window[$keyLit]; rt && rt.zapOnce();})();"

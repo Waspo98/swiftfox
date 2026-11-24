@@ -76,8 +76,12 @@
   function detectNativeDarkRaw() {
     var prepaintEl = document.getElementById(PREPAINT_STYLE_ID);
     var prevPrepaintDisabled = prepaintEl ? !!prepaintEl.disabled : false;
+    var prevSheetDisabled = (prepaintEl && prepaintEl.sheet) ? !!prepaintEl.sheet.disabled : false;
     if (prepaintEl) {
       prepaintEl.disabled = true;
+      if (prepaintEl.sheet) {
+        prepaintEl.sheet.disabled = true;
+      }
     }
     try {
       var root = document.documentElement;
@@ -116,6 +120,9 @@
     } finally {
       if (prepaintEl) {
         prepaintEl.disabled = prevPrepaintDisabled;
+        if (prepaintEl.sheet) {
+          prepaintEl.sheet.disabled = prevSheetDisabled;
+        }
       }
     }
   }
@@ -200,6 +207,12 @@
     } catch (e) {}
   }
 
+  function disableDarkReaderSafe() {
+    if (typeof DarkReader !== 'undefined' && typeof DarkReader.disable === 'function') {
+      DarkReader.disable();
+    }
+  }
+
   function isDarkReaderActive() {
     return typeof DarkReader !== 'undefined' &&
       typeof DarkReader.isEnabled === 'function' &&
@@ -217,7 +230,7 @@
     }
     // Only disable to re-probe once when transitioning from 'loading' to settled DOM
     appliedSignature = null;
-    DarkReader.disable();
+    disableDarkReaderSafe();
     var detected = detectNativeDarkRaw();
     saveCache(detected);
     return detected;
@@ -239,7 +252,8 @@
       if (!config || typeof config !== 'object') return;
       lastConfig = config;
 
-      if (typeof DarkReader === 'undefined') {
+      if (typeof DarkReader === 'undefined' || typeof DarkReader.enable !== 'function') {
+        clearPrepaintStyle();
         return;
       }
 
@@ -252,7 +266,7 @@
       if (!config.enabled) {
         nativeDarkCache = null;
         appliedSignature = null;
-        DarkReader.disable();
+        disableDarkReaderSafe();
         clearPrepaintStyle();
         notifyStatus(false);
         return;
@@ -270,7 +284,7 @@
           scheduleDomReadyRecheck();
           if (hasExplicitDarkColorScheme(getMetaColorSchemeContent())) {
             appliedSignature = null;
-            DarkReader.disable();
+            disableDarkReaderSafe();
             clearPrepaintStyle();
             notifyStatus(true);
           }
@@ -281,7 +295,7 @@
         }
         if (evaluateNativeDark()) {
           appliedSignature = null;
-          DarkReader.disable();
+          disableDarkReaderSafe();
           clearPrepaintStyle();
           notifyStatus(true);
           return;
@@ -301,6 +315,7 @@
         notifyStatus(false);
       } catch (e) {
         appliedSignature = null;
+        clearPrepaintStyle();
         notifyStatus(false);
       }
     }

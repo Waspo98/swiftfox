@@ -146,6 +146,9 @@ interface SiteOverrideDao {
     @Query("SELECT * FROM site_overrides ORDER BY host ASC")
     fun observeAll(): Flow<List<SiteOverrideEntity>>
 
+    @Query("SELECT * FROM site_overrides ORDER BY host ASC")
+    suspend fun getAll(): List<SiteOverrideEntity>
+
     @Query("SELECT * FROM site_overrides WHERE host = :host LIMIT 1")
     suspend fun getByHost(host: String): SiteOverrideEntity?
 

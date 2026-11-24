@@ -46,7 +46,7 @@ class DarkReaderInjector(context: Context?) {
         return buildString(darkReaderJs.length + bridgeJs.length + configJson.length + 320) {
             append("(function(){\n")
             if (darkReaderJs.isNotEmpty()) {
-                append("if(typeof DarkReader==='undefined'){\n")
+                append("if(typeof DarkReader==='undefined'||typeof DarkReader.enable!=='function'){\n")
                 append("(function(define,exports,module){\n")
                 append(darkReaderJs)
                 append("\n}).call(globalThis,undefined,undefined,undefined);\n")
@@ -69,7 +69,9 @@ class DarkReaderInjector(context: Context?) {
     }
 
     /**
-     * Lightweight ~150-byte update script used when the Dark Reader runtime is already attached.
+     * Lightweight ~200-byte update script used when the Dark Reader runtime is already attached.
+     * Returns `"ok"` when applied synchronously on the live window, or `"missing"` if the runtime
+     * needs full injection (eliminating probe-to-apply races across same-origin navigations).
      */
     fun buildFastApplyScript(
         state: ResolvedWebDarkState,
@@ -80,7 +82,7 @@ class DarkReaderInjector(context: Context?) {
         }
         val configJson = DarkReaderConfig.toConfigJson(state)
         val keyLit = json.encodeToString(runtimeKey)
-        return "(function(){var rt=window[$keyLit];if(rt&&typeof rt.apply==='function'){rt.apply($configJson);}})();"
+        return "(function(){var rt=window[$keyLit];if(rt&&typeof rt.apply==='function'){rt.apply($configJson);return 'ok';}return 'missing';})();"
     }
 
     fun buildDisableScript(runtimeKey: String = DEFAULT_RUNTIME_KEY): String {

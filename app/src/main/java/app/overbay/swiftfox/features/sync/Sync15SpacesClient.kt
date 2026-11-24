@@ -2,7 +2,10 @@ package app.overbay.swiftfox.features.sync
 
 import app.overbay.swiftfox.BuildConfig
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.coroutineContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -33,8 +36,14 @@ sealed class ZenFetchResult {
  * Sync Storage Server Hawk credentials via Mozilla's Token Server.
  */
 class Sync15SpacesClient(
-    private val httpClient: OkHttpClient
+    httpClient: OkHttpClient
 ) {
+    // Dedicated client that shares connection pool/dispatcher but never follows HTTP/SSL redirects
+    // so Bearer/Hawk credentials and X-KeyID can never leak across redirect boundaries.
+    private val noRedirectClient: OkHttpClient = httpClient.newBuilder()
+        .followRedirects(false)
+        .followSslRedirects(false)
+        .build()
     private val json = Json { ignoreUnknownKeys = true }
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
     private val userAgent = "Swiftfox/${BuildConfig.VERSION_NAME} (Android)"
@@ -254,7 +263,7 @@ class Sync15SpacesClient(
         }
     }
 
-    private fun exchangeTokenServerCreds(
+    private suspend fun exchangeTokenServerCreds(
         kid: String,
         fxaAccessToken: String,
         tokenServerUrl: String
@@ -297,7 +306,7 @@ class Sync15SpacesClient(
         )
     }
 
-    private fun fetchCollectionKeys(
+    private suspend fun fetchCollectionKeys(
         session: TokenServerSession,
         syncRootKeys: SyncCrypto.SyncKeyBundle
     ): CollectionKeyRing? {
@@ -337,21 +346,21 @@ class Sync15SpacesClient(
         return CollectionKeyRing(defaultBundle, collectionsMap)
     }
 
-    private fun fetchInfoCollections(session: TokenServerSession): Map<String, Double> {
+    private suspend fun fetchInfoCollections(session: TokenServerSession): Map<String, Double> {
         val resp = requestHawk(session, "GET", "/info/collections", allowCodes = setOf(404))
         if (resp.code == 404 || resp.body.isBlank()) return emptyMap()
         val obj = runCatching { json.parseToJsonElement(resp.body).jsonObject }.getOrNull() ?: return emptyMap()
         return obj.mapValues { (_, v) -> (v as? JsonPrimitive)?.content?.toDoubleOrNull() ?: 0.0 }
     }
 
-    private fun fetchMetaGlobalPayload(session: TokenServerSession): String? {
+    private suspend fun fetchMetaGlobalPayload(session: TokenServerSession): String? {
         val resp = requestHawk(session, "GET", "/storage/meta/global", allowCodes = setOf(404))
         if (resp.code == 404 || resp.body.isBlank()) return null
         val obj = runCatching { json.parseToJsonElement(resp.body).jsonObject }.getOrNull() ?: return null
         return (obj["payload"] as? JsonPrimitive)?.takeIf { it.isString }?.content
     }
 
-    private fun fetchCollectionWithLastModified(
+    private suspend fun fetchCollectionWithLastModified(
         session: TokenServerSession,
         collection: String,
         limit: Int = 2500
@@ -440,7 +449,7 @@ class Sync15SpacesClient(
         return DecryptBatchResult(decrypted, failedIds)
     }
 
-    private fun requestHawk(
+    private suspend fun requestHawk(
         session: TokenServerSession,
         method: String,
         path: String,
@@ -505,14 +514,24 @@ class Sync15SpacesClient(
         return match.groupValues[1].toLongOrNull()
     }
 
-    private fun executeRaw(request: Request): HttpResult {
-        httpClient.newCall(request).execute().use { response ->
-            val headers = linkedMapOf<String, String>()
-            for (name in response.headers.names()) {
-                response.header(name)?.let { headers[name] = it }
+    private suspend fun executeRaw(request: Request): HttpResult {
+        coroutineContext.ensureActive()
+        val call = noRedirectClient.newCall(request)
+        val cancelHandle = coroutineContext[Job]?.invokeOnCompletion {
+            call.cancel()
+        }
+        try {
+            call.execute().use { response ->
+                coroutineContext.ensureActive()
+                val headers = linkedMapOf<String, String>()
+                for (name in response.headers.names()) {
+                    response.header(name)?.let { headers[name] = it }
+                }
+                val body = response.body.string()
+                return HttpResult(response.code, body, headers)
             }
-            val body = response.body.string()
-            return HttpResult(response.code, body, headers)
+        } finally {
+            cancelHandle?.dispose()
         }
     }
 

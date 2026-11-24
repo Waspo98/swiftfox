@@ -4,11 +4,21 @@ import app.overbay.swiftfox.features.sync.HawkAuth
 import app.overbay.swiftfox.features.sync.Sync15SpacesClient
 import app.overbay.swiftfox.features.sync.SyncCrypto
 import app.overbay.swiftfox.features.sync.SyncCryptoException
+import app.overbay.swiftfox.features.sync.ZenFetchResult
+import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Protocol
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
+import java.io.IOException
 import java.net.URL
 import java.security.MessageDigest
 import java.util.Base64
@@ -226,9 +236,103 @@ class SyncCryptoAndHawkTest {
             try {
                 Sync15SpacesClient.resolveTokenServerUrl(invalid)
                 fail("Expected IOException for $invalid")
-            } catch (_: java.io.IOException) {
+            } catch (_: IOException) {
                 // Expected HTTPS-only enforcement
             }
         }
+    }
+
+    @Test
+    fun sync15SpacesClientRejectsRedirectsAndRetriesHawkClockSkewToDecryptSnapshot() = runBlocking {
+        val rawKSync = ByteArray(64) { (it + 7).toByte() }
+        val syncKeyBase64 = Base64.getUrlEncoder().withoutPadding().encodeToString(rawKSync)
+        val rootKeys = SyncCrypto.fromKSyncBase64(syncKeyBase64)
+
+        val defaultEnc = Base64.getEncoder().encodeToString(ByteArray(32) { (it + 21).toByte() })
+        val defaultHmac = Base64.getEncoder().encodeToString(ByteArray(32) { (it + 55).toByte() })
+        val defaultKeys = SyncCrypto.fromBase64Pair(defaultEnc, defaultHmac)
+
+        val keysCleartext = """{"id":"keys","default":["$defaultEnc","$defaultHmac"],"collections":{}}"""
+        val keysBso = """{"id":"keys","payload":${Json.encodeToString(SyncCrypto.encryptBSO(keysCleartext.toByteArray(), rootKeys))}}"""
+
+        val spaceCleartext = """{"id":"sp-work","kind":"space","data":{"uuid":"sp-work","name":"Work","icon":"work","children":[]}}"""
+        val spacesBody = """[{"id":"sp-work","payload":${Json.encodeToString(SyncCrypto.encryptBSO(spaceCleartext.toByteArray(), defaultKeys))}}]"""
+
+        // 1. Verify redirects are NOT followed (302 throws IOException instead of leaking Bearer/X-KeyID)
+        var redirectHops = 0
+        val redirectClient = OkHttpClient.Builder()
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .addInterceptor { chain ->
+                redirectHops++
+                Response.Builder()
+                    .request(chain.request())
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(302)
+                    .message("Found")
+                    .header("Location", "http://attacker.example/steal")
+                    .body("".toResponseBody("text/plain".toMediaType()))
+                    .build()
+            }
+            .build()
+        val syncRedirectTest = Sync15SpacesClient(redirectClient)
+        try {
+            syncRedirectTest.fetchZenSnapshot(
+                kid = "kid-1",
+                fxaAccessToken = "secret-token",
+                syncKeyBase64 = syncKeyBase64,
+                tokenServerUrl = "https://token.services.mozilla.com"
+            )
+            fail("Expected IOException on 302 redirect")
+        } catch (err: IOException) {
+            assertTrue(err.message.orEmpty().contains("302"))
+            assertEquals(1, redirectHops)
+        }
+
+        // 2. Verify full fetchZenSnapshot + 401 Hawk clock-skew retry
+        var cryptoKeysCalls = 0
+        val mockSyncClient = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                val url = chain.request().url.toString()
+                fun resp(code: Int, body: String, extraHeaders: Map<String, String> = emptyMap()): Response {
+                    val b = Response.Builder()
+                        .request(chain.request())
+                        .protocol(Protocol.HTTP_1_1)
+                        .code(code)
+                        .message(if (code in 200..299) "OK" else "ERR")
+                        .body(body.toResponseBody("application/json".toMediaType()))
+                    extraHeaders.forEach { (k, v) -> b.header(k, v) }
+                    return b.build()
+                }
+                when {
+                    url == "https://token.services.mozilla.com/1.0/sync/1.5" -> resp(
+                        200,
+                        """{"api_endpoint":"https://sync.example.org/1.5/42","id":"hawk-1","key":"hawk-secret","timestamp":1700000000}"""
+                    )
+                    url.endsWith("/storage/crypto/keys") -> {
+                        cryptoKeysCalls++
+                        if (cryptoKeysCalls == 1) {
+                            resp(401, "", mapOf("WWW-Authenticate" to """Hawk ts="1700000123", tsm="abc""""))
+                        } else {
+                            resp(200, keysBso)
+                        }
+                    }
+                    url.endsWith("/info/collections") -> resp(200, """{"spaces":1700000123.5}""")
+                    url.contains("/storage/spaces") -> resp(200, spacesBody, mapOf("X-Last-Modified" to "1700000123.5"))
+                    else -> resp(404, "")
+                }
+            }
+            .build()
+
+        val result = Sync15SpacesClient(mockSyncClient).fetchZenSnapshot(
+            kid = "kid-1",
+            fxaAccessToken = "tok-1",
+            syncKeyBase64 = syncKeyBase64,
+            tokenServerUrl = "https://token.services.mozilla.com"
+        )
+        assertTrue(result is ZenFetchResult.Success)
+        val snap = (result as ZenFetchResult.Success).snapshot
+        assertEquals(2, cryptoKeysCalls)
+        assertEquals(listOf("Work"), snap.spaces.map { it.name })
     }
 }

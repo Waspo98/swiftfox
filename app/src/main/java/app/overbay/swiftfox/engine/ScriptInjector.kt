@@ -9,6 +9,7 @@ import app.overbay.swiftfox.data.db.ZappedRuleEntity
 import app.overbay.swiftfox.features.adblock.CosmeticPayload
 import app.overbay.swiftfox.features.darkreader.DarkReaderInjector
 import app.overbay.swiftfox.features.darkreader.ResolvedWebDarkState
+import app.overbay.swiftfox.features.omnibox.OmniboxEngine
 import app.overbay.swiftfox.features.userscripts.UserscriptBridge
 import app.overbay.swiftfox.features.userscripts.UserscriptRunAt
 import app.overbay.swiftfox.features.zapper.ZapperController
@@ -16,6 +17,20 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.net.URI
 import java.util.Locale
+
+enum class PrepaintDarkMode {
+    NONE,
+    DARK_READER,
+    ALGORITHMIC_LITE
+}
+
+data class GlobalPrepaintDarkConfig(
+    val mode: PrepaintDarkMode = PrepaintDarkMode.NONE,
+    val amoled: Boolean = false,
+    val globalEnabled: Boolean = false,
+    val excludedHosts: Set<String> = emptySet(),
+    val includedHosts: Set<String> = emptySet()
+)
 
 /**
  * Coordinates WebView script injection across `addDocumentStartJavaScript`, `onPageStarted`,
@@ -94,14 +109,25 @@ object ScriptInjector {
                     existing.textContent = css;
                     return true;
                 }
+                var done = false;
+                var obs = null;
+                function runOnce() {
+                    if (done) return;
+                    if (attach()) {
+                        done = true;
+                        if (obs) {
+                            obs.disconnect();
+                            obs = null;
+                        }
+                        document.removeEventListener('DOMContentLoaded', runOnce);
+                    }
+                }
                 if (!attach()) {
                     if (typeof MutationObserver === 'function') {
-                        var obs = new MutationObserver(function() {
-                            if (attach()) obs.disconnect();
-                        });
+                        obs = new MutationObserver(runOnce);
                         obs.observe(document, { childList: true, subtree: true });
                     }
-                    document.addEventListener('DOMContentLoaded', attach, { once: true });
+                    document.addEventListener('DOMContentLoaded', runOnce, { once: true });
                 }
             })();
         """.trimIndent()
@@ -178,9 +204,146 @@ object ScriptInjector {
         """.trimIndent()
     }
 
-    fun buildPrepaintDarkCss(amoled: Boolean): String {
+    fun buildPrepaintDarkCss(
+        amoled: Boolean,
+        mode: PrepaintDarkMode = PrepaintDarkMode.DARK_READER
+    ): String {
         val bg = if (amoled) "#000000" else "#18161b"
-        return "html{background-color:$bg;color-scheme:dark;}"
+        val fg = if (amoled) "#f3eef7" else "#ece7f0"
+        return when (mode) {
+            PrepaintDarkMode.NONE -> ""
+            PrepaintDarkMode.ALGORITHMIC_LITE ->
+                "html{background-color:$bg;color-scheme:dark;}"
+            PrepaintDarkMode.DARK_READER ->
+                "html{background-color:$bg!important;color-scheme:dark!important;}" +
+                    "body,body :not(iframe):not(img):not(video):not(canvas):not(picture):not(svg){background-color:$bg!important;color:$fg!important;}"
+        }
+    }
+
+    /**
+     * Builds a lightweight, token-free document-start script registered across `*` origins so
+     * every brand-new navigation starts in the resolved dark surface before first paint while
+     * honoring per-site light/dark overrides synchronously.
+     */
+    fun buildGlobalPrepaintDarkScript(config: GlobalPrepaintDarkConfig): String {
+        if (config.mode == PrepaintDarkMode.NONE) return ""
+        val normalizedExcluded = config.excludedHosts
+            .map { OmniboxEngine.normalizeHost(it) }
+            .filter { it.isNotBlank() }
+            .sorted()
+        val normalizedIncluded = config.includedHosts
+            .map { OmniboxEngine.normalizeHost(it) }
+            .filter { it.isNotBlank() }
+            .sorted()
+
+        if (!config.globalEnabled && normalizedIncluded.isEmpty()) return ""
+
+        val css = buildPrepaintDarkCss(amoled = config.amoled, mode = config.mode)
+        if (css.isBlank()) return ""
+
+        val cssLit = json.encodeToString(css)
+        val hostsLit = json.encodeToString(if (config.globalEnabled) normalizedExcluded else normalizedIncluded)
+        val modeCheck = if (config.globalEnabled) {
+            "if (list.indexOf(host) !== -1) return;"
+        } else {
+            "if (list.indexOf(host) === -1) return;"
+        }
+        val cleanupLogic = if (config.mode == PrepaintDarkMode.ALGORITHMIC_LITE) {
+            """
+                if (document.readyState === 'loading') {
+                    document.addEventListener('DOMContentLoaded', cleanup, { once: true });
+                } else {
+                    cleanup();
+                }
+                setTimeout(cleanup, 1500);
+            """.trimIndent()
+        } else {
+            """
+                var postDomTimer = function() { setTimeout(cleanup, 1500); };
+                if (document.readyState === 'loading') {
+                    document.addEventListener('DOMContentLoaded', postDomTimer, { once: true });
+                } else {
+                    postDomTimer();
+                }
+                setTimeout(cleanup, 6000);
+            """.trimIndent()
+        }
+
+        return """
+            (function() {
+                if (window !== window.top) return;
+                if (!location || (location.protocol !== 'http:' && location.protocol !== 'https:')) return;
+                var host = (location.hostname || '').toLowerCase().replace(/^\[|\]$/g, '').replace(/^www\./, '');
+                var list = $hostsLit;
+                $modeCheck
+                var id = 'swiftfox-prepaint-dark';
+                var css = $cssLit;
+                var attached = false;
+                var cleaned = false;
+                var obs = null;
+                function attach() {
+                    if (cleaned) return true;
+                    var existing = document.getElementById(id);
+                    if (!existing) {
+                        var target = document.head || document.documentElement;
+                        if (!target) return false;
+                        existing = document.createElement('style');
+                        existing.id = id;
+                        existing.type = 'text/css';
+                        target.appendChild(existing);
+                    }
+                    existing.textContent = css;
+                    return true;
+                }
+                function cleanup() {
+                    if (cleaned) return;
+                    cleaned = true;
+                    if (obs) {
+                        obs.disconnect();
+                        obs = null;
+                    }
+                    try {
+                        var el = document.getElementById(id);
+                        if (el && el.parentNode) el.parentNode.removeChild(el);
+                    } catch (e) {}
+                }
+                function runOnce() {
+                    if (attached || cleaned) return;
+                    if (attach()) {
+                        attached = true;
+                        if (obs) {
+                            obs.disconnect();
+                            obs = null;
+                        }
+                        document.removeEventListener('DOMContentLoaded', runOnce);
+                    }
+                }
+                if (!attach()) {
+                    if (typeof MutationObserver === 'function') {
+                        obs = new MutationObserver(runOnce);
+                        obs.observe(document, { childList: true, subtree: true });
+                    }
+                    document.addEventListener('DOMContentLoaded', runOnce, { once: true });
+                } else {
+                    attached = true;
+                }
+                $cleanupLogic
+            })();
+        """.trimIndent()
+    }
+
+    fun registerGlobalPrepaintDarkScript(
+        webView: WebView,
+        previousHandler: ScriptHandler?,
+        script: String
+    ): ScriptHandler? {
+        runCatching { previousHandler?.remove() }
+        if (script.isBlank() || !WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            return null
+        }
+        return runCatching {
+            WebViewCompat.addDocumentStartJavaScript(webView, script, setOf("*"))
+        }.getOrNull()
     }
 
     fun registerDocumentStartScripts(
@@ -190,8 +353,7 @@ object ScriptInjector {
         cosmeticCss: String,
         zappedCss: String,
         gmShimInitJs: String,
-        documentStartUserscriptSnippets: List<String>,
-        prepaintDarkCss: String = ""
+        documentStartUserscriptSnippets: List<String>
     ): List<ScriptHandler> {
         previousHandlers.forEach { runCatching { it.remove() } }
         if (origin.isBlank() || !WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
@@ -217,9 +379,6 @@ object ScriptInjector {
         }
 
         val cssBlock = buildString {
-            if (prepaintDarkCss.isNotBlank()) {
-                append(buildCssStyleScript("swiftfox-prepaint-dark", prepaintDarkCss)).append('\n')
-            }
             if (cosmeticCss.isNotBlank()) {
                 append(buildCssStyleScript("swiftfox-cosmetic", cosmeticCss)).append('\n')
             }
@@ -267,14 +426,86 @@ object ScriptInjector {
         """.trimIndent()
     }
 
+    /**
+     * Wraps [script] so it only runs when `window.location.origin === expectedOrigin`,
+     * preventing rotated bridge tokens from leaking into a departing origin during navigation.
+     */
+    fun wrapOriginGuardedScript(expectedOrigin: String, script: String): String {
+        if (expectedOrigin.isBlank() || script.isBlank()) return ""
+        val originLit = json.encodeToString(expectedOrigin)
+        return buildString(script.length + originLit.length + 96) {
+            append("(function(){\n")
+            append("if (!window.location || window.location.origin !== ").append(originLit).append(") return;\n")
+            append(script)
+            append("\n})();")
+        }
+    }
+
+    /**
+     * Immediately injects Dark Reader on the Main thread during `onPageStarted` without waiting for
+     * Adblock/Room I/O or a redundant fast-probe round-trip. Guarded to [expectedOrigin] so an
+     * early evaluation can never leak tokens into a departing origin.
+     */
+    fun injectDarkReaderOnPageStarted(
+        webView: WebView,
+        expectedOrigin: String,
+        tokens: BridgeTokenSet,
+        darkState: ResolvedWebDarkState,
+        darkReaderInjector: DarkReaderInjector,
+        isDestroyed: () -> Boolean = { false }
+    ) {
+        if (isDestroyed() || expectedOrigin.isBlank()) return
+        if (!darkState.useDarkReader) {
+            webView.evaluateJavascript(darkReaderInjector.buildDisableScript(tokens.darkReaderKey), null)
+            return
+        }
+        val fullScript = darkReaderInjector.buildApplyScript(
+            state = darkState,
+            bridgeToken = tokens.darkReaderToken,
+            runtimeKey = tokens.darkReaderKey
+        )
+        val guarded = wrapOriginGuardedScript(expectedOrigin, fullScript)
+        if (guarded.isNotEmpty()) {
+            webView.evaluateJavascript(guarded, null)
+        }
+    }
+
+    fun injectDarkReaderFastOrFull(
+        webView: WebView,
+        tokens: BridgeTokenSet,
+        darkState: ResolvedWebDarkState,
+        darkReaderInjector: DarkReaderInjector,
+        isDestroyed: () -> Boolean = { false }
+    ) {
+        if (isDestroyed()) return
+        if (!darkState.useDarkReader) {
+            webView.evaluateJavascript(darkReaderInjector.buildDisableScript(tokens.darkReaderKey), null)
+            return
+        }
+        val originAtCall = extractOrigin(webView.url.orEmpty()) ?: return
+        val fastScript = darkReaderInjector.buildFastApplyScript(darkState, tokens.darkReaderKey)
+        webView.evaluateJavascript(fastScript) { result ->
+            if (isDestroyed()) return@evaluateJavascript
+            if (result?.trim() == "\"ok\"") return@evaluateJavascript
+            if (extractOrigin(webView.url.orEmpty()) != originAtCall) return@evaluateJavascript
+            val fullScript = darkReaderInjector.buildApplyScript(
+                darkState,
+                tokens.darkReaderToken,
+                tokens.darkReaderKey
+            )
+            val guarded = wrapOriginGuardedScript(originAtCall, fullScript)
+            if (guarded.isNotEmpty()) {
+                webView.evaluateJavascript(guarded, null)
+            }
+        }
+    }
+
     fun injectOnPageStarted(
         webView: WebView,
         tokens: BridgeTokenSet,
         cosmetic: CosmeticPayload,
         zappedRules: List<ZappedRuleEntity>,
         zapperController: ZapperController,
-        darkState: ResolvedWebDarkState,
-        darkReaderInjector: DarkReaderInjector,
         docStartUserscripts: List<Pair<UserscriptEntity, Map<String, String>>>,
         userscriptBridge: UserscriptBridge,
         isDestroyed: () -> Boolean = { false }
@@ -302,8 +533,6 @@ object ScriptInjector {
                 webView.evaluateJavascript(snippet, null)
             }
         }
-
-        injectDarkReaderFastOrFull(webView, tokens, darkState, darkReaderInjector, isDestroyed)
     }
 
     fun injectOnPageFinished(
@@ -313,8 +542,6 @@ object ScriptInjector {
         runGenericCosmeticScan: Boolean,
         zappedRules: List<ZappedRuleEntity>,
         zapperController: ZapperController,
-        darkState: ResolvedWebDarkState,
-        darkReaderInjector: DarkReaderInjector,
         docEndUserscripts: List<Pair<UserscriptEntity, Map<String, String>>>,
         docIdleUserscripts: List<Pair<UserscriptEntity, Map<String, String>>>,
         userscriptBridge: UserscriptBridge,
@@ -331,8 +558,6 @@ object ScriptInjector {
             webView.evaluateJavascript(buildGenericCosmeticScanScript(tokens.cosmeticToken), null)
         }
         webView.evaluateJavascript(zapperController.buildApplyZappedCssScript(zappedRules), null)
-
-        injectDarkReaderFastOrFull(webView, tokens, darkState, darkReaderInjector, isDestroyed)
 
         val hasAnyUserscripts = docEndUserscripts.isNotEmpty() || docIdleUserscripts.isNotEmpty()
         if (hasAnyUserscripts) {
@@ -360,32 +585,6 @@ object ScriptInjector {
             ).forEach { snippet ->
                 webView.evaluateJavascript(snippet, null)
             }
-        }
-    }
-
-    private fun injectDarkReaderFastOrFull(
-        webView: WebView,
-        tokens: BridgeTokenSet,
-        darkState: ResolvedWebDarkState,
-        darkReaderInjector: DarkReaderInjector,
-        isDestroyed: () -> Boolean
-    ) {
-        if (isDestroyed()) return
-        if (!darkState.useDarkReader) {
-            webView.evaluateJavascript(darkReaderInjector.buildDisableScript(tokens.darkReaderKey), null)
-            return
-        }
-        val originAtCall = extractOrigin(webView.url.orEmpty()) ?: return
-        val keyLit = json.encodeToString(tokens.darkReaderKey)
-        webView.evaluateJavascript("Object.prototype.hasOwnProperty.call(window, $keyLit)") { loaded ->
-            if (isDestroyed()) return@evaluateJavascript
-            if (extractOrigin(webView.url.orEmpty()) != originAtCall) return@evaluateJavascript
-            val script = if (loaded?.trim().equals("true", ignoreCase = true)) {
-                darkReaderInjector.buildFastApplyScript(darkState, tokens.darkReaderKey)
-            } else {
-                darkReaderInjector.buildApplyScript(darkState, tokens.darkReaderToken, tokens.darkReaderKey)
-            }
-            webView.evaluateJavascript(script, null)
         }
     }
 }

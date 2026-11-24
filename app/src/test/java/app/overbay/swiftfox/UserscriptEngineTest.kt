@@ -88,7 +88,7 @@ class UserscriptEngineTest {
     @Test
     fun urlMatcherSupportsAllUrlsSubdomainsExcludesRegexAndSkipsNonHttp() {
         assertTrue(UserscriptUrlMatcher.matches("https://example.com/path", listOf("<all_urls>"), emptyList()))
-        assertTrue(UserscriptUrlMatcher.matches("http://192.168.86.200:8080/ui", listOf("<all_urls>"), emptyList()))
+        assertTrue(UserscriptUrlMatcher.matches("http://192.168.1.10:8080/ui", listOf("<all_urls>"), emptyList()))
 
         val subdomainMatch = listOf("https://*.example.com/*")
         assertTrue(UserscriptUrlMatcher.matches("https://example.com/", subdomainMatch, emptyList()))
@@ -170,9 +170,26 @@ class UserscriptEngineTest {
         assertFalse(strictRegex.containsMatchIn("http://example.com/articles/123"))
 
         val portCheck = UserscriptUrlMatcher.compileJsCheck("*://example.com:443/watch*")!!
-        val portRegex = Regex(portCheck.regexBody, RegexOption.IGNORE_CASE)
+        val portRegex = Regex(portCheck.regexBody)
         assertTrue(portRegex.containsMatchIn("https://example.com/watch?v=1"))
         assertTrue(portRegex.containsMatchIn("https://example.com:443/watch?v=1"))
+        assertFalse(portRegex.containsMatchIn("http://example.com/watch?v=1"))
+        assertTrue(portRegex.containsMatchIn("http://example.com:443/watch?v=1"))
+
+        val httpPortCheck = UserscriptUrlMatcher.compileJsCheck("*://example.com:80/app*")!!
+        val httpPortRegex = Regex(httpPortCheck.regexBody)
+        assertTrue(httpPortRegex.containsMatchIn("http://example.com/app"))
+        assertFalse(httpPortRegex.containsMatchIn("https://example.com/app"))
+        assertTrue(httpPortRegex.containsMatchIn("https://example.com:80/app"))
+
+        // Path matching in compileJsCheck must stay case-sensitive to match Kotlin matches()
+        val caseCheck = UserscriptUrlMatcher.compileJsCheck("https://example.com/Wiki/*")!!
+        assertEquals("", caseCheck.flags)
+        val caseRegex = Regex(caseCheck.regexBody)
+        assertTrue(caseRegex.containsMatchIn("https://example.com/Wiki/Home"))
+        assertFalse(caseRegex.containsMatchIn("https://example.com/wiki/Home"))
+        assertTrue(UserscriptUrlMatcher.matches("https://example.com/Wiki/Home", listOf("https://example.com/Wiki/*"), emptyList()))
+        assertFalse(UserscriptUrlMatcher.matches("https://example.com/wiki/Home", listOf("https://example.com/Wiki/*"), emptyList()))
     }
 
     @Test
@@ -367,7 +384,7 @@ class UserscriptEngineTest {
         bridge.handleXmlHttpRequest(
             scriptId = "with-xhr",
             reqId = "req-ssrf",
-            requestJson = """{"method":"GET","url":"http://192.168.86.200:8080/admin"}""",
+            requestJson = """{"method":"GET","url":"http://192.168.1.10:8080/admin"}""",
             pageUrl = "https://public.example.com/",
             bridgeToken = "tok"
         ) { ssrfJs = it }
@@ -524,7 +541,7 @@ class UserscriptEngineTest {
                         .protocol(Protocol.HTTP_1_1)
                         .code(302)
                         .message("Found")
-                        .header("Location", "http://192.168.86.200/admin")
+                        .header("Location", "http://192.168.1.10/admin")
                         .body(ByteArray(0).toResponseBody(null))
                         .build()
                 } else {
@@ -738,6 +755,43 @@ class UserscriptEngineTest {
         advanceUntilIdle()
         assertNotNull(abortJs)
         assertTrue(abortJs!!.contains("\"onabort\""))
+
+        // Standard GM_xmlhttpRequest timeout: 0 must use default timeout (not clamp to 1s)
+        var observedTimeoutMs = -1
+        val timeoutInspectClient = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                observedTimeoutMs = chain.call().timeout().timeoutNanos().let { (it / 1_000_000L).toInt() }
+                Response.Builder()
+                    .request(chain.request())
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body("ok".toResponseBody("text/plain".toMediaType()))
+                    .build()
+            }
+            .build()
+        val timeoutBridge = UserscriptBridge(
+            context = null,
+            scope = this,
+            scriptDao = scriptDao,
+            storageDao = storageDao,
+            client = timeoutInspectClient,
+            ioDispatcher = dispatcher,
+            mainDispatcher = dispatcher
+        )
+        var zeroTimeoutJs: String? = null
+        timeoutBridge.handleXmlHttpRequest(
+            scriptId = "s-connect",
+            reqId = "req-zero-timeout",
+            requestJson = """{"method":"GET","url":"https://api.allowed.org/v1","timeout":0}""",
+            pageUrl = "https://app.example.com/home",
+            bridgeToken = "tok",
+            tabId = "tab-1"
+        ) { zeroTimeoutJs = it }
+        advanceUntilIdle()
+        assertNotNull(zeroTimeoutJs)
+        assertTrue(zeroTimeoutJs!!.contains("\"onload\""))
+        assertTrue("Expected default 15000ms call timeout for timeout:0, got $observedTimeoutMs", observedTimeoutMs >= 10_000)
     }
 
     private class FakeUserscriptDao : UserscriptDao {

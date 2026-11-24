@@ -242,7 +242,7 @@ Rather than forcing a single layout across cover and inner displays, Swiftfox tr
 - Webpage-first tonal chrome in Warm Paper Day, Charcoal-Plum Dark, and true `#000000` AMOLED Black.
 - Deliberate Fox Amber accent splashes on active state, switchable across Midnight Indigo, Forest, Monochrome, and Android Material You dynamic color.
 - Unmistakable violet chrome shift for `ProfileStore`-isolated Private browsing sessions.
-- Rounded capsule geometry (`10dp`–`28dp`) culminating in the 2×2 Quick Controls modal bottom sheet.
+- Rounded capsule geometry (`10dp`–`28dp`) culminating in the 2×2 Quick Actions card inside Settings and the Arc/Zen Spaces sidebar.
 - Independent Folded and Unfolded toolbar profiles, collapsible Spaces sidebar, `sp` system font scaling, and `ANIMATOR_DURATION_SCALE` reduced-motion compliance.
 
 ## Colors
@@ -273,7 +273,7 @@ Swiftfox pairs three warm-shifted Material 3 neutral surface ladders with a sing
 
 ### Named Rules
 
-**The Warm Splash Rule.** Reserve saturated accent fills (`primaryContainer` paired with `primary` icons and tinted borders) for live state—active Quick Control tiles, selected Space pills, the Tab Count badge, the Split-bar Controls pill, focused omnibox borders, and primary CTAs—so resting toolbars remain calm and webpage-first.
+**The Warm Splash Rule.** Reserve saturated accent fills (`primaryContainer` paired with `primary` icons and tinted borders) for live state—active Quick Actions tiles, selected Space pills, the Tab Count badge, the Split-bar New Tab button, focused omnibox borders, and primary CTAs—so resting toolbars remain calm and webpage-first.
 
 **The Dual-Contrast Amber Rule.** Never place brand Fox Amber (`#E86A17`) behind body copy or interactive button labels; use the brand splash strictly for `SwiftfoxEmblem` and palette swatches, while text, icons, and interactive surfaces resolve to WCAG AA primaries (`#B04200` in Day, `#FF9147` in Dark and AMOLED).
 
@@ -295,7 +295,7 @@ Swiftfox pairs three warm-shifted Material 3 neutral surface ladders with a sing
 - **Display Small** (Sora `600` SemiBold, `32sp` / `38sp` line height, `-0.6sp` tracking): Large display headers.
 - **Headline Medium** (Sora `600` SemiBold, `26sp` / `32sp` line height, `-0.4sp` tracking): Private Space Start Page header.
 - **Headline Small** (Sora `600` SemiBold, `22sp` / `28sp` line height, `-0.25sp` tracking): Top-level overlay screen titles such as `SpacesTabSwitcher` active Space / `Private Tabs` heading.
-- **Title Large** (Sora `600` SemiBold, `19sp` / `25sp` line height, `-0.15sp` tracking): TopAppBar titles, Quick Controls page title header, Start Page Essential monogram glyph, and empty-state titles.
+- **Title Large** (Sora `600` SemiBold, `19sp` / `25sp` line height, `-0.15sp` tracking): TopAppBar titles, Start Page Essential monogram glyph, and empty-state titles.
 - **Title Medium** (Sora `600` SemiBold, `16sp` / `22sp` line height, `0sp` tracking): Settings section headers (`primary` colored), Start Page section titles (`Essentials`, `Open in Space`), and compact headers.
 - **Title Small** (`600` SemiBold, `14sp` / `20sp` line height, `0.1sp` tracking): Quick Control tile titles, Tab Preview card titles, Start Page jump card titles, Settings switch/radio titles, and library row titles.
 - **Body Large** (`400` Regular, `16sp` / `24sp` line height, `0sp` tracking): Focused omnibox input text, Start Page search prompt, omnibox suggestion primary lines, and Context Menu action rows.
@@ -315,11 +315,11 @@ Swiftfox pairs three warm-shifted Material 3 neutral surface ladders with a sing
 
 Swiftfox runs fully edge-to-edge (`enableEdgeToEdge()`, transparent system navigation bar via `isNavigationBarContrastEnforced = false`) and adapts across three live width/posture bands reported by Jetpack `WindowManager` (`PostureObserver`):
 
-- **Folded (`<600dp` width, cover screen):** Activates the Folded profile (default: `SPLIT` toolbar with top omnibox capsule and bottom thumb action bar; `MOBILE` default site mode; sidebar hidden). Start Page content centers within `540dp` max width, rendering a 4-column Essentials grid and 2-column Jump cards inside `20dp` horizontal margins.
-- **Unfolded Compact (`600dp–779dp` width or flat/half-opened `FoldingFeature`):** Switches automatically to the independent Unfolded profile (default: `TOP` toolbar with inline Back/Forward navigation, `DESKTOP` default site mode, and collapsible Zen-style `UnfoldedSpacesSidebar` at `72dp` collapsed or `216dp` expanded). Unlocks `SIDE_RAIL` placement (`68dp` ergonomic right-edge vertical rail) while letting `TOP` and `SIDE_RAIL` render live web content right beneath the transparent gesture bar.
-- **Unfolded Expanded (`≥780dp` width):** Expands `UnfoldedSpacesSidebar` to `248dp`, widens Start Page measure to `720dp` (scaling the Essentials grid to 4–5 columns depending on count), and lets `SpacesTabSwitcher` flow naturally across `GridCells.Adaptive(minSize = 164.dp)` with `12dp` gutters.
+- **Folded (`<600dp` width, cover screen):** Activates the Folded profile (default: `SPLIT` toolbar with top omnibox capsule and bottom thumb action bar; `MOBILE` default site mode; slide-over `ArcSpacesSidebar` drawer). Start Page content centers within `540dp` max width, rendering a 4-column Essentials grid and 2-column Jump cards inside `20dp` horizontal margins.
+- **Unfolded Compact (`600dp–779dp` width or flat/half-opened `FoldingFeature`):** Switches automatically to the independent Unfolded profile (default: `TOP` toolbar with inline Back/Forward navigation, `DESKTOP` default site mode, and collapsible Arc/Zen-style `ArcSpacesSidebar` at `72dp` collapsed or `232dp` expanded). Unlocks `SIDE_RAIL` placement (`68dp` ergonomic right-edge vertical rail) while letting `TOP` and `SIDE_RAIL` render live web content right beneath the transparent gesture bar.
+- **Unfolded Expanded (`≥780dp` width):** Expands `ArcSpacesSidebar` to `264dp`, widens Start Page measure to `720dp` (scaling the Essentials grid to 4–5 columns depending on count), and lets `SpacesTabSwitcher` flow naturally across `GridCells.Adaptive(minSize = 164.dp)` with `12dp` gutters.
 
-**Spacing Rhythm:** Components step along a compact Android dp scale—`6dp` tight icon-label pairs, `8dp` chip/toolbar gaps, `10dp` Quick Control tile gutters, `12dp` toolbar outer margins and tab grid spacing, `14dp` tile inner padding, `16dp` sheet stacks and Settings margins, `20dp` Start Page / Quick Controls horizontal margins, and `24dp` bottom sheet clearance above navigation bar insets.
+**Spacing Rhythm:** Components step along a compact Android dp scale—`6dp` tight icon-label pairs, `8dp` chip/toolbar gaps, `10dp` Quick Actions tile gutters, `12dp` toolbar outer margins and tab grid spacing, `14dp` tile inner padding, `16dp` sheet stacks and Settings margins, `20dp` Start Page horizontal margins, and `24dp` bottom sheet clearance above navigation bar insets.
 
 **Motion & Reduced Motion:** `OmniboxOverlay` transitions with a Material fade and `FindInPageBar` slides vertically from the top toolbar (`slideInVertically { -it } + fadeIn()`). Before animating, `BrowserScreen` checks Android's `Settings.Global.ANIMATOR_DURATION_SCALE == 0f` ("Remove animations") and replaces transitions with `EnterTransition.None` / `ExitTransition.None`. URL-bar gestures switch adjacent tabs past a `96px` horizontal drag threshold and open the Tab Switcher past an `88px` drag toward the viewport.
 
@@ -333,15 +333,15 @@ Swiftfox runs fully edge-to-edge (`enableEdgeToEdge()`, transparent system navig
 
 ## Elevation & Depth
 
-Swiftfox is **tonally layered rather than shadow-heavy**. Instead of stacking blurred drop shadows on dark or AMOLED glass, hierarchy is communicated by stepping upward across Material 3's five container tiers (`surface` → `surfaceContainerLow` → `surfaceContainer` → `surfaceContainerHigh` → `surfaceContainerHighest`), augmented by minimal tonal elevation (`1dp` on `UnfoldedSpacesSidebar`, `2dp` on toolbars and `ErgonomicSideRail`, `3dp` on `FindInPageBar`) and selective hairline borders.
+Swiftfox is **tonally layered rather than shadow-heavy**. Instead of stacking blurred drop shadows on dark or AMOLED glass, hierarchy is communicated by stepping upward across Material 3's five container tiers (`surface` → `surfaceContainerLow` → `surfaceContainer` → `surfaceContainerHigh` → `surfaceContainerHighest`), augmented by minimal tonal elevation (`1dp` on docked `ArcSpacesSidebar`, `2dp` on toolbars and `ErgonomicSideRail`, `3dp` on `FindInPageBar` and overlay `ArcSpacesSidebar`) and selective hairline borders.
 
-Native modal elevation is reserved for Material 3 `ModalBottomSheet` (Quick Controls and Long-Press Context Menu, `surfaceContainerLow` over a dimmed scrim), `AlertDialog`, and `ExtendedFloatingActionButton` in `SpacesTabSwitcher`.
+Native modal elevation is reserved for Material 3 `ModalBottomSheet` (`SiteRulesSheet` and Long-Press Context Menu, `surfaceContainerLow` over a dimmed scrim), `AlertDialog`, and `ExtendedFloatingActionButton` in `SpacesTabSwitcher`.
 
 ### Named Rules
 
 **The Tonal Ladder Rule.** Express surface hierarchy by stepping up one container tier—`surfaceContainerLow` for persistent bars, sidebars, and modal sheets; `surfaceContainer` for grouped cards and tab tiles; `surfaceContainerHigh` for interactive pills and resting toggles—rather than adding decorative box shadows.
 
-**The Hairline State Ring Rule.** Use `1dp` `outlineVariant` borders at `35%–55%` alpha only to define resting shapes on dark and AMOLED surfaces, escalating to `1.5dp–2dp` `primary` (or `privateAccent`) borders strictly to signal active selection, enabled Quick Controls, or omnibox focus.
+**The Hairline State Ring Rule.** Use `1dp` `outlineVariant` borders at `35%–55%` alpha only to define resting shapes on dark and AMOLED surfaces, escalating to `1.5dp–2dp` `primary` (or `privateAccent`) borders strictly to signal active selection, enabled Quick Actions toggles, or omnibox focus.
 
 **The Flat Settings Rule.** Group related preferences inside a single `surfaceContainer` section card (`22dp` radius, `18dp` padding) separated internally by `outlineVariant` hairline dividers (`35%` alpha); never nest secondary cards inside settings sections.
 
@@ -349,7 +349,7 @@ Native modal elevation is reserved for Material 3 `ModalBottomSheet` (Quick Cont
 
 Swiftfox speaks in generously rounded, tactile capsules rooted in `SwiftfoxShapes` (`10dp` extraSmall, `14dp` small, `18dp` medium, `24dp` large, `28dp` extraLarge) alongside calibrated intermediate radii (`16dp`, `20dp`, `22dp`, `26dp`) and `CircleShape`.
 
-Corners stay visually concentric whenever containers nest: `TabPreviewCard` (`20dp` shell with `8dp` inner padding) clips its live webpage thumbnail to `14dp`; `QuickControlsSheet` (`28dp` top corners) houses `20dp` toggle tiles and `24dp` action pills; and the `28dp` Start Page search capsule nests a `32dp` circular search icon badge.
+Corners stay visually concentric whenever containers nest: `TabPreviewCard` (`20dp` shell with `8dp` inner padding) clips its live webpage thumbnail to `14dp`; `QuickActionsSection` (`22dp` card) houses `20dp` toggle tiles and `24dp` action pills; and the `28dp` Start Page search capsule nests a `32dp` circular search icon badge.
 
 ### Named Rules
 
@@ -363,13 +363,13 @@ Swiftfox's UI components feel **tactile, pill-soft, and state-honest**: resting 
 
 - **Shape:** Full-width primary CTA `Button` uses `22dp` radius (`52dp` height, e.g., Settings default browser CTA); secondary `OutlinedButton` uses `20dp` radius (`48dp` height, e.g., Clear browsing data); `ExtendedFloatingActionButton` uses `24dp` radius (`56dp` height, `New tab` / `Private tab`).
 - **Primary:** Solid `primary` container (`#B04200` Day / `#FF9147` Dark & AMOLED) with high-contrast `onPrimary` text and icon (`#FFFFFF` Day / `#2B0F00` Dark & AMOLED); switches to `privateAccent` / `onPrivateAccent` (`#C1A6FF` / `#1F0947` Dark) in Private view.
-- **Tonal & Icon Buttons:** `FilledTonalIconButton` (`CircleShape`, `48dp`) sits in the Quick Controls header (`surfaceContainerHigh` resting, flipping to `primaryContainer` + `primary` icon when the active page is bookmarked); bare toolbar `IconButton` targets hold `48×48dp` with disabled states dimmed natively by Material 3.
+- **Tonal & Icon Buttons:** `FilledTonalIconButton` (`CircleShape`, `48dp`) sits in the Settings Quick Actions header (`surfaceContainerHigh` resting, flipping to `primaryContainer` + `primary` icon when the active page is bookmarked); bare toolbar `IconButton` targets hold `48×48dp` with disabled states dimmed natively by Material 3.
 
 ### Chips & Pills
 
 - **Space Pill Chip (`SpacePillChip`):** `22dp` radius, `48dp` minimum height, `16dp` horizontal / `12dp` vertical padding. Resting uses `surfaceContainerHigh` with `onSurface` label and `onSurfaceVariant` icon/count; selected switches to `primaryContainer` with a `1.5dp` solid `primary` border, `onPrimaryContainer` label, and `primary`-tinted icon, optional container-isolation lock icon (`14dp`), and tab count.
-- **Quick Action Pill (`QuickActionPill`):** `24dp` radius, `48dp` minimum height, `16dp` horizontal / `12dp` vertical padding on `surfaceContainerHigh`, pairing an `18dp` `primary`-tinted rounded icon with a `labelLarge` caption (`Find in page`, `Pin essential`, `Bar: Split`, `Bookmarks`, `History`, `Downloads`, `Settings`).
-- **Split-Bar Controls Pill:** Centered in `SplitBottomActionBar`, `24dp` radius, `48dp` minimum height, `16dp` horizontal / `10dp` vertical padding, filled in `primaryContainer` with a `1dp` `primary` (`45%` alpha) border, `18dp` `primary` shield icon, and `onPrimaryContainer` `Controls` label.
+- **Quick Action Pill (`QuickActionPill`):** `24dp` radius, `48dp` minimum height, `16dp` horizontal / `12dp` vertical padding on `surfaceContainerHigh`, pairing an `18dp` `primary`-tinted rounded icon with a `labelLarge` caption (`Zap element`, `Reader mode`, `Site rules`, `Find in page`, `Pin essential`, `Send to Zen`).
+- **Split-Bar New Tab Button:** Centered in `SplitBottomActionBar`, `CircleShape`, `48dp` target filled in `primaryContainer` (or `privateContainer` in Private Mode) with a `1dp` `primary` (`45%` alpha) border and `24dp` `+` icon (tap for New Tab, long-press for Private Tab).
 - **Filter & Selection Chips:** Settings `SelectionChip` uses Material 3 `FilterChip` (`18dp` radius, `48dp` min height, `primaryContainer` selected fill); `SpacesTabSwitcher` Private toggle uses `20dp` radius shifting to `privateContainer` / `onPrivateContainer` with `privateAccent` shield icon.
 
 ### Cards & Containers
@@ -386,16 +386,16 @@ Swiftfox's UI components feel **tactile, pill-soft, and state-honest**: resting 
 
 ### Navigation
 
-- **Posture-Adaptive Toolbars:** `FullOmniboxToolbar` and `SplitBottomActionBar` anchor on `surfaceContainerLow` (`2dp` tonal elevation) with `2.5dp` `primary` linear page-load progress bars and `outlineVariant` (`35%` alpha) edge hairlines. `ErgonomicSideRail` (`68dp` wide, unfolded `SIDE_RAIL` mode) stacks a `48dp` circular `primaryContainer` Search button, New Tab, Back/Forward/Reload, a `16dp`-rounded `primaryContainer` Quick Controls button, and the Tab Count badge.
+- **Posture-Adaptive Toolbars:** `FullOmniboxToolbar` and `SplitBottomActionBar` anchor on `surfaceContainerLow` (`2dp` tonal elevation) with `2.5dp` `primary` linear page-load progress bars and `outlineVariant` (`35%` alpha) edge hairlines. `ErgonomicSideRail` (`68dp` wide, unfolded `SIDE_RAIL` mode) stacks a `48dp` circular `primaryContainer` Search button, New Tab, Back/Forward/Reload, a `16dp`-rounded `primaryContainer` Settings & Quick Actions button, and the Tab Count badge.
 - **Tab Count Badge (`TabCountBadgeButton`):** `48×48dp` interactive button centering a `28×28dp` minimum `10dp`-rounded pill (`primaryContainer` + `1.5dp primary` border in normal mode; `privateContainer` + `1.5dp privateAccent` border in Private Mode) displaying bold `labelMedium` counts capped at `99+`.
-- **Unfolded Spaces Sidebar (`UnfoldedSpacesSidebar`):** `surfaceContainerLow` (`1dp` tonal elevation) collapsing between a `72dp` icon rail (`48dp` rounded space/tab buttons) and a `216dp`/`248dp` vertical workspace showing `SwiftfoxEmblem`, top 4 pinned Essentials, wrapping Space + Private pills, `52dp`-tall vertical tab rows (`16dp` radius, active tab highlighted in `primaryContainer` + `1dp primary` 55% border), and a full-width `20dp`-rounded `primary` New Tab button.
+- **Arc/Zen Spaces Sidebar (`ArcSpacesSidebar`):** `surfaceContainerLow` (`1dp` docked / `3dp` folded slide-over drawer) collapsing between a `72dp` icon rail (`48dp` rounded space/tab buttons) and a `232dp`/`264dp` (or `82%`, max `304dp` folded drawer) vertical workspace showing `SwiftfoxEmblem`, a 4-column Essentials grid, Zen pinned items, `52dp`-tall vertical tab rows (`16dp` radius, active tab highlighted in `primaryContainer` + `1dp primary` 55% border), a `20dp`-rounded `primary` New Tab button, and a bottom Space/Private switcher strip.
 
-### Quick Controls Bottom Sheet (Signature Component)
+### Quick Actions Section (Settings Top Card)
 
-The signature interactive surface is `QuickControlsSheet`: a Material 3 `ModalBottomSheet` (`28dp` top corners, `surfaceContainerLow`, `20dp` horizontal padding, `24dp` bottom clearance) opened in one tap from any toolbar posture.
-- **Context Header:** Displays page title (`titleLarge`) and `host · HTTPS/HTTP · Posture` metadata (`bodySmall`) beside three `48dp` circular `FilledTonalIconButton` actions (Bookmark toggle, Share clean link, Print/PDF).
+Active-page controls live at the top of `SettingsScreen` inside `QuickActionsSection` (`22dp` `surfaceContainer` card, `18dp` padding):
+- **Context Header & Action Row:** Displays page title (`titleSmall`) and `host · HTTPS/HTTP · Posture` metadata (`bodySmall`) above a `FlowRow` of `48dp` circular `FilledTonalIconButton` actions (Back, Forward, Bookmark toggle, Share clean link, Print/PDF).
 - **2×2 Tactile Toggle Grid (`QuickControlTile`):** Equal-height rows (`IntrinsicSize.Max`, `10dp` gap) of four `20dp`-rounded tiles (`82dp` min height, `14dp` padding) for **Desktop/Mobile site**, **Web dark** (Dark Reader AMOLED / Dark Reader on / Lite mode / Native dark kept / Site native), **Shield** (live blocked count, per-site pause, or global rule count), and **PiP / Play**. Inactive tiles sit on `surfaceContainerHigh` with a `1dp` `outlineVariant` (`35%` alpha) border and a `40dp` circular `surfaceContainerHighest` icon badge; active tiles flip to `primaryContainer`, a `1.5dp` `primary` (`55%` alpha) border, `onPrimaryContainer` text, and a `40dp` circular `primary` (`16%` alpha) icon badge with `primary` icon tint.
-- **Action Pill Wrap:** Below a `60%` alpha `outlineVariant` divider, a `FlowRow` (`10dp` gaps) wraps `QuickActionPill` controls: webpage actions (`Zap element`, `Reader mode`, `Site rules`, `Find in page`, `Pin essential`, conditional `Send to Zen`) plus workspace/tool shortcuts (live toolbar placement cycler, `Synced tabs`, `Sync`, `Filter lists`, `Userscripts`, `Bookmarks`, `History`, `Downloads`, `Settings`).
+- **Page Action Pills:** Below a `45%` alpha `outlineVariant` divider, a `FlowRow` (`10dp` gaps) wraps `QuickActionPill` controls for webpage actions (`Zap element`, `Reader mode`, `Site rules`, `Find in page`, `Pin essential`, conditional `Send to Zen`), followed immediately in `SettingsScreen` by the Library (`Bookmarks`, `History`, `Downloads`) and Sync sections.
 
 ### Power Tools & Sync Overlays (M2 / M3)
 

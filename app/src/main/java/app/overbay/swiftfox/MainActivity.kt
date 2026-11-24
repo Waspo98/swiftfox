@@ -10,6 +10,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
+import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -24,6 +25,7 @@ import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.widget.FrameLayout
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -158,7 +160,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT)
+        )
         window.isNavigationBarContrastEnforced = false
 
         (application as SwiftfoxApp).tabSessionPool.rebindActivityContext(this)
@@ -173,8 +178,10 @@ class MainActivity : ComponentActivity() {
         setContent {
             val state by viewModel.uiState.collectAsStateWithLifecycle()
 
-            LaunchedEffect(state.settings.themeMode) {
-                applyApplicationNightMode(state.settings.themeMode)
+            LaunchedEffect(state.hasLoadedSettings, state.settings.themeMode) {
+                if (state.hasLoadedSettings) {
+                    applyApplicationNightMode(state.settings.themeMode)
+                }
             }
 
             SwiftfoxTheme(
@@ -222,6 +229,9 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
+        // Rebase Activity theme before super dispatches onConfigurationChanged to attached
+        // WebViews so Chromium reads the updated values/values-night android:isLightTheme immediately.
+        runCatching { theme.rebase() }
         super.onConfigurationChanged(newConfig)
         viewModel.updateSystemDarkTheme(isNightConfiguration(newConfig))
         configChangeTicks.value = configChangeTicks.value + 1

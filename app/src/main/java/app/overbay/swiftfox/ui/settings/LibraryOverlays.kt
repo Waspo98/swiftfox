@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -145,7 +146,7 @@ fun BookmarksOverlay(
                         textAlign = TextAlign.Center
                     )
                     Text(
-                        text = "Bookmark any page from Quick Controls, sync with Firefox/Zen, or import a Chrome bookmarks.html file.",
+                        text = "Bookmark any page from Settings → Quick Actions, sync with Firefox/Zen, or import a Chrome bookmarks.html file.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center
@@ -166,6 +167,7 @@ fun BookmarksOverlay(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(top = innerPadding.calculateTopPadding())
+                    .consumeWindowInsets(innerPadding)
                     .imePadding()
             ) {
                 OutlinedTextField(
@@ -194,7 +196,7 @@ fun BookmarksOverlay(
                         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        item(key = "folder_all") {
+                        item(key = "folder_all", contentType = "folder_chip") {
                             FilterChip(
                                 selected = selectedFolder == null,
                                 onClick = { selectedFolder = null },
@@ -207,11 +209,16 @@ fun BookmarksOverlay(
                                 modifier = Modifier.heightIn(min = 48.dp)
                             )
                         }
-                        items(items = folders, key = { it }) { folderName ->
+                        items(
+                            items = folders,
+                            key = { "folder_item_${it.lowercase(Locale.ROOT)}" },
+                            contentType = { "folder_chip" }
+                        ) { folderName ->
+                            val isSelected = selectedFolder.equals(folderName, ignoreCase = true)
                             FilterChip(
-                                selected = selectedFolder == folderName,
+                                selected = isSelected,
                                 onClick = {
-                                    selectedFolder = if (selectedFolder == folderName) null else folderName
+                                    selectedFolder = if (isSelected) null else folderName
                                 },
                                 label = { Text(folderName, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                                 shape = RoundedCornerShape(18.dp),

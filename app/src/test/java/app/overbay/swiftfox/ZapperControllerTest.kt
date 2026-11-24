@@ -138,6 +138,23 @@ class ZapperControllerTest {
         assertEquals(2, parsed.scopeDepth)
         assertEquals(5, parsed.maxScopeDepth)
         assertEquals(3, parsed.matchCount)
+        assertFalse(parsed.isPreviewing)
+
+        val previewingJson = """
+            {
+              "selector": "#paywall > div.overlay",
+              "summary": "div.overlay",
+              "scopeDepth": 3,
+              "maxScopeDepth": 5,
+              "matchCount": 1,
+              "viewportCenterY": 0.42,
+              "isPreviewing": true
+            }
+        """.trimIndent()
+        val parsedPreview = controller.parseSelectionEvent(previewingJson)
+        assertNotNull(parsedPreview)
+        assertTrue(parsedPreview!!.isPreviewing)
+        assertEquals(3, parsedPreview.scopeDepth)
     }
 
     @Test
@@ -203,6 +220,9 @@ class ZapperControllerTest {
         assertTrue(controller.buildSetScopeScript(3).contains("setScopeDepth(3)"))
         assertTrue(controller.buildSetScopeScript(-2).contains("setScopeDepth(0)"))
         assertTrue(controller.buildAdjustScopeScript(-1).contains("adjustScope(-1)"))
+        assertTrue(controller.buildSetPreviewScript(true, runtimeKey = "zk1").contains("""window["zk1"]"""))
+        assertTrue(controller.buildSetPreviewScript(true).contains("setPreview(true)"))
+        assertTrue(controller.buildSetPreviewScript(false).contains("setPreview(false)"))
 
         // Over-broad bare structural selectors and CSS comment tokens must be rejected
         assertNull(controller.sanitizeSelector("div"))
@@ -247,6 +267,8 @@ class ZapperControllerTest {
             controller.buildStopScript(),
             controller.buildSetScopeScript(2),
             controller.buildAdjustScopeScript(1),
+            controller.buildSetPreviewScript(true),
+            controller.buildSetPreviewScript(false),
             controller.buildZapOnceScript(),
             controller.buildUndoLastZapScript(),
             controller.buildConfirmBlockPermanentScript()

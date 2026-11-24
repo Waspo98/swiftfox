@@ -129,6 +129,8 @@ class BrowserSession(
     )
     private val defaultMobileUserAgent: String
     private val documentStartHandlers = mutableListOf<ScriptHandler>()
+    private var prepaintDarkHandler: ScriptHandler? = null
+    private var lastPrepaintDarkScript: String? = null
     private val pendingBlobDownloads = ConcurrentHashMap<String, PendingBlobDownload>()
 
     @Volatile
@@ -249,6 +251,9 @@ class BrowserSession(
 
         webView.setDownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
             if (isDestroyed) return@setDownloadListener
+            // A main-frame download response never commits onPageStarted; revert pending URL
+            // so adblock subresource matching stays anchored to the currently displayed page.
+            webViewClient.resetPendingMainFrameUrl()
             if (url.startsWith("blob:", ignoreCase = true)) {
                 triggerBlobDownload(url, URLUtil.guessFileName(url, contentDisposition, mimeType), mimeType)
             } else if (url.startsWith("data:", ignoreCase = true)) {
@@ -525,8 +530,8 @@ class BrowserSession(
         blockThirdParty: Boolean,
         reloadIfChanged: Boolean,
         applyProfileCookiePolicy: Boolean = true
-    ) {
-        if (isDestroyed) return
+    ): Boolean {
+        if (isDestroyed) return false
         val normalizedCustomUa = customUserAgent?.trim()?.takeIf { it.isNotEmpty() }
         val modeChanged = currentSiteMode != mode
         val effectiveModeChanged = modeChanged && normalizedCustomUa == null
@@ -565,8 +570,10 @@ class BrowserSession(
                 current.startsWith("https://", ignoreCase = true)
             ) {
                 webView.reload()
+                return true
             }
         }
+        return false
     }
 
     fun applyWebDarkening(enabled: Boolean) {
@@ -615,17 +622,21 @@ class BrowserSession(
             val currentUrl = webView.url.orEmpty()
             val originAtCall = ScriptInjector.extractOrigin(currentUrl)
             if (originAtCall != null) {
-                val keyLit = JSONObject.quote(curTokens.darkReaderKey)
-                // Probe if DarkReader runtime is already attached so slider/settings updates send ~150B instead of ~112KB
-                evaluateJavascript("Object.prototype.hasOwnProperty.call(window, $keyLit)") { loaded ->
+                // Attempt single-shot fast apply; only inject full ~112KB runtime if missing on this window.
+                val fastScript = darkReaderInjector.buildFastApplyScript(state, curTokens.darkReaderKey)
+                evaluateJavascript(fastScript) { result ->
                     if (isDestroyed) return@evaluateJavascript
+                    if (result?.trim() == "\"ok\"") return@evaluateJavascript
                     if (ScriptInjector.extractOrigin(webView.url.orEmpty()) != originAtCall) return@evaluateJavascript
-                    val script = if (loaded?.trim().equals("true", ignoreCase = true)) {
-                        darkReaderInjector.buildFastApplyScript(state, curTokens.darkReaderKey)
-                    } else {
-                        darkReaderInjector.buildApplyScript(state, curTokens.darkReaderToken, curTokens.darkReaderKey)
+                    val fullScript = darkReaderInjector.buildApplyScript(
+                        state,
+                        curTokens.darkReaderToken,
+                        curTokens.darkReaderKey
+                    )
+                    val guarded = ScriptInjector.wrapOriginGuardedScript(originAtCall, fullScript)
+                    if (guarded.isNotEmpty()) {
+                        evaluateJavascript(guarded)
                     }
-                    evaluateJavascript(script)
                 }
             }
         } else if (state.useAlgorithmicLite) {
@@ -646,13 +657,29 @@ class BrowserSession(
         documentStartHandlers.clear()
     }
 
+    fun updateGlobalPrepaintDarkScript(script: String) {
+        if (isDestroyed) return
+        if (lastPrepaintDarkScript == script) return
+        lastPrepaintDarkScript = script
+        prepaintDarkHandler = ScriptInjector.registerGlobalPrepaintDarkScript(
+            webView = webView,
+            previousHandler = prepaintDarkHandler,
+            script = script
+        )
+    }
+
+    fun clearGlobalPrepaintDarkScript() {
+        lastPrepaintDarkScript = null
+        runCatching { prepaintDarkHandler?.remove() }
+        prepaintDarkHandler = null
+    }
+
     fun updateDocumentStartScripts(
         origin: String,
         cosmeticCss: String,
         zappedCss: String,
         gmShimInitJs: String,
-        documentStartUserscriptSnippets: List<String>,
-        prepaintDarkCss: String = ""
+        documentStartUserscriptSnippets: List<String>
     ) {
         if (isDestroyed) return
         val newHandlers = ScriptInjector.registerDocumentStartScripts(
@@ -662,8 +689,7 @@ class BrowserSession(
             cosmeticCss = cosmeticCss,
             zappedCss = zappedCss,
             gmShimInitJs = gmShimInitJs,
-            documentStartUserscriptSnippets = documentStartUserscriptSnippets,
-            prepaintDarkCss = prepaintDarkCss
+            documentStartUserscriptSnippets = documentStartUserscriptSnippets
         )
         documentStartHandlers.clear()
         documentStartHandlers.addAll(newHandlers)
@@ -717,6 +743,10 @@ class BrowserSession(
 
     fun setMediaPaused(pause: Boolean) {
         if (isDestroyed) return
+        if (!pause) {
+            // Wake background-paused WebViews so Chromium executes e.play() and media timers run
+            resumeIfActive()
+        }
         val js = if (pause) {
             "document.querySelectorAll('audio,video').forEach(function(e){ try { e.pause(); } catch(err){} });"
         } else {
@@ -754,7 +784,9 @@ class BrowserSession(
         if (isDestroyed) return
         isDestroyed = true
         webView.isMediaCurrentlyPlaying = false
+        webView.onScrollMetricsChanged = null
         clearDocumentStartScripts()
+        clearGlobalPrepaintDarkScript()
         pendingBlobDownloads.clear()
         // Detach all clients, listeners, and bridges BEFORE loadUrl("about:blank")
         // so teardown/hibernation never fires stale callbacks into BrowserViewModel.

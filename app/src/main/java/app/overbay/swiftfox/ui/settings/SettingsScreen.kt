@@ -97,6 +97,10 @@ import kotlin.math.roundToInt
 fun SettingsScreen(
     state: BrowserUiState,
     viewModel: BrowserViewModel,
+    primaryAccentHex: String,
+    onShareCleanUrl: () -> Unit,
+    onPrintPage: () -> Unit,
+    onEnterPip: () -> Unit,
     onBack: () -> Unit,
     onOpenDefaultBrowserSettings: () -> Unit
 ) {
@@ -147,6 +151,66 @@ fun SettingsScreen(
             ),
             verticalArrangement = Arrangement.spacedBy(20.dp)
         ) {
+            // Quick Actions for the active tab/page
+            item(key = "quick_actions", contentType = "settings_section") {
+                QuickActionsSection(
+                    state = state,
+                    onGoBack = {
+                        viewModel.setOverlay(BrowserOverlay.NONE)
+                        viewModel.goBack()
+                    },
+                    onGoForward = {
+                        viewModel.setOverlay(BrowserOverlay.NONE)
+                        viewModel.goForward()
+                    },
+                    onToggleBookmark = { viewModel.toggleBookmarkForActiveTab() },
+                    onShareCleanUrl = {
+                        viewModel.setOverlay(BrowserOverlay.NONE)
+                        onShareCleanUrl()
+                    },
+                    onPrintPage = {
+                        viewModel.setOverlay(BrowserOverlay.NONE)
+                        onPrintPage()
+                    },
+                    onToggleSiteMode = { viewModel.toggleActiveTabSiteMode() },
+                    onToggleWebDarkMode = { viewModel.toggleActiveSiteWebDarkMode() },
+                    onToggleShieldAdblock = { viewModel.toggleActiveSiteAdblock() },
+                    onEnterPip = {
+                        viewModel.setOverlay(BrowserOverlay.NONE)
+                        onEnterPip()
+                    },
+                    onLaunchZapper = { viewModel.startElementZapper(primaryAccentHex) },
+                    onOpenReaderMode = { viewModel.openReaderMode() },
+                    onOpenSiteRules = { viewModel.toggleSiteRulesSheet(true) },
+                    onFindInPage = { viewModel.openFindInPage() },
+                    onPinEssential = { viewModel.pinCurrentTabToEssentials() },
+                    onSendToZenSpace = { viewModel.sendActiveTabToZenSpace() }
+                )
+            }
+
+            // Library (Bookmarks, History, Downloads)
+            item(key = "library", contentType = "settings_section") {
+                SettingsSection(title = "Library") {
+                    SettingsNavigationRow(
+                        title = "Bookmarks",
+                        subtitle = "${state.bookmarks.size} saved · Import or export Chrome HTML",
+                        onClick = { viewModel.setOverlay(BrowserOverlay.BOOKMARKS) }
+                    )
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+                    SettingsNavigationRow(
+                        title = "History",
+                        subtitle = "${state.history.size} visited pages",
+                        onClick = { viewModel.setOverlay(BrowserOverlay.HISTORY) }
+                    )
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+                    SettingsNavigationRow(
+                        title = "Downloads",
+                        subtitle = "${state.downloads.size} downloads",
+                        onClick = { viewModel.setOverlay(BrowserOverlay.DOWNLOADS) }
+                    )
+                }
+            }
+
             // Account, Sync & Interop
             item(key = "account_sync", contentType = "settings_section") {
             SettingsSection(title = "Account & Sync") {
@@ -170,12 +234,6 @@ fun SettingsScreen(
                     title = "Synced Open Tabs",
                     subtitle = "${remoteTabGroups.size} devices · ${state.syncedRemoteTabs.size} open tabs",
                     onClick = { viewModel.setOverlay(BrowserOverlay.SYNCED_TABS) }
-                )
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
-                SettingsNavigationRow(
-                    title = "Import / Export Chrome bookmarks",
-                    subtitle = "Import Netscape bookmarks.html (${state.bookmarks.size} saved)",
-                    onClick = { viewModel.setOverlay(BrowserOverlay.BOOKMARKS) }
                 )
             }
             }
@@ -474,6 +532,15 @@ fun SettingsScreen(
                     subtitle = "Show collapsible Zen-style vertical Spaces rail on large displays",
                     checked = settings.unfoldedProfile.showSpacesSidebar,
                     onCheckedChange = { viewModel.setUnfoldedSpacesSidebar(it) }
+                )
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
+
+                SettingsSwitchRow(
+                    title = "Hide toolbars on scroll",
+                    subtitle = "Auto-hide top and bottom bars when scrolling down a webpage",
+                    checked = settings.hideToolbarsOnScroll,
+                    onCheckedChange = { viewModel.setHideToolbarsOnScroll(it) }
                 )
             }
             }

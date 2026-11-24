@@ -118,10 +118,20 @@ class DownloadPayloadDecoderTest {
         val dotOnly = DownloadCoordinator.sanitizeFileName("...")
         assertTrue(dotOnly.startsWith("swiftfox_download_"))
 
-        // Header sanitization removes CRLF and non-ASCII characters
+        // Header sanitization removes CRLF and non-ASCII characters (including UTF-8 cookies)
         assertEquals(
             "Swiftfox/1.0 (Android)",
             DownloadCoordinator.sanitizeHeaderValue("  Swiftfox/1.0\r\n (Android)🦊  ")
         )
+        assertEquals(
+            "sid=abc; city=Mnchen",
+            DownloadCoordinator.sanitizeHeaderValue("sid=abc; city=München")
+        )
+
+        // MIME normalization strips charset/boundary parameters
+        assertEquals("text/plain", DownloadCoordinator.normalizeMimeType("text/plain; charset=utf-8"))
+        assertEquals("application/json", DownloadCoordinator.normalizeMimeType(" application/json ; charset=UTF-8 "))
+        assertEquals("application/octet-stream", DownloadCoordinator.normalizeMimeType(" ; charset=utf-8"))
+        assertEquals("application/octet-stream", DownloadCoordinator.normalizeMimeType(null))
     }
 }

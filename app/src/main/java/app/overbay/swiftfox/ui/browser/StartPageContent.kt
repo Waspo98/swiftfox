@@ -9,14 +9,16 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsBottomHeight
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -59,6 +61,7 @@ import app.overbay.swiftfox.ui.theme.SwiftfoxBrand
 import app.overbay.swiftfox.ui.theme.SwiftfoxBrandLockup
 import app.overbay.swiftfox.ui.theme.SwiftfoxEmblem
 import app.overbay.swiftfox.ui.theme.SwiftfoxEmblemVariant
+import app.overbay.swiftfox.ui.theme.firstDisplaySymbol
 import app.overbay.swiftfox.ui.theme.spaceIconFor
 
 @Composable
@@ -70,6 +73,7 @@ fun StartPageContent(
     onSelectTab: (String) -> Unit,
     onAddEssential: (String, String) -> Unit,
     onRemoveEssential: (String) -> Unit,
+    addBottomNavInset: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     var showAddEssentialDialog by remember { mutableStateOf(false) }
@@ -404,6 +408,9 @@ fun StartPageContent(
                     }
                 }
             }
+            if (addBottomNavInset) {
+                Spacer(modifier = Modifier.windowInsetsBottomHeight(WindowInsets.navigationBars))
+            }
         }
     }
 
@@ -475,7 +482,7 @@ private fun EssentialTile(
         ) {
             Box(contentAlignment = Alignment.Center) {
                 Text(
-                    text = essential.title.take(1).uppercase(),
+                    text = firstDisplaySymbol(essential.title),
                     style = MaterialTheme.typography.titleLarge,
                     color = MaterialTheme.colorScheme.primary
                 )

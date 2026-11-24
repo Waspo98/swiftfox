@@ -88,52 +88,60 @@ object UserscriptUrlMatcher {
                 }
                 else -> escapeJsRegexLiteral(strict.host)
             }
-            val portExpr = when {
-                strict.port == null -> """(?::\d+)?"""
-                strict.port == "*" -> """(?::\d+)?"""
+            val pathExpr = globToJsRegexBody(collapseRepeatedStars(strict.pathPattern), starReplacement = ".*")
+            val originExpr = when {
+                strict.scheme == "*" && strict.port == "80" ->
+                    "(?:http://$hostExpr(?::80)?|https://$hostExpr:80)"
+                strict.scheme == "*" && strict.port == "443" ->
+                    "(?:https://$hostExpr(?::443)?|http://$hostExpr:443)"
                 else -> {
-                    val escapedPort = escapeJsRegexLiteral(strict.port)
-                    val isDefaultPort = (strict.scheme == "http" && strict.port == "80") ||
-                        (strict.scheme == "https" && strict.port == "443") ||
-                        (strict.scheme == "*" && (strict.port == "80" || strict.port == "443"))
-                    if (isDefaultPort) """(?::$escapedPort)?""" else ":$escapedPort"
+                    val portExpr = when {
+                        strict.port == null -> """(?::\d+)?"""
+                        strict.port == "*" -> """(?::\d+)?"""
+                        else -> {
+                            val escapedPort = escapeJsRegexLiteral(strict.port)
+                            val isDefaultPort = (strict.scheme == "http" && strict.port == "80") ||
+                                (strict.scheme == "https" && strict.port == "443")
+                            if (isDefaultPort) """(?::$escapedPort)?""" else ":$escapedPort"
+                        }
+                    }
+                    "$schemeExpr://$hostExpr$portExpr"
                 }
             }
-            val pathExpr = globToJsRegexBody(collapseRepeatedStars(strict.pathPattern), starReplacement = ".*")
             return JsUrlCheck(
-                regexBody = "^$schemeExpr://$hostExpr$portExpr$pathExpr$",
-                flags = "i"
+                regexBody = "^$originExpr$pathExpr$",
+                flags = ""
             )
         }
 
         val schemeSep = trimmed.indexOf("://")
         if (schemeSep > 0) {
-            val patScheme = trimmed.substring(0, schemeSep)
+            val patScheme = trimmed.substring(0, schemeSep).lowercase(java.util.Locale.ROOT)
             val patRest = trimmed.substring(schemeSep + 3)
             val slashIdx = patRest.indexOf('/')
             val schemeRegex = globToJsRegexBody(collapseRepeatedStars(patScheme), starReplacement = "[^:/]*")
             return if (slashIdx >= 0) {
-                val patAuthority = patRest.substring(0, slashIdx)
+                val patAuthority = patRest.substring(0, slashIdx).lowercase(java.util.Locale.ROOT)
                 val patPath = patRest.substring(slashIdx)
                 val authRegex = globToJsRegexBody(collapseRepeatedStars(patAuthority), starReplacement = "[^/]*")
                 val pathRegex = globToJsRegexBody(collapseRepeatedStars(patPath), starReplacement = ".*")
-                JsUrlCheck(regexBody = "^$schemeRegex://$authRegex$pathRegex$", flags = "i")
+                JsUrlCheck(regexBody = "^$schemeRegex://$authRegex$pathRegex$", flags = "")
             } else if (patRest == "*") {
-                JsUrlCheck(regexBody = "^$schemeRegex://.*$", flags = "i")
+                JsUrlCheck(regexBody = "^$schemeRegex://.*$", flags = "")
             } else if (patRest.endsWith("*")) {
-                val prefix = patRest.removeSuffix("*")
+                val prefix = patRest.removeSuffix("*").lowercase(java.util.Locale.ROOT)
                 val prefixRegex = globToJsRegexBody(collapseRepeatedStars(prefix), starReplacement = "[^/]*")
                 JsUrlCheck(regexBody = "^$schemeRegex://$prefixRegex.*$", flags = "i")
             } else {
-                val body = globToJsRegexBody(collapseRepeatedStars(patRest), starReplacement = "[^/]*")
-                JsUrlCheck(regexBody = "^$schemeRegex://$body/?$", flags = "i")
+                val body = globToJsRegexBody(collapseRepeatedStars(patRest.lowercase(java.util.Locale.ROOT)), starReplacement = "[^/]*")
+                JsUrlCheck(regexBody = "^$schemeRegex://$body/?$", flags = "")
             }
         }
 
         val collapsed = collapseRepeatedStars(trimmed)
         return JsUrlCheck(
             regexBody = "^${globToJsRegexBody(collapsed, starReplacement = ".*")}$",
-            flags = "i"
+            flags = ""
         )
     }
 

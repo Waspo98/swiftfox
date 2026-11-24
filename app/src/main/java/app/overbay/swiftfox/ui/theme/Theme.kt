@@ -379,3 +379,16 @@ internal fun rememberReduceMotion(): Boolean {
         }.getOrDefault(false)
     }
 }
+
+/**
+ * Extracts the first Unicode code point (avoiding broken UTF-16 surrogate halves on emoji titles)
+ * and uppercases ASCII/letter monograms safely.
+ */
+internal fun firstDisplaySymbol(text: String, fallback: String = ""): String {
+    val trimmed = text.trim()
+    if (trimmed.isEmpty()) return fallback
+    val cp = trimmed.codePointAt(0)
+    val charCount = Character.charCount(cp)
+    val symbol = trimmed.substring(0, charCount)
+    return if (charCount == 1) symbol.uppercase(java.util.Locale.ROOT) else symbol
+}

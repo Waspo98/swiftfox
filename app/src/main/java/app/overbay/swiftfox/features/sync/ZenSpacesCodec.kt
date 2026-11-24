@@ -35,7 +35,6 @@ object ZenSpacesCodec {
         val tabId: String,
         val url: String,
         val title: String,
-        val icon: String?,
         val containerGuid: String?,
         val essential: Boolean,
         val workspaceUuid: String?,
@@ -48,18 +47,12 @@ object ZenSpacesCodec {
     data class ZenFolderRecord(
         val folderId: String,
         val name: String,
-        val icon: String?,
-        val workspaceUuid: String?,
-        val parentFolderId: String?,
         val children: List<String>
     )
 
     data class ZenSplitRecord(
         val splitId: String,
-        val gridType: String?,
         val tabs: List<String>,
-        val workspaceUuid: String?,
-        val folderId: String?,
         val pinned: Boolean?
     )
 
@@ -83,20 +76,17 @@ object ZenSpacesCodec {
 
     data class ZenPinnedTabEntry(
         val tabId: String,
-        val workspaceUuid: String,
         val title: String,
         val url: String,
         val folderName: String?,
-        val isPinned: Boolean,
-        val sortOrder: Int
+        val isPinned: Boolean
     )
 
     data class ZenEssentialEntry(
         val tabId: String,
         val title: String,
         val url: String,
-        val containerGuid: String,
-        val sortOrder: Int
+        val containerGuid: String
     )
 
     data class ZenSyncSnapshot(
@@ -218,8 +208,7 @@ object ZenSpacesCodec {
                 tabId = tab.tabId,
                 title = (tab.staticLabel ?: tab.title).ifBlank { extractHostFallback(tab.url) },
                 url = tab.url,
-                containerGuid = bucket,
-                sortOrder = list.size
+                containerGuid = bucket
             )
         }
 
@@ -251,12 +240,10 @@ object ZenSpacesCodec {
             val list = pinnedBySpace.getOrPut(workspaceUuid) { mutableListOf() }
             list += ZenPinnedTabEntry(
                 tabId = tab.tabId,
-                workspaceUuid = workspaceUuid,
                 title = (tab.staticLabel ?: tab.title).ifBlank { extractHostFallback(tab.url) },
                 url = tab.url,
                 folderName = folderName,
-                isPinned = tab.pinned != false,
-                sortOrder = list.size
+                isPinned = tab.pinned != false
             )
         }
 
@@ -410,7 +397,6 @@ object ZenSpacesCodec {
             tabId = tabId,
             url = url,
             title = stringOrNull(data["title"]).orEmpty(),
-            icon = stringOrNull(data["icon"]),
             containerGuid = stringOrNull(data["containerGuid"]),
             essential = parseFlag(data["essential"]) == true,
             workspaceUuid = stringOrNull(data["workspaceUuid"]),
@@ -426,9 +412,6 @@ object ZenSpacesCodec {
         return ZenFolderRecord(
             folderId = folderId,
             name = stringOrNull(data["name"]).orEmpty(),
-            icon = stringOrNull(data["icon"]),
-            workspaceUuid = stringOrNull(data["workspaceUuid"]),
-            parentFolderId = stringOrNull(data["parentFolderId"]),
             children = stringList(data["children"])
         )
     }
@@ -437,10 +420,7 @@ object ZenSpacesCodec {
         val splitId = stringOrNull(data["splitId"])?.takeIf { it.isNotEmpty() } ?: return null
         return ZenSplitRecord(
             splitId = splitId,
-            gridType = stringOrNull(data["gridType"]),
             tabs = stringList(data["tabs"]),
-            workspaceUuid = stringOrNull(data["workspaceUuid"]),
-            folderId = stringOrNull(data["folderId"]),
             pinned = parseFlag(data["pinned"])
         )
     }

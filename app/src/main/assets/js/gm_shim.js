@@ -74,7 +74,7 @@
     let payload = {};
     if (typeof payloadJson === 'string') {
       try {
-        payload = JSON.parse(payloadJson) || {};
+        payload = nativeJsonParse(payloadJson) || {};
       } catch (_e) {
         payload = {};
       }
@@ -95,7 +95,7 @@
     let parsedResponse = text;
     if (entry.responseType === 'json') {
       try {
-        parsedResponse = text ? JSON.parse(text) : null;
+        parsedResponse = text ? nativeJsonParse(text) : null;
       } catch (_e) {
         parsedResponse = null;
       }
@@ -241,7 +241,7 @@
     }
 
     function implListValues() {
-      return Object.keys(storage);
+      return nativeObjectKeys(storage);
     }
 
     function implXmlHttpRequest(details) {
@@ -269,14 +269,14 @@
       const sent = postGm('xhr', {
         scriptId: id,
         reqId: reqId,
-        requestJson: JSON.stringify(payload)
+        requestJson: nativeJsonStringify(payload)
       });
       if (!sent) {
         setTimeout(function () {
           resolveXhrInternal(
             reqId,
             'onerror',
-            JSON.stringify({
+            nativeJsonStringify({
               status: 0,
               statusText: 'SwiftfoxNativeChannel unavailable',
               responseText: '',
@@ -361,7 +361,7 @@
         const opts = details && typeof details === 'object' ? details : {};
         let handle = null;
         const promise = new Promise(function (resolve, reject) {
-          const wrapped = Object.assign({}, opts, {
+          const wrapped = nativeObjectAssign({}, opts, {
             onload: function (res) {
               try {
                 if (typeof opts.onload === 'function') {

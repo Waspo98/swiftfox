@@ -99,13 +99,13 @@ Swiftfox/
 │   │   │   │   │   ├── db/                       # Room v3 entities, DAOs, MIGRATION_1_2, MIGRATION_2_3
 │   │   │   │   │   └── prefs/                    # DataStore preferences & posture profiles
 │   │   │   │   └── ui/
-│   │   │   │       ├── browser/                  # BrowserScreen, BrowserViewModel, OmniboxOverlay, StartPage
+│   │   │   │       ├── browser/                  # BrowserScreen, BrowserChromeViewport, BrowserViewModel, OmniboxOverlay, StartPage, ScrollCollapse & TabStripTransition
 │   │   │   │       ├── previews/                 # Compose previews
 │   │   │   │       ├── reader/                   # ReaderModeOverlay (native typography & surface sheet)
-│   │   │   │       ├── settings/                 # SettingsScreen, FilterListsOverlay, UserscriptsOverlay, Library
-│   │   │   │       ├── sheets/                   # QuickControlsSheet, SiteRulesSheet
+│   │   │   │       ├── settings/                 # SettingsScreen, QuickActionsSection, FilterListsOverlay, UserscriptsOverlay, Library
+│   │   │   │       ├── sheets/                   # SiteRulesSheet
 │   │   │   │       ├── sync/                     # SyncOverlay, QrPairingOverlay, SyncedTabsOverlay, FxAAuthWebView
-│   │   │   │       ├── tabs/                     # SpacesTabSwitcher + unfolded vertical sidebar
+│   │   │   │       ├── tabs/                     # SpacesTabSwitcher + ArcSpacesSidebar (folded drawer & unfolded rail)
 │   │   │   │       ├── theme/                    # Material 3 Day/Dark/AMOLED + 4 accents + BrandMark
 │   │   │   │       └── zapper/                   # ZapperHudOverlay + ZappedRulesOverlay
 │   │   │   ├── assets/

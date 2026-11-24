@@ -314,9 +314,13 @@ fun SiteRulesSheet(
                         )
                         OutlinedButton(
                             onClick = {
-                                onSetCustomUserAgent(trimmedCustomUa.takeIf { it.isNotEmpty() })
+                                val nextUa = trimmedCustomUa.takeIf { it.isNotEmpty() }
+                                if (nextUa == null) {
+                                    selectedUaPreset = UserAgentPreset.DEFAULT
+                                }
+                                onSetCustomUserAgent(nextUa)
                             },
-                            enabled = customUaValid,
+                            enabled = customUaValid && (trimmedCustomUa.isNotEmpty() || savedUa != null),
                             shape = RoundedCornerShape(20.dp),
                             modifier = Modifier
                                 .padding(top = 6.dp)

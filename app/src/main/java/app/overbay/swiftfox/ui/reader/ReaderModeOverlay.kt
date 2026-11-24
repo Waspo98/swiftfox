@@ -355,6 +355,7 @@ fun ReaderModeOverlay(
         ReaderSurfaceMode.DARK, ReaderSurfaceMode.AMOLED -> false
         ReaderSurfaceMode.FOLLOW_APP -> targetPalette.background.luminance() > 0.5f
     }
+    val appBarsLight by rememberUpdatedState(MaterialTheme.colorScheme.background.luminance() > 0.5f)
     val view = LocalView.current
     if (!view.isInEditMode) {
         val window = (view.context as? android.app.Activity)?.window
@@ -362,13 +363,10 @@ fun ReaderModeOverlay(
             val controller = remember(window, view) {
                 WindowCompat.getInsetsController(window, view)
             }
-            val prevBars = remember(controller) {
-                controller.isAppearanceLightStatusBars to controller.isAppearanceLightNavigationBars
-            }
             DisposableEffect(controller) {
                 onDispose {
-                    controller.isAppearanceLightStatusBars = prevBars.first
-                    controller.isAppearanceLightNavigationBars = prevBars.second
+                    controller.isAppearanceLightStatusBars = appBarsLight
+                    controller.isAppearanceLightNavigationBars = appBarsLight
                 }
             }
             androidx.compose.runtime.SideEffect {
@@ -402,8 +400,17 @@ fun ReaderModeOverlay(
     val lineHeightMultiplier = settings.readerLineHeight.coerceIn(1.3f, 2.0f)
     val currentOnOpenLink by rememberUpdatedState(onOpenLink)
     val stableOpenLink = remember { { linkUrl: String -> currentOnOpenLink(linkUrl) } }
+    val currentIsHostHttpsBypassed by rememberUpdatedState(isHostHttpsBypassed)
+    val stableIsHostHttpsBypassed = remember { { host: String -> currentIsHostHttpsBypassed(host) } }
     val privateSessionCache = remember(article.url, isPrivate) {
         if (isPrivate) LruCache<String, ImageBitmap>(12) else null
+    }
+    val imageEnv = remember(adblockEngine, privateSessionCache, stableIsHostHttpsBypassed) {
+        ReaderImageEnv(
+            adblockEngine = adblockEngine,
+            isHostHttpsBypassed = stableIsHostHttpsBypassed,
+            privateImageCache = privateSessionCache
+        )
     }
     val listState = rememberLazyListState()
     LaunchedEffect(article.url) {
@@ -518,9 +525,7 @@ fun ReaderModeOverlay(
                         httpsOnlyMode = settings.httpsOnlyMode,
                         adblockEnabled = settings.adblockEnabled,
                         siteAdblockDisabled = siteAdblockDisabled,
-                        adblockEngine = adblockEngine,
-                        isHostHttpsBypassed = isHostHttpsBypassed,
-                        privateImageCache = privateSessionCache
+                        imageEnv = imageEnv
                     )
                 }
 
@@ -600,6 +605,13 @@ private fun ReaderArticleHeader(
     }
 }
 
+@Immutable
+private class ReaderImageEnv(
+    val adblockEngine: AdblockEngine?,
+    val isHostHttpsBypassed: (String) -> Boolean,
+    val privateImageCache: LruCache<String, ImageBitmap>?
+)
+
 @Composable
 private fun ReaderBlockItem(
     block: ReaderBlock,
@@ -613,9 +625,7 @@ private fun ReaderBlockItem(
     httpsOnlyMode: Boolean,
     adblockEnabled: Boolean,
     siteAdblockDisabled: Boolean,
-    adblockEngine: AdblockEngine?,
-    isHostHttpsBypassed: (String) -> Boolean,
-    privateImageCache: LruCache<String, ImageBitmap>?
+    imageEnv: ReaderImageEnv
 ) {
     val bodyLineHeightSp = (fontSizeSp * lineHeightMultiplier).sp
 
@@ -778,9 +788,7 @@ private fun ReaderBlockItem(
                 httpsOnlyMode = httpsOnlyMode,
                 adblockEnabled = adblockEnabled,
                 siteAdblockDisabled = siteAdblockDisabled,
-                adblockEngine = adblockEngine,
-                isHostHttpsBypassed = isHostHttpsBypassed,
-                privateImageCache = privateImageCache
+                imageEnv = imageEnv
             )
         }
 
@@ -826,23 +834,21 @@ private fun ReaderImageBlock(
     httpsOnlyMode: Boolean,
     adblockEnabled: Boolean,
     siteAdblockDisabled: Boolean,
-    adblockEngine: AdblockEngine?,
-    isHostHttpsBypassed: (String) -> Boolean,
-    privateImageCache: LruCache<String, ImageBitmap>?
+    imageEnv: ReaderImageEnv
 ) {
     val context = LocalContext.current
     val density = LocalDensity.current
     val httpClient = remember(context) {
         (context.applicationContext as? SwiftfoxApp)?.httpClient ?: OkHttpClient()
     }
-    val initialCached = remember(block.url, isPrivate, privateImageCache) {
-        ReaderImageCache.peek(block.url, isPrivate, privateImageCache)
+    val initialCached = remember(block.url, isPrivate, imageEnv.privateImageCache) {
+        ReaderImageCache.peek(block.url, isPrivate, imageEnv.privateImageCache)
     }
     var loadedBitmap by remember(block.url) { mutableStateOf(initialCached) }
     var loadFinished by remember(block.url) { mutableStateOf(initialCached != null) }
 
     LaunchedEffect(block.url, pageUrl, isPrivate, httpsOnlyMode, adblockEnabled, siteAdblockDisabled) {
-        val cached = ReaderImageCache.peek(block.url, isPrivate, privateImageCache)
+        val cached = ReaderImageCache.peek(block.url, isPrivate, imageEnv.privateImageCache)
         if (cached != null) {
             loadedBitmap = cached
             loadFinished = true
@@ -857,9 +863,9 @@ private fun ReaderImageBlock(
             httpsOnlyMode = httpsOnlyMode,
             adblockEnabled = adblockEnabled,
             siteAdblockDisabled = siteAdblockDisabled,
-            adblockEngine = adblockEngine,
-            isHostHttpsBypassed = isHostHttpsBypassed,
-            privateCache = privateImageCache
+            adblockEngine = imageEnv.adblockEngine,
+            isHostHttpsBypassed = imageEnv.isHostHttpsBypassed,
+            privateCache = imageEnv.privateImageCache
         )
         loadFinished = true
     }

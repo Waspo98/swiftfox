@@ -145,6 +145,7 @@ data class BrowserSettings(
     val externalAppLinkPolicy: ExternalAppLinkPolicy = ExternalAppLinkPolicy.ASK,
     val pullToRefreshEnabled: Boolean = true,
     val swipeUrlBarSwitchTabs: Boolean = true,
+    val hideToolbarsOnScroll: Boolean = true,
     val backgroundMediaEnabled: Boolean = true,
     val blockThirdPartyCookies: Boolean = true,
     val syncBookmarksEnabled: Boolean = true,

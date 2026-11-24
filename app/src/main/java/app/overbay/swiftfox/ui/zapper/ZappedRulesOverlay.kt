@@ -328,7 +328,7 @@ private fun EmptyZappedRulesState(
                 textAlign = TextAlign.Center
             )
             Text(
-                text = "Use Element Zapper inside Quick Controls to permanently hide annoying page elements.",
+                text = "Use Element Zapper from Settings → Quick Actions or Site Rules to permanently hide annoying page elements.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center

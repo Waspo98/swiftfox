@@ -127,7 +127,7 @@ class DownloadCoordinator(
                 cookiesForProfile(url, profileName, isPrivate)
             }
             val record = withContext(Dispatchers.IO) {
-                val safeMime = mimeType?.takeIf { it.isNotBlank() } ?: "application/octet-stream"
+                val safeMime = normalizeMimeType(mimeType)
                 val fileName = sanitizeFileName(
                     extractContentDispositionFileName(contentDisposition)
                         ?: URLUtil.guessFileName(url, contentDisposition, safeMime)
@@ -220,7 +220,10 @@ class DownloadCoordinator(
                 }
             }
             if (!cookies.isNullOrBlank() && isSameOrigin) {
-                reqBuilder.header("Cookie", cookies)
+                val safeCookies = sanitizeHeaderValue(cookies)
+                if (safeCookies.isNotEmpty()) {
+                    reqBuilder.header("Cookie", safeCookies)
+                }
             }
             val call = noRedirectClient.newCall(reqBuilder.build())
             val cancelHandle = coroutineContext[Job]?.invokeOnCompletion {
@@ -321,7 +324,7 @@ class DownloadCoordinator(
     ): Result<DownloadRecordEntity> = withContext(Dispatchers.IO) {
         try {
             val (resolvedMime, bytes) = decodeDataOrBase64Payload(base64Payload, mimeType)
-            val safeMime = resolvedMime.ifBlank { "application/octet-stream" }
+            val safeMime = normalizeMimeType(resolvedMime)
             val safeName = sanitizeFileName(
                 fileName.ifBlank { "swiftfox_download_${System.currentTimeMillis()}" }
             )
@@ -504,6 +507,9 @@ class DownloadCoordinator(
 
         internal fun sanitizeHeaderValue(raw: String): String =
             raw.trim().filter { ch -> ch == '\t' || ch in '\u0020'..'\u007E' }
+
+        internal fun normalizeMimeType(raw: String?): String =
+            raw?.substringBefore(';')?.trim()?.takeIf { it.isNotBlank() } ?: "application/octet-stream"
 
         internal fun extractContentDispositionFileName(contentDisposition: String?): String? {
             if (contentDisposition.isNullOrBlank()) return null

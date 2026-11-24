@@ -5,8 +5,6 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,17 +14,13 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -36,9 +30,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.ChevronLeft
-import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DesktopWindows
 import androidx.compose.material.icons.rounded.Devices
@@ -46,12 +39,10 @@ import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.PushPin
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.Tab
-import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -72,12 +63,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import app.overbay.swiftfox.data.db.EssentialEntity
 import app.overbay.swiftfox.data.db.SpaceEntity
 import app.overbay.swiftfox.data.db.ZenPinnedItemEntity
@@ -86,9 +74,9 @@ import app.overbay.swiftfox.ui.browser.BrowserTabUi
 import app.overbay.swiftfox.ui.browser.BrowserUiState
 import app.overbay.swiftfox.ui.browser.TabThumbnailsSnapshot
 import app.overbay.swiftfox.ui.theme.LocalSwiftfoxColors
-import app.overbay.swiftfox.ui.theme.SwiftfoxBrandLockup
 import app.overbay.swiftfox.ui.theme.SwiftfoxEmblem
 import app.overbay.swiftfox.ui.theme.SwiftfoxEmblemVariant
+import app.overbay.swiftfox.ui.theme.firstDisplaySymbol
 import app.overbay.swiftfox.ui.theme.spaceIconFor
 
 @Composable
@@ -387,517 +375,50 @@ fun SpacesTabSwitcher(
     }
 
     spaceToDelete?.let { target ->
-        AlertDialog(
-            onDismissRequest = { spaceToDelete = null },
-            title = { Text("Delete Space \"${target.name}\"?") },
-            text = {
-                val baseMsg = if (!target.containerProfileName.isNullOrBlank()) {
-                    "Closes tabs in ${target.name} and clears its isolated WebView container cookies."
-                } else {
-                    "Closes all open tabs in ${target.name}."
-                }
-                val syncNote = if (!target.syncGuid.isNullOrBlank()) {
-                    "\n\nThis Space is synced from Zen Browser and will reappear on the next sync unless removed in Zen Browser."
-                } else {
-                    ""
-                }
-                Text(text = baseMsg + syncNote)
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        onDeleteSpace(target.id)
-                        spaceToDelete = null
-                    }
-                ) {
-                    Text("Delete")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { spaceToDelete = null }) {
-                    Text("Cancel")
-                }
+        DeleteSpaceDialog(
+            space = target,
+            onDismiss = { spaceToDelete = null },
+            onConfirm = {
+                onDeleteSpace(target.id)
+                spaceToDelete = null
             }
         )
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun UnfoldedSpacesSidebar(
-    state: BrowserUiState,
-    expanded: Boolean,
-    onToggleExpanded: () -> Unit,
-    onSelectSpace: (String) -> Unit,
-    onTogglePrivate: (Boolean) -> Unit,
-    onSelectTab: (String) -> Unit,
-    onCloseTab: (String) -> Unit,
-    onCreateTab: () -> Unit,
-    onOpenEssential: (String) -> Unit,
-    modifier: Modifier = Modifier,
-    onCreatePrivateTab: () -> Unit = {}
+internal fun DeleteSpaceDialog(
+    space: SpaceEntity,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
 ) {
-    val foxColors = LocalSwiftfoxColors.current
-
-    val sidebarWidth = when {
-        !expanded -> 72.dp
-        state.windowState.windowWidthDp < 780 -> 216.dp
-        else -> 248.dp
-    }
-
-    Surface(
-        modifier = modifier
-            .width(sidebarWidth)
-            .fillMaxHeight(),
-        color = MaterialTheme.colorScheme.surfaceContainerLow,
-        tonalElevation = 1.dp
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .statusBarsPadding()
-                .navigationBarsPadding()
-                .padding(horizontal = if (expanded) 12.dp else 8.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            // Header with brand & collapse toggle
-            val sidebarEmblemVariant = if (state.isPrivateView) {
-                SwiftfoxEmblemVariant.PURPLE
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Delete Space \"${space.name}\"?") },
+        text = {
+            val baseMsg = if (!space.containerProfileName.isNullOrBlank()) {
+                "Closes tabs in ${space.name} and clears its isolated WebView container cookies."
             } else {
-                SwiftfoxEmblemVariant.ORANGE
+                "Closes all open tabs in ${space.name}."
             }
-            if (expanded) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    SwiftfoxBrandLockup(
-                        emblemSize = 26.dp,
-                        wordmarkSize = 18.sp,
-                        variant = sidebarEmblemVariant,
-                        wordmarkColor = if (state.isPrivateView) foxColors.privateAccent else MaterialTheme.colorScheme.primary,
-                        showBetaBadge = false,
-                        spacing = 8.dp,
-                        modifier = Modifier.weight(1f)
-                    )
-                    IconButton(
-                        onClick = onToggleExpanded,
-                        modifier = Modifier.size(48.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.ChevronLeft,
-                            contentDescription = "Collapse Spaces sidebar"
-                        )
-                    }
-                }
+            val syncNote = if (!space.syncGuid.isNullOrBlank()) {
+                "\n\nThis Space is synced from Zen Browser and will reappear on the next sync unless removed in Zen Browser."
             } else {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    SwiftfoxEmblem(
-                        size = 26.dp,
-                        variant = sidebarEmblemVariant
-                    )
-                    IconButton(
-                        onClick = onToggleExpanded,
-                        modifier = Modifier.size(48.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.ChevronRight,
-                            contentDescription = "Expand Spaces sidebar"
-                        )
-                    }
-                }
+                ""
             }
-
-            // Essentials row / compact buttons with explicit accessibility descriptions (hidden in Private Mode)
-            if (expanded && !state.isPrivateView) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    state.activeSpaceEssentials.take(4).forEach { ess ->
-                        Surface(
-                            onClick = { onOpenEssential(ess.url) },
-                            shape = RoundedCornerShape(14.dp),
-                            color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                            modifier = Modifier
-                                .weight(1f)
-                                .heightIn(min = 48.dp)
-                                .semantics {
-                                    contentDescription = "Open ${ess.title} (${ess.domain})"
-                                }
-                        ) {
-                            Box(
-                                contentAlignment = Alignment.Center,
-                                modifier = Modifier.padding(vertical = 12.dp)
-                            ) {
-                                Text(
-                                    text = ess.title.take(1).uppercase(),
-                                    style = MaterialTheme.typography.titleSmall,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                            }
-                        }
-                    }
-                }
+            Text(text = baseMsg + syncNote)
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text("Delete")
             }
-
-            // Space pills / icon rail
-            if (expanded) {
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    state.spaces.forEach { space ->
-                        val selected = !state.isPrivateView && state.activeSpaceId == space.id
-                        Surface(
-                            onClick = { onSelectSpace(space.id) },
-                            shape = RoundedCornerShape(20.dp),
-                            color = if (selected) {
-                                MaterialTheme.colorScheme.primaryContainer
-                            } else {
-                                MaterialTheme.colorScheme.surfaceContainerHigh
-                            },
-                            border = if (selected) {
-                                BorderStroke(1.2.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.7f))
-                            } else {
-                                null
-                            },
-                            modifier = Modifier.heightIn(min = 48.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                val dotColor = parseHexColorOrNull(space.themeColorHex)
-                                if (dotColor != null) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(8.dp)
-                                            .clip(CircleShape)
-                                            .background(dotColor)
-                                    )
-                                }
-                                Icon(
-                                    imageVector = spaceIconFor(space.iconKey),
-                                    contentDescription = null,
-                                    tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Text(
-                                    text = space.name,
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
-                                    maxLines = 1
-                                )
-                            }
-                        }
-                    }
-                    Surface(
-                        onClick = { onTogglePrivate(!state.isPrivateView) },
-                        shape = RoundedCornerShape(20.dp),
-                        color = if (state.isPrivateView) {
-                            foxColors.privateContainer
-                        } else {
-                            MaterialTheme.colorScheme.surfaceContainerHigh
-                        },
-                        modifier = Modifier.heightIn(min = 48.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Shield,
-                                contentDescription = "Private Space",
-                                tint = if (state.isPrivateView) foxColors.privateAccent else MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Text(
-                                text = "Private",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = if (state.isPrivateView) foxColors.onPrivateContainer else MaterialTheme.colorScheme.onSurface
-                            )
-                        }
-                    }
-                }
-            } else {
-                Column(
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 260.dp)
-                        .verticalScroll(rememberScrollState())
-                ) {
-                    state.spaces.forEach { space ->
-                        val selected = !state.isPrivateView && state.activeSpaceId == space.id
-                        Surface(
-                            onClick = { onSelectSpace(space.id) },
-                            shape = RoundedCornerShape(16.dp),
-                            color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
-                            modifier = Modifier.size(48.dp)
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = spaceIconFor(space.iconKey),
-                                    contentDescription = space.name,
-                                    tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                                val dotColor = parseHexColorOrNull(space.themeColorHex)
-                                if (dotColor != null) {
-                                    Box(
-                                        modifier = Modifier
-                                            .align(Alignment.TopEnd)
-                                            .padding(7.dp)
-                                            .size(7.dp)
-                                            .clip(CircleShape)
-                                            .background(dotColor)
-                                    )
-                                }
-                            }
-                        }
-                    }
-                    Surface(
-                        onClick = { onTogglePrivate(!state.isPrivateView) },
-                        shape = RoundedCornerShape(16.dp),
-                        color = if (state.isPrivateView) {
-                            foxColors.privateContainer
-                        } else {
-                            MaterialTheme.colorScheme.surfaceContainerHigh
-                        },
-                        modifier = Modifier.size(48.dp)
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                                imageVector = Icons.Rounded.Shield,
-                                contentDescription = "Private Space",
-                                tint = if (state.isPrivateView) foxColors.privateAccent else MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
-                    }
-                }
-            }
-
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-
-            // Zen Browser synced pinned items for active Space (unfolded sidebar parity)
-            val zenPinned = state.activeSpaceZenPinned
-            if (expanded && !state.isPrivateView && zenPinned.isNotEmpty()) {
-                LazyRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    items(
-                        items = zenPinned,
-                        key = { it.id },
-                        contentType = { "sidebar_zen_pinned" }
-                    ) { item ->
-                        CompactZenPinnedPill(
-                            item = item,
-                            onClick = { onOpenEssential(item.url) }
-                        )
-                    }
-                }
-            }
-
-            // Open tabs in active Space
-            LazyColumn(
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-                horizontalAlignment = if (expanded) Alignment.Start else Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                items(
-                    items = state.visibleTabs,
-                    key = { it.id },
-                    contentType = { if (expanded) "sidebar_tab_expanded" else "sidebar_tab_collapsed" }
-                ) { tab ->
-                    val isActive = tab.id == state.activeTabId
-                    if (expanded) {
-                        Surface(
-                            onClick = { onSelectTab(tab.id) },
-                            shape = RoundedCornerShape(16.dp),
-                            color = if (isActive) {
-                                MaterialTheme.colorScheme.primaryContainer
-                            } else {
-                                MaterialTheme.colorScheme.surfaceContainer
-                            },
-                            border = if (isActive) {
-                                BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.55f))
-                            } else {
-                                null
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .heightIn(min = 52.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(start = 12.dp, end = 2.dp, top = 2.dp, bottom = 2.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = tab.title.ifBlank { "New Tab" },
-                                        style = MaterialTheme.typography.labelLarge,
-                                        color = if (isActive) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    if (tab.displayHost.isNotBlank()) {
-                                        Text(
-                                            text = tab.displayHost,
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = if (isActive) {
-                                                MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.78f)
-                                            } else {
-                                                MaterialTheme.colorScheme.onSurfaceVariant
-                                            },
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                    }
-                                }
-                                IconButton(
-                                    onClick = { onCloseTab(tab.id) },
-                                    modifier = Modifier.size(48.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.Close,
-                                        contentDescription = "Close ${tab.title}",
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                }
-                            }
-                        }
-                    } else {
-                        Surface(
-                            onClick = { onSelectTab(tab.id) },
-                            shape = RoundedCornerShape(14.dp),
-                            color = if (isActive) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
-                            modifier = Modifier
-                                .size(48.dp)
-                                .semantics {
-                                    contentDescription = "Switch to ${tab.title.ifBlank { "New Tab" }} (${tab.displayHost.ifBlank { "Start Page" }})"
-                                }
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Text(
-                                    text = (tab.displayHost.ifBlank { tab.title }).take(1).uppercase(),
-                                    style = MaterialTheme.typography.titleSmall,
-                                    color = if (isActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-
-            // New Tab action button (+ quick Private New Tab button when unfolded)
-            val newTabIsPrivate = state.isPrivateView
-            val newTabContainerColor = if (newTabIsPrivate) {
-                foxColors.privateAccent
-            } else {
-                MaterialTheme.colorScheme.primary
-            }
-            val newTabContentColor = if (newTabIsPrivate) {
-                foxColors.onPrivateAccent
-            } else {
-                MaterialTheme.colorScheme.onPrimary
-            }
-            val newTabLabel = if (newTabIsPrivate) "Private tab" else "New tab"
-
-            if (expanded) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Surface(
-                        onClick = onCreateTab,
-                        shape = RoundedCornerShape(20.dp),
-                        color = newTabContainerColor,
-                        contentColor = newTabContentColor,
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(48.dp)
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center,
-                            modifier = Modifier.fillMaxSize()
-                        ) {
-                            Icon(Icons.Rounded.Add, contentDescription = newTabLabel, modifier = Modifier.size(20.dp))
-                            Spacer(Modifier.width(8.dp))
-                            Text(newTabLabel, style = MaterialTheme.typography.labelLarge)
-                        }
-                    }
-                    if (!newTabIsPrivate) {
-                        Surface(
-                            onClick = onCreatePrivateTab,
-                            shape = RoundedCornerShape(16.dp),
-                            color = foxColors.privateContainer,
-                            contentColor = foxColors.privateAccent,
-                            modifier = Modifier.size(48.dp)
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = Icons.Rounded.Shield,
-                                    contentDescription = "New private tab",
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
-                        }
-                    }
-                }
-            } else {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    if (!newTabIsPrivate) {
-                        Surface(
-                            onClick = onCreatePrivateTab,
-                            shape = RoundedCornerShape(16.dp),
-                            color = foxColors.privateContainer,
-                            contentColor = foxColors.privateAccent,
-                            modifier = Modifier.size(48.dp)
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = Icons.Rounded.Shield,
-                                    contentDescription = "New private tab",
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
-                        }
-                    }
-                    Surface(
-                        onClick = onCreateTab,
-                        shape = RoundedCornerShape(20.dp),
-                        color = newTabContainerColor,
-                        contentColor = newTabContentColor,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(48.dp)
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(Icons.Rounded.Add, contentDescription = newTabLabel, modifier = Modifier.size(20.dp))
-                        }
-                    }
-                }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
             }
         }
-    }
+    )
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -996,7 +517,7 @@ private fun CompactEssentialPill(
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = essential.title.take(1).uppercase(),
+                    text = firstDisplaySymbol(essential.title),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.primary
                 )
@@ -1044,7 +565,7 @@ private fun CompactZenPinnedPill(
     }
 }
 
-private fun parseHexColorOrNull(hex: String?): Color? {
+internal fun parseHexColorOrNull(hex: String?): Color? {
     if (hex.isNullOrBlank()) return null
     val cleaned = hex.trim().removePrefix("#")
     if (cleaned.length != 6) return null
@@ -1188,7 +709,7 @@ private fun TabPreviewCard(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun CreateSpaceDialog(
+internal fun CreateSpaceDialog(
     onDismiss: () -> Unit,
     onConfirm: (String, String, Boolean) -> Unit
 ) {

@@ -17,11 +17,27 @@ class SwiftfoxWebView @JvmOverloads constructor(
     @Volatile
     var isMediaCurrentlyPlaying: Boolean = false
 
+    var onScrollMetricsChanged: ((scrollY: Int, deltaY: Int, scrollRange: Int, scrollExtent: Int) -> Unit)? = null
+
+    val verticalScrollRangePx: Int
+        get() = computeVerticalScrollRange()
+
+    val verticalScrollExtentPx: Int
+        get() = computeVerticalScrollExtent()
+
     override fun onWindowVisibilityChanged(visibility: Int) {
         if (visibility != View.VISIBLE && allowBackgroundPlayback && isMediaCurrentlyPlaying) {
             super.onWindowVisibilityChanged(View.VISIBLE)
         } else {
             super.onWindowVisibilityChanged(visibility)
+        }
+    }
+
+    override fun onScrollChanged(l: Int, t: Int, oldl: Int, oldt: Int) {
+        super.onScrollChanged(l, t, oldl, oldt)
+        val listener = onScrollMetricsChanged ?: return
+        if (t != oldt) {
+            listener(t, t - oldt, computeVerticalScrollRange(), computeVerticalScrollExtent())
         }
     }
 }

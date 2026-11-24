@@ -5,8 +5,10 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.graphics.drawable.Icon
 import android.media.AudioAttributes
@@ -32,15 +34,39 @@ class BackgroundMediaService : Service() {
     private var currentTitle: String = "Playing media"
     private var currentHost: String = "Swiftfox"
     private var isPlaying: Boolean = false
+    private var pendingPlayConfirmation: Boolean = false
     private var isPrivate: Boolean = false
+    @Volatile
     private var isForeground: Boolean = false
+    private var pendingPlayRevertRunnable: Runnable? = null
+    private var dismissReceiverRegistered: Boolean = false
+
+    private val dismissNotificationReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != ACTION_DISMISS_BROADCAST) return
+            cancelPendingPlayRevert()
+            pendingPlayConfirmation = false
+            activeController?.onMediaCommand(MediaCommand.STOP)
+            stopForegroundAndSelf()
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
         isServiceRunning = true
+        isStartPending = false
         runningInstance = WeakReference(this)
         createNotificationChannel()
         audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        runCatching {
+            ContextCompat.registerReceiver(
+                this,
+                dismissNotificationReceiver,
+                IntentFilter(ACTION_DISMISS_BROADCAST),
+                ContextCompat.RECEIVER_NOT_EXPORTED
+            )
+            dismissReceiverRegistered = true
+        }
 
         mediaSession = MediaSession(this, "SwiftfoxMediaSession").apply {
             setCallback(object : MediaSession.Callback() {
@@ -50,17 +76,19 @@ class BackgroundMediaService : Service() {
                         stopForegroundAndSelf()
                         return
                     }
-                    if (!isForeground) {
-                        promoteToForegroundSafe(buildNotification(playingOverride = true))
-                    }
+                    beginPendingPlay()
                     controller.onMediaCommand(MediaCommand.PLAY)
                 }
 
                 override fun onPause() {
+                    cancelPendingPlayRevert()
+                    pendingPlayConfirmation = false
                     activeController?.onMediaCommand(MediaCommand.PAUSE)
                 }
 
                 override fun onStop() {
+                    cancelPendingPlayRevert()
+                    pendingPlayConfirmation = false
                     activeController?.onMediaCommand(MediaCommand.STOP)
                     stopForegroundAndSelf()
                 }
@@ -83,7 +111,8 @@ class BackgroundMediaService : Service() {
                     rawHost = nextHost,
                     playing = nextPlaying,
                     privateTab = nextPrivate,
-                    allowStartForeground = nextPlaying || startedViaForegroundIntent
+                    allowStartForeground = nextPlaying,
+                    mustFulfillForegroundContract = startedViaForegroundIntent
                 )
             }
             ACTION_TOGGLE_PLAY_PAUSE -> {
@@ -97,15 +126,31 @@ class BackgroundMediaService : Service() {
                     stopForegroundAndSelf()
                     return START_NOT_STICKY
                 }
-                val targetPlaying = !isPlaying
-                if ((targetPlaying || startedViaForegroundIntent) && !isForeground) {
-                    promoteToForegroundSafe(buildNotification(playingOverride = targetPlaying))
-                }
-                controller.onMediaCommand(
-                    if (isPlaying) MediaCommand.PAUSE else MediaCommand.PLAY
+                val command = resolveToggleCommand(
+                    isPlaying = isPlaying,
+                    pendingPlayConfirmation = pendingPlayConfirmation
                 )
+                if (command == MediaCommand.PLAY) {
+                    beginPendingPlay()
+                    controller.onMediaCommand(MediaCommand.PLAY)
+                } else {
+                    cancelPendingPlayRevert()
+                    pendingPlayConfirmation = false
+                    if (startedViaForegroundIntent && !isForeground) {
+                        promoteToForegroundSafe(buildNotification(playingOverride = false))
+                    }
+                    if (!isPlaying && isForeground) {
+                        stopForeground(STOP_FOREGROUND_DETACH)
+                        isForeground = false
+                        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                        nm.notify(NOTIFICATION_ID, buildNotification(playingOverride = false))
+                    }
+                    controller.onMediaCommand(MediaCommand.PAUSE)
+                }
             }
             ACTION_STOP -> {
+                cancelPendingPlayRevert()
+                pendingPlayConfirmation = false
                 if (startedViaForegroundIntent && !isForeground) {
                     promoteToForegroundSafe(buildNotification(playingOverride = false))
                 }
@@ -120,6 +165,34 @@ class BackgroundMediaService : Service() {
             }
         }
         return START_NOT_STICKY
+    }
+
+    private fun cancelPendingPlayRevert() {
+        pendingPlayRevertRunnable?.let(mainHandler::removeCallbacks)
+        pendingPlayRevertRunnable = null
+    }
+
+    private fun beginPendingPlay() {
+        cancelPendingPlayRevert()
+        pendingPlayConfirmation = true
+        val notification = buildNotification(playingOverride = true)
+        if (isForeground || !promoteToForegroundSafe(notification)) {
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            nm.notify(NOTIFICATION_ID, notification)
+        }
+        val revert = Runnable {
+            pendingPlayRevertRunnable = null
+            if (!pendingPlayConfirmation || isPlaying) return@Runnable
+            pendingPlayConfirmation = false
+            if (isForeground) {
+                stopForeground(STOP_FOREGROUND_DETACH)
+                isForeground = false
+            }
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            nm.notify(NOTIFICATION_ID, buildNotification(playingOverride = false))
+        }
+        pendingPlayRevertRunnable = revert
+        mainHandler.postDelayed(revert, PLAY_CONFIRM_TIMEOUT_MS)
     }
 
     private fun promoteToForegroundSafe(notification: Notification): Boolean {
@@ -142,8 +215,11 @@ class BackgroundMediaService : Service() {
         rawHost: String,
         playing: Boolean,
         privateTab: Boolean,
-        allowStartForeground: Boolean
+        allowStartForeground: Boolean,
+        mustFulfillForegroundContract: Boolean = false
     ) {
+        cancelPendingPlayRevert()
+        pendingPlayConfirmation = false
         isPrivate = privateTab
         isPlaying = playing
         currentTitle = if (privateTab) {
@@ -171,6 +247,10 @@ class BackgroundMediaService : Service() {
                 nm.notify(NOTIFICATION_ID, notification)
             }
         } else {
+            if (!isPlaying && mustFulfillForegroundContract && !isForeground) {
+                // Satisfy Android's startForegroundService contract before detaching to paused state
+                promoteToForegroundSafe(notification)
+            }
             if (!isPlaying && isForeground) {
                 stopForeground(STOP_FOREGROUND_DETACH)
                 isForeground = false
@@ -182,7 +262,14 @@ class BackgroundMediaService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        cancelPendingPlayRevert()
+        pendingPlayConfirmation = false
+        if (dismissReceiverRegistered) {
+            dismissReceiverRegistered = false
+            runCatching { unregisterReceiver(dismissNotificationReceiver) }
+        }
         isServiceRunning = false
+        isStartPending = false
         isForeground = false
         if (runningInstance?.get() === this) {
             runningInstance = null
@@ -196,6 +283,9 @@ class BackgroundMediaService : Service() {
     }
 
     private fun stopForegroundAndSelf() {
+        cancelPendingPlayRevert()
+        pendingPlayConfirmation = false
+        isStartPending = false
         abandonAudioFocus()
         if (isForeground) {
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -310,6 +400,13 @@ class BackgroundMediaService : Service() {
             )
         }
 
+        val deleteIntent = PendingIntent.getBroadcast(
+            this,
+            3,
+            Intent(ACTION_DISMISS_BROADCAST).setPackage(packageName),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
         val playPauseRes = if (effectivePlaying) {
             android.R.drawable.ic_media_pause
         } else {
@@ -340,7 +437,7 @@ class BackgroundMediaService : Service() {
             .setContentTitle(currentTitle)
             .setContentText(currentHost)
             .setContentIntent(openIntent)
-            .setDeleteIntent(stopIntent)
+            .setDeleteIntent(deleteIntent)
             .setOngoing(effectivePlaying)
             .setVisibility(visibility)
             .addAction(toggleAction)
@@ -378,11 +475,22 @@ class BackgroundMediaService : Service() {
         private const val ACTION_UPDATE = "app.overbay.swiftfox.media.UPDATE"
         private const val ACTION_TOGGLE_PLAY_PAUSE = "app.overbay.swiftfox.media.TOGGLE"
         private const val ACTION_STOP = "app.overbay.swiftfox.media.STOP"
+        private const val ACTION_DISMISS_BROADCAST = "app.overbay.swiftfox.media.DISMISS"
         private const val EXTRA_TITLE = "extra_title"
         private const val EXTRA_HOST = "extra_host"
         private const val EXTRA_IS_PLAYING = "extra_is_playing"
         private const val EXTRA_IS_PRIVATE = "extra_is_private"
         private const val EXTRA_EXPECT_FOREGROUND = "extra_expect_foreground"
+        private const val PLAY_CONFIRM_TIMEOUT_MS = 3_000L
+
+        internal fun resolveToggleCommand(
+            isPlaying: Boolean,
+            pendingPlayConfirmation: Boolean
+        ): MediaCommand = if (isPlaying || pendingPlayConfirmation) {
+            MediaCommand.PAUSE
+        } else {
+            MediaCommand.PLAY
+        }
 
         @Volatile
         var activeController: MediaCommandController? = null
@@ -391,9 +499,12 @@ class BackgroundMediaService : Service() {
         private var isServiceRunning: Boolean = false
 
         @Volatile
+        private var isStartPending: Boolean = false
+
+        @Volatile
         private var runningInstance: WeakReference<BackgroundMediaService>? = null
 
-        private val mainHandler = Handler(Looper.getMainLooper())
+        private val mainHandler: Handler by lazy { Handler(Looper.getMainLooper()) }
 
         fun updateState(
             context: Context,
@@ -402,9 +513,9 @@ class BackgroundMediaService : Service() {
             isPlaying: Boolean,
             isPrivate: Boolean = false
         ) {
-            if (!isPlaying && !isServiceRunning) return
+            if (!isPlaying && !isServiceRunning && !isStartPending) return
             val existing = runningInstance?.get()
-            if (existing != null && (!isPlaying || existing.isForeground)) {
+            if (existing != null) {
                 // Update active service directly on Main thread so background track transitions
                 // and pauses avoid Android 12-15 background startForegroundService restrictions.
                 mainHandler.post {
@@ -414,20 +525,6 @@ class BackgroundMediaService : Service() {
                         playing = isPlaying,
                         privateTab = isPrivate,
                         allowStartForeground = isPlaying
-                    )
-                }
-                return
-            }
-            if (existing != null && isPlaying) {
-                // Service is still alive (detached after pause); try promoting directly on Main
-                // and fall back cleanly to posting updated notification if FGS start is restricted.
-                mainHandler.post {
-                    runningInstance?.get()?.applyStateUpdate(
-                        rawTitle = title,
-                        rawHost = host,
-                        playing = true,
-                        privateTab = isPrivate,
-                        allowStartForeground = true
                     )
                 }
                 return
@@ -442,14 +539,18 @@ class BackgroundMediaService : Service() {
             }
             runCatching {
                 if (isPlaying) {
+                    isStartPending = true
                     ContextCompat.startForegroundService(context, intent)
                 } else {
                     context.startService(intent)
                 }
+            }.onFailure {
+                if (isPlaying) isStartPending = false
             }
         }
 
         fun stop(context: Context) {
+            isStartPending = false
             runCatching {
                 context.stopService(Intent(context, BackgroundMediaService::class.java))
             }

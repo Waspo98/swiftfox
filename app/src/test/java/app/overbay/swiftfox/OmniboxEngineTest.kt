@@ -54,7 +54,7 @@ class OmniboxEngineTest {
         assertEquals("https://github.com/overbay", OmniboxEngine.resolveInput("github.com/overbay", settings))
         assertEquals("https://example.com?q=1", OmniboxEngine.resolveInput("example.com?q=1", settings))
         assertEquals("https://example.com#section", OmniboxEngine.resolveInput("example.com#section", settings))
-        assertEquals("http://192.168.86.200:8080", OmniboxEngine.resolveInput("192.168.86.200:8080", settings))
+        assertEquals("http://192.168.1.10:8080", OmniboxEngine.resolveInput("192.168.1.10:8080", settings))
         assertEquals("http://localhost:3000", OmniboxEngine.resolveInput("localhost:3000", settings))
         assertEquals("http://[::1]:8080", OmniboxEngine.resolveInput("[::1]:8080", settings))
     }
@@ -103,12 +103,12 @@ class OmniboxEngineTest {
 
     @Test
     fun classifiesLanVsPublicHosts() {
-        assertTrue(OmniboxEngine.isLocalHostOrLan("192.168.86.200"))
+        assertTrue(OmniboxEngine.isLocalHostOrLan("192.168.1.10"))
         assertTrue(OmniboxEngine.isLocalHostOrLan("localhost"))
         assertTrue(OmniboxEngine.isLocalHostOrLan("10.8.0.1"))
         assertTrue(OmniboxEngine.isLocalHostOrLan("127.0.0.2"))
         assertTrue(OmniboxEngine.isLocalHostOrLan("[::1]"))
-        assertTrue(OmniboxEngine.isLocalHostOrLan("[::ffff:192.168.86.200]"))
+        assertTrue(OmniboxEngine.isLocalHostOrLan("[::ffff:192.168.1.10]"))
         assertTrue(OmniboxEngine.isLocalHostOrLan("100.64.12.3"))
         assertTrue(OmniboxEngine.isLocalHostOrLan("nas"))
         assertFalse(OmniboxEngine.isLocalHostOrLan("10.attacker.com"))
@@ -118,7 +118,7 @@ class OmniboxEngineTest {
         assertFalse(OmniboxEngine.isLocalHostOrLan("google.com"))
 
         assertTrue(OmniboxEngine.isLocalOrPrivateInetAddress(java.net.InetAddress.getByName("127.0.0.1")))
-        assertTrue(OmniboxEngine.isLocalOrPrivateInetAddress(java.net.InetAddress.getByName("192.168.86.200")))
+        assertTrue(OmniboxEngine.isLocalOrPrivateInetAddress(java.net.InetAddress.getByName("192.168.1.10")))
         assertTrue(OmniboxEngine.isLocalOrPrivateInetAddress(java.net.InetAddress.getByName("169.254.10.20")))
         assertTrue(OmniboxEngine.isLocalOrPrivateInetAddress(java.net.InetAddress.getByName("fc00::1")))
         assertFalse(OmniboxEngine.isLocalOrPrivateInetAddress(java.net.InetAddress.getByName("93.184.216.34")))

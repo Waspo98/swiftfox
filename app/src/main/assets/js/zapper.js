@@ -7,6 +7,7 @@
   var OVERLAY_ID = '__swiftfox_zapper_overlay';
   var SHIELD_ID = '__swiftfox_zapper_shield';
   var STYLE_ID = 'swiftfox-zapped';
+  var PREVIEW_STYLE_ID = 'swiftfox-zapper-preview';
   var MAX_ANCESTORS = 8;
   var MAX_PATH_SEGMENTS = 8;
   var UNSAFE_BARE_TAGS = {
@@ -65,8 +66,36 @@
     }
   }
 
+  function applyPreviewCss(cssText) {
+    var text = typeof cssText === 'string' ? cssText : '';
+    var style = document.getElementById(PREVIEW_STYLE_ID);
+    if (!text) {
+      if (style) style.textContent = '';
+      return;
+    }
+    var target = document.documentElement || document.head || document.body;
+    if (!target) return;
+    if (!style) {
+      style = document.createElement('style');
+      style.id = PREVIEW_STYLE_ID;
+      style.type = 'text/css';
+      target.appendChild(style);
+    } else if (style.parentNode !== target || style !== target.lastElementChild) {
+      target.appendChild(style);
+    }
+    style.textContent = text;
+  }
+
+  function removePreviewStyle() {
+    var style = document.getElementById(PREVIEW_STYLE_ID);
+    if (style && style.parentNode) {
+      style.parentNode.removeChild(style);
+    }
+  }
+
   var state = {
     active: false,
+    previewActive: false,
     accentHex: '#E86A17',
     overlay: null,
     shield: null,
@@ -75,6 +104,7 @@
     currentSelector: '',
     currentSummary: '',
     currentMatchCount: 0,
+    lastViewportCenterY: 0.3,
     undoStack: [],
     touchStartX: 0,
     touchStartY: 0,
@@ -170,12 +200,12 @@
 
   function isZapperNode(el) {
     if (!el) return false;
-    return el.id === OVERLAY_ID || el.id === SHIELD_ID;
+    return el.id === OVERLAY_ID || el.id === SHIELD_ID || el.id === PREVIEW_STYLE_ID;
   }
 
   function isStableId(id) {
     if (!id || typeof id !== 'string') return false;
-    if (id === OVERLAY_ID || id === SHIELD_ID || id === STYLE_ID) return false;
+    if (id === OVERLAY_ID || id === SHIELD_ID || id === STYLE_ID || id === PREVIEW_STYLE_ID) return false;
     if (id.indexOf('/*') !== -1 || id.indexOf('*/') !== -1) return false;
     if (/[{};<\s\x00-\x1f]/.test(id)) return false;
     if (/^\d+$/.test(id)) return false;
@@ -631,7 +661,7 @@
 
   function updateOverlayPosition() {
     state.rafPending = false;
-    if (!state.active || !state.overlay || state.chain.length === 0) {
+    if (!state.active || state.previewActive || !state.overlay || state.chain.length === 0) {
       hideOverlay();
       return;
     }
@@ -650,6 +680,34 @@
     state.overlay.style.setProperty('top', rect.top + 'px', 'important');
     state.overlay.style.setProperty('width', rect.width + 'px', 'important');
     state.overlay.style.setProperty('height', rect.height + 'px', 'important');
+  }
+
+  function syncPreviewDisplay() {
+    if (
+      state.active &&
+      state.previewActive &&
+      state.currentSelector &&
+      !isUnsafeBareSelector(state.currentSelector)
+    ) {
+      applyPreviewCss(state.currentSelector + ' { display: none !important; }');
+      hideOverlay();
+    } else {
+      applyPreviewCss('');
+      updateOverlayPosition();
+    }
+  }
+
+  function emitCurrentSelection() {
+    if (state.chain.length === 0 || !state.currentSelector) return;
+    emitBridge('onSelectionChanged', {
+      selector: state.currentSelector,
+      summary: state.currentSummary,
+      scopeDepth: state.scopeDepth,
+      maxScopeDepth: state.chain.length - 1,
+      matchCount: state.currentMatchCount,
+      viewportCenterY: state.lastViewportCenterY,
+      isPreviewing: Boolean(state.previewActive)
+    });
   }
 
   function scheduleOverlayPositionUpdate() {
@@ -707,16 +765,12 @@
     state.currentSelector = selector;
     state.currentSummary = summary;
     state.currentMatchCount = matchCount;
+    if (!state.previewActive) {
+      state.lastViewportCenterY = computeViewportCenterY(el);
+    }
 
-    updateOverlayPosition();
-    emitBridge('onSelectionChanged', {
-      selector: selector,
-      summary: summary,
-      scopeDepth: clamped,
-      maxScopeDepth: maxDepth,
-      matchCount: matchCount,
-      viewportCenterY: computeViewportCenterY(el)
-    });
+    syncPreviewDisplay();
+    emitCurrentSelection();
     return true;
   }
 
@@ -838,9 +892,21 @@
     var chain = buildAncestorChain(target);
     if (chain.length === 0) return;
 
+    var selectableDepth = -1;
+    for (var d = 0; d < chain.length; d++) {
+      var candidateSel = buildResilientSelector(chain[d]);
+      if (candidateSel && candidateSel.length <= 1024) {
+        selectableDepth = d;
+        break;
+      }
+    }
+    if (selectableDepth === -1) return;
+
+    state.previewActive = false;
+    applyPreviewCss('');
     state.chain = chain;
     ensureOverlay();
-    selectAtDepth(0);
+    selectAtDepth(selectableDepth);
   }
 
   function onShieldTouchStart(e) {
@@ -880,6 +946,11 @@
     if (!state.active) return;
     e.stopPropagation();
     e.stopImmediatePropagation();
+    if (e.touches && e.touches.length > 0) {
+      // Still fingers down from a multi-touch gesture (e.g., pinch-zoom) — keep suppressing tap selection
+      state.touchMoved = true;
+      return;
+    }
     if (state.touchMoved) {
       state.touchMoved = false;
       return;
@@ -936,6 +1007,8 @@
     ensureOverlay();
     if (!state.active) {
       state.active = true;
+      state.previewActive = false;
+      applyPreviewCss('');
       document.addEventListener('pointerdown', onDocumentBlockInteraction, true);
       document.addEventListener('pointerup', onDocumentBlockInteraction, true);
       document.addEventListener('mousedown', onDocumentBlockInteraction, true);
@@ -946,8 +1019,27 @@
       window.addEventListener('scroll', scheduleOverlayPositionUpdate, true);
       window.addEventListener('resize', scheduleOverlayPositionUpdate, true);
     } else {
-      updateOverlayPosition();
+      syncPreviewDisplay();
     }
+  }
+
+  function setPreview(enabled) {
+    if (!state.active || state.chain.length === 0 || !state.currentSelector) {
+      state.previewActive = false;
+      applyPreviewCss('');
+      return false;
+    }
+    var next = Boolean(enabled);
+    state.previewActive = next;
+    syncPreviewDisplay();
+    if (!next) {
+      var el = state.chain[state.scopeDepth];
+      if (el && el.isConnected) {
+        state.lastViewportCenterY = computeViewportCenterY(el);
+      }
+    }
+    emitCurrentSelection();
+    return state.previewActive;
   }
 
   function setScopeDepth(depth) {
@@ -984,6 +1076,8 @@
     var summary = state.currentSummary || buildSummary(el);
 
     el.style.setProperty('display', 'none', 'important');
+    state.previewActive = false;
+    applyPreviewCss('');
     state.undoStack.push({
       el: el,
       prevDisplay: prevDisplay,
@@ -996,6 +1090,7 @@
     state.currentSelector = '';
     state.currentSummary = '';
     state.currentMatchCount = 0;
+    state.lastViewportCenterY = 0.3;
     hideOverlay();
 
     emitBridge('onTemporaryZap', {
@@ -1038,11 +1133,14 @@
     var newRule = selector + ' { display: none !important; }';
     applyZappedCss(currentCss ? currentCss + '\n' + newRule : newRule);
 
+    state.previewActive = false;
+    applyPreviewCss('');
     state.chain = [];
     state.scopeDepth = 0;
     state.currentSelector = '';
     state.currentSummary = '';
     state.currentMatchCount = 0;
+    state.lastViewportCenterY = 0.3;
     hideOverlay();
 
     emitBridge('onPermanentRule', {
@@ -1055,14 +1153,17 @@
 
   function stop() {
     state.active = false;
+    state.previewActive = false;
     state.chain = [];
     state.scopeDepth = 0;
     state.currentSelector = '';
     state.currentSummary = '';
     state.currentMatchCount = 0;
+    state.lastViewportCenterY = 0.3;
     state.undoStack = [];
     state.touchMoved = false;
     state.rafPending = false;
+    removePreviewStyle();
 
     document.removeEventListener('pointerdown', onDocumentBlockInteraction, true);
     document.removeEventListener('pointerup', onDocumentBlockInteraction, true);
@@ -1089,6 +1190,7 @@
 
   var api = {
     start: start,
+    setPreview: setPreview,
     setScopeDepth: setScopeDepth,
     adjustScope: adjustScope,
     zapOnce: zapOnce,

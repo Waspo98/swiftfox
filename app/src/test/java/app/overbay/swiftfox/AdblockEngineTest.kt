@@ -164,7 +164,7 @@ class AdblockEngineTest {
         val engine = AdblockEngine.createForTesting(
             """
             ||localhost^
-            ||192.168.86.200^
+            ||192.168.1.10^
             ||overbay.home^
             ||doubleclick.net^
             ##.ad-banner
@@ -182,8 +182,8 @@ class AdblockEngineTest {
         )
         assertFalse(
             engine.shouldBlock(
-                requestUrl = "http://192.168.86.200:8080/tracker.js",
-                pageUrl = "http://192.168.86.200:8080/",
+                requestUrl = "http://192.168.1.10:8080/tracker.js",
+                pageUrl = "http://192.168.1.10:8080/",
                 resourceType = "script",
                 globalEnabled = true,
                 siteDisabled = false
@@ -228,7 +228,7 @@ class AdblockEngineTest {
         assertEquals(
             "",
             engine.cosmeticForUrl(
-                url = "http://192.168.86.200:8080/",
+                url = "http://192.168.1.10:8080/",
                 globalEnabled = true,
                 cosmeticEnabled = true,
                 siteDisabled = false

@@ -2,7 +2,7 @@
 
 > **Goal:** Build **Swiftfox** (`app.overbay.swiftfox`), a lightweight Material 3 Android browser that combines Chromium's crisp 120Hz text rendering with Firefox/Zen's power-user features: native ad blocking (`adblock-rust`), an Element Zapper, built-in Dark Reader, userscripts & per-site rules, foldable-first ergonomics, and native Firefox/Zen Browser sync.
 >
-> **Current Status:** Milestones 1, 2, and 3 are implemented on `beta` (`v0.3.0-beta`). Current focus is real-device testing, polish, R8 release verification, and modularization before promoting `beta` to `main` and cutting `v1.0.0`.
+> **Current Status:** Milestones 1, 2, and 3 are live on `main` with signed R8 release APKs (latest: `v0.2.9`). Ongoing work focuses on physical-device polish, UI refinements, and incremental decomposition of `BrowserViewModel.kt` and `BrowserScreen.kt` ahead of `v1.0.0`.
 
 ---
 
@@ -17,11 +17,11 @@
 | **Theming (App Chrome)** | Day / Night / System · Night offers **Dark** or **AMOLED Black (`#000000`)** · Accent presets: **Fox Amber Orange** (default), **Midnight Indigo**, **Forest**, **Monochrome** (+ optional Material You toggle) |
 | **Web Content Dark Mode** | Decoupled from app theme · Bundled open-source **Dark Reader** JS engine (AMOLED option, brightness/contrast/sepia, auto-skip native dark sites, per-site overrides) |
 | **Foldable Ergonomics** | Jetpack `WindowManager` detects Folded vs. Unfolded · Independent profiles per posture for **Toolbar Placement** (Top / Bottom / Split / Side Rail) and **Default Site Mode** (Mobile vs. Desktop) + per-site overrides · Reloads active tab on fold/unfold only if resolved site mode changes |
-| **Tabs & Workspaces** | Zen-inspired **Spaces** + pinned **Essentials** · Visual rounded card grid (folded) + optional collapsible vertical sidebar (unfolded) |
+| **Tabs & Spaces** | Zen-inspired **Spaces** + pinned **Essentials** with custom icons and drag-to-reorder · Borderless Editorial Spaces tab strip, swipe-to-dismiss visual tab card grid, and slide-over sidebar drawer (folded) + collapsible docked vertical sidebar (unfolded) |
 | **Ad Blocking & Zapper** | Embedded **`adblock-rust`** JNI (`arm64-v8a` + `x86_64`, 16 KB page aligned, Kotlin fallback for JVM tests) with uBO/EasyList + custom filter list URLs + native Material 3 **Element Zapper** HUD ("Zap once" with Undo + "Block permanently" with `-/+` parent/child scope slider & rule manager) |
 | **Extensibility & Reading** | Userscript engine (`.user.js` with `@match`/`@run-at`/`GM_*` APIs) + per-site rule overrides (cookies, User-Agent presets/custom UA, JS toggle, adblock pause, Dark Reader override) + built-in **Reader Mode** (Mozilla Readability.js + native Compose renderer) |
 | **Sync & Logins** | Native **Firefox / Zen Sync** via Mozilla `application-services` (in-app OAuth + CameraX/ZXing QR pairing, Bookmarks, History, Synced Open Tabs, plus Zen Spaces/Essentials/Pinned via custom Sync 1.5 HAWK/AES-GCM client) + Chrome HTML bookmark import/export · **Android System Autofill / Credential Manager** for passwords |
-| **Daily-Driver Parity** | Smart search/URL omnibox (**Google** default search engine, configurable + bangs + live suggestions), downloads (+ blob bridge), find-in-page, long-press context menus, file uploads, fullscreen video, **PiP + background media playback**, **external app link control**, **HTTPS-Only + per-site permissions**, **URL bar swipe gestures + pull-to-refresh**, **PDF/Print + Clean URL sharing**, default browser registration |
+| **Daily-Driver Parity** | Smart search/URL omnibox (**Google** default search engine, configurable + bangs + live suggestions), downloads (+ blob bridge), find-in-page, long-press context menus, file uploads, fullscreen video, **PiP + background media playback**, **external app link control**, **HTTPS-Only + per-site permissions**, **URL bar swipe gestures + DOM-gated Compose pull-to-refresh**, **PDF/Print + Clean URL sharing**, default browser registration |
 | **Design System** | Locked Surface Brief (`.impeccable/surfaces/`) + `DESIGN.md` & `.impeccable/design.json` |
 | **Delivery Workflow** | `beta` -> `main` Git workflow, `arm64-v8a` default beta APKs (`-IncludeX86` for emulator), GitHub Actions CI |
 
@@ -33,7 +33,7 @@
 flowchart TD
     UI["Jetpack Compose UI (Material 3 · Foldable Adaptive Shell)"]
     WM["Jetpack WindowManager (Folded vs. Unfolded Profiles)"]
-    VM["Browser State & Tab/Space Manager (ViewModels + Room DB v3)"]
+    VM["Browser State & Tab/Space Manager (ViewModels + Room DB v5)"]
 
     subgraph Engine["Engine Layer (Android WebView + androidx.webkit)"]
         WV["Multi-Tab WebView Pool (ProfileStore Isolation)"]
@@ -61,7 +61,7 @@ flowchart TD
 1. **Engine Abstraction Boundary:** Wrap `WebView` interactions inside `engine/` (`BrowserSession`, `TabSessionPool`, `ScriptInjector`) so Compose UI never couples directly to raw Android `WebView` internals.
 2. **Configuration-Change Survival (Critical for Foldables):** Declare `android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|density|keyboard|keyboardHidden|uiMode"` on `MainActivity` so folding/unfolding **never destroys live `WebView` instances** or drops page/video state. Let Compose react to `WindowInfoTracker` / `LocalConfiguration` smoothly in place.
 3. **Single-Process Multi-Tab Pool with Smart Suspension:** Keep up to 8 recently visited `WebView` tabs warm in `TabSessionPool`; hibernate older background tabs via `WebView.saveState(Bundle)` + screenshot thumbnail so heavy tab counts stay lightweight on RAM.
-4. **Decoupled Local-First Storage:** Room DB v3 (`exportSchema = true`, `app/schemas/`) holds Spaces, Essentials, Tabs, Bookmarks, History, Site Overrides, Downloads, Filter Lists, Zapped Rules, Userscripts, Userscript Storage, Synced Remote Tabs, and Zen Pinned Items. Mozilla Sync reconciles asynchronously without blocking browser startup.
+4. **Decoupled Local-First Storage:** Room DB v5 (`exportSchema = true`, `app/schemas/`) holds Spaces, Essentials, Tabs, Bookmarks, History, Site Overrides, Downloads, Filter Lists, Zapped Rules, Userscripts, Userscript Storage, Synced Remote Tabs, and Zen Pinned Items. Mozilla Sync reconciles asynchronously without blocking browser startup.
 
 ---
 
@@ -70,7 +70,7 @@ flowchart TD
 ```text
 Swiftfox/
 ├── app/
-│   ├── schemas/                              # Exported Room schema JSONs (v3+)
+│   ├── schemas/                              # Exported Room schema JSONs (v3-v5)
 │   ├── src/
 │   │   ├── main/
 │   │   │   ├── java/app/overbay/swiftfox/
@@ -89,6 +89,7 @@ Swiftfox/
 │   │   │   │   │   ├── darkreader/               # Dark Reader config, AMOLED presets, native-dark skip
 │   │   │   │   │   ├── downloads/                # DownloadManager + Blob/data-URI bridge
 │   │   │   │   │   ├── foldable/                 # WindowManager posture observer + site mode resolver
+│   │   │   │   │   ├── icons/                    # Custom Space/Essential icon specs & favicon cache
 │   │   │   │   │   ├── omnibox/                  # URL/search classifier, suggestions, bangs, history ranker
 │   │   │   │   │   ├── reader/                   # Readability extraction + structured HTML block parser
 │   │   │   │   │   ├── sharing/                  # Clean URL tracking-parameter sanitizer
@@ -96,10 +97,11 @@ Swiftfox/
 │   │   │   │   │   ├── userscripts/              # .user.js parser, @match matcher, GM_* OkHttp/storage bridge
 │   │   │   │   │   └── zapper/                   # Element Zapper state controller & selector logic
 │   │   │   │   ├── data/
-│   │   │   │   │   ├── db/                       # Room v3 entities, DAOs, MIGRATION_1_2, MIGRATION_2_3
+│   │   │   │   │   ├── db/                       # Room v5 entities, DAOs, MIGRATION_1_2..MIGRATION_4_5
 │   │   │   │   │   └── prefs/                    # DataStore preferences & posture profiles
 │   │   │   │   └── ui/
-│   │   │   │       ├── browser/                  # BrowserScreen, BrowserChromeViewport, BrowserViewModel, OmniboxOverlay, StartPage, ScrollCollapse & TabStripTransition
+│   │   │   │       ├── browser/                  # BrowserScreen, BrowserChromeViewport, BrowserViewModel, OmniboxOverlay, StartPage, WebPullToRefresh, ScrollCollapse & TabStripTransition
+│   │   │   │       ├── components/               # EditorialSpaceTabs, DragReorderState, CustomIconPickerSheet, SiteIconBadge, segmented controls
 │   │   │   │       ├── previews/                 # Compose previews
 │   │   │   │       ├── reader/                   # ReaderModeOverlay (native typography & surface sheet)
 │   │   │   │       ├── settings/                 # SettingsScreen, QuickActionsSection, FilterListsOverlay, UserscriptsOverlay, Library
@@ -110,10 +112,11 @@ Swiftfox/
 │   │   │   │       └── zapper/                   # ZapperHudOverlay + ZappedRulesOverlay
 │   │   │   ├── assets/
 │   │   │   │   ├── adblock/starter_filters.txt   # Bundled starter rules before first list sync
-│   │   │   │   └── js/                           # darkreader, readability, bridges, zapper, gm_shim
+│   │   │   │   ├── js/                           # darkreader, readability, bridges, zapper, gm_shim
+│   │   │   │   └── omnibox/top_domains.txt       # Bundled top-domain autocomplete seeds
 │   │   │   └── jniLibs/{arm64-v8a,x86_64}/       # Prebuilt libswiftfox_adblock.so (16 KB aligned)
 │   │   ├── beta/res/                             # Swiftfox Beta app name & launcher icon overlay
-│   │   ├── test/                                 # JVM unit tests (12 test suites)
+│   │   ├── test/                                 # JVM unit tests (19 test suites)
 │   │   └── androidTest/                          # Instrumentation migration & channel smoke tests
 ├── native/adblock-jni/                           # Rust JNI crate (Cargo.toml, Cargo.lock, Dockerfile)
 ├── scripts/                                      # build-apk.{cmd,ps1}, build-adblock-jni.ps1
@@ -147,11 +150,10 @@ Swiftfox/
 - Zen Browser Spaces, Essentials, and Pinned Items sync via custom Sync 1.5 HAWK + AES-256-CBC/HMAC-SHA256 client (`Sync15SpacesClient`, `SyncCrypto`, `HawkAuth`, `ZenSpacesCodec`).
 - Netscape HTML bookmark import/export (`ChromeBookmarkHtmlCodec`) for Chrome interop.
 
-### Next Focus — Verification, Polish & `v1.0.0` Release Gate
-- End-to-end daily-driver verification on physical foldable hardware across M1–M3 flows (120Hz scroll, fold/unfold site-mode transitions, adblock/zapper, Dark Reader, userscripts, live Mozilla/Zen Sync + QR pairing).
-- Signed release build verification under R8 (`isMinifyEnabled = true`, `proguard-rules.pro` audit).
+### Next Focus — Physical-Device Polish, Modularization & `v1.0.0` Gate
+- Continued real-device verification on foldable hardware across M1-M3 flows (120Hz scroll, DOM-gated pull-to-refresh, fold/unfold site-mode transitions, adblock/zapper, Dark Reader, userscripts, live Mozilla/Zen Sync + QR pairing).
 - Incremental decomposition of `BrowserViewModel.kt` and `BrowserScreen.kt` as polish fixes land.
-- Promote verified `beta` milestone to `main` via `/promote` and cut signed `v1.0.0` via `/release`.
+- Ongoing `beta` -> `main` promotion and signed R8 releases via `/promote` and `/release` leading up to `v1.0.0`.
 
 ---
 

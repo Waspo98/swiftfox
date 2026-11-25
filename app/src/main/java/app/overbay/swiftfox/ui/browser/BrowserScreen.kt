@@ -138,7 +138,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import app.overbay.swiftfox.data.prefs.DevicePosture
 import app.overbay.swiftfox.data.prefs.SiteMode
 import app.overbay.swiftfox.data.prefs.ToolbarPlacement
@@ -257,7 +256,6 @@ fun BrowserScreen(
     val primaryAccentHex = remember(primaryArgb) {
         String.format(Locale.ROOT, "#%06X", 0xFFFFFF and primaryArgb)
     }
-    val surfaceArgb = MaterialTheme.colorScheme.surfaceContainerHigh.toArgb()
 
     val reduceMotion = rememberReduceMotion()
 
@@ -287,10 +285,14 @@ fun BrowserScreen(
                 ),
                 sideRailTravelPx = 56.dp.toPx(),
                 minExtraOverflowPx = 48.dp.roundToPx(),
-                minScrollableFloorPx = 160.dp.roundToPx(),
-                refreshSpinnerDropPx = 64.dp.roundToPx()
+                minScrollableFloorPx = 160.dp.roundToPx()
             )
         }
+    }
+    val pullToRefreshVisualState = remember(density) {
+        PullToRefreshVisualState(
+            triggerDistancePx = with(density) { 72.dp.toPx() }
+        )
     }
     val toolbarsCollapsed by remember(collapseBridge) {
         derivedStateOf { collapseBridge.progressState.floatValue >= 0.5f }
@@ -343,6 +345,7 @@ fun BrowserScreen(
     }
 
     LaunchedEffect(forceExpandToolbars, activeTab?.id, effectivePlacement, posture) {
+        pullToRefreshVisualState.clear()
         if (forceExpandToolbars) {
             animateCollapseTo(0f, instant = true)
         } else if (collapseBridge.renderedProgress > 0f || collapseBridge.controller.collapseProgress > 0f) {
@@ -419,6 +422,7 @@ fun BrowserScreen(
             state = state,
             toolbarsCollapsed = toolbarsCollapsed,
             toolbarCollapseProgressProvider = { collapseBridge.progressState.floatValue },
+            pullToRefreshVisualState = pullToRefreshVisualState,
             onChromeHeightsMeasured = { topPx, bottomPx ->
                 collapseBridge.onChromeHeightsMeasured(topPx, bottomPx)
             },
@@ -492,78 +496,32 @@ fun BrowserScreen(
                         AndroidView(
                             modifier = Modifier.fillMaxSize(),
                             factory = { ctx ->
-                                val webContainer = WebViewContainer(ctx).apply {
+                                WebViewContainer(ctx).apply {
                                     layoutParams = ViewGroup.LayoutParams(
                                         ViewGroup.LayoutParams.MATCH_PARENT,
                                         ViewGroup.LayoutParams.MATCH_PARENT
                                     )
-                                    lastPrimaryArgb = primaryArgb
-                                    lastSurfaceArgb = surfaceArgb
-                                }
-                                SwipeRefreshLayout(ctx).apply {
-                                    layoutParams = ViewGroup.LayoutParams(
-                                        ViewGroup.LayoutParams.MATCH_PARENT,
-                                        ViewGroup.LayoutParams.MATCH_PARENT
-                                    )
-                                    setColorSchemeColors(primaryArgb)
-                                    setProgressBackgroundColorSchemeColor(surfaceArgb)
-                                    // Host the WebView inside a stable container so SwipeRefreshLayout's
-                                    // internal mCircleView.bringToFront() never alters WebView attachment
-                                    // or leaves mTarget stale across tab switches.
-                                    addView(webContainer)
-                                    // Require a deliberate top pull (~96dp) and drive pull-to-refresh
-                                    // exclusively through Chromium's top-boundary overScrollBy via
-                                    // nested scrolling so inner CSS scroll containers (e.g. body/div
-                                    // overflow-y scrollers on Google Fi) never get hijacked.
-                                    setDistanceToTriggerSync(
-                                        (96f * ctx.resources.displayMetrics.density).roundToInt()
-                                    )
-                                    setOnChildScrollUpCallback { _, _ ->
-                                        !webContainer.isPullToRefreshOverscrollAllowed()
-                                    }
-                                    setProgressViewOffset(
-                                        false,
-                                        collapseBridge.topBarHeightPx,
-                                        collapseBridge.topBarHeightPx + collapseBridge.refreshSpinnerDropPx
-                                    )
-                                    setOnRefreshListener {
-                                        viewModel.reloadActiveTab()
-                                        isRefreshing = false
-                                    }
                                 }
                             },
-                            update = { swipeLayout ->
+                            update = { webContainer ->
                                 if (session.isDestroyed) {
-                                    val container = findWebViewContainer(swipeLayout)
-                                    collapseBridge.detachContainer(container)
-                                    container?.pullToRefreshEnabled = false
-                                    container?.clearGestureCallbacks()
-                                    (container?.getChildAt(0) as? SwiftfoxWebView)?.apply {
+                                    collapseBridge.detachContainer(webContainer)
+                                    webContainer.pullToRefreshEnabled = false
+                                    webContainer.clearGestureCallbacks()
+                                    (webContainer.getChildAt(0) as? SwiftfoxWebView)?.apply {
                                         onScrollMetricsChanged = null
                                         onTopOverscroll = null
+                                        onDomPullToRefreshBlocked = null
                                         translationY = 0f
                                     }
-                                    container?.removeAllViews()
+                                    webContainer.removeAllViews()
                                     return@AndroidView
                                 }
                                 val shouldEnablePullToRefresh = !isExiting &&
                                     state.settings.pullToRefreshEnabled &&
                                     !state.zapper.isActive &&
                                     state.readerArticle == null
-                                if (swipeLayout.isEnabled != shouldEnablePullToRefresh) {
-                                    swipeLayout.isEnabled = shouldEnablePullToRefresh
-                                }
-
-                                val webContainer = findWebViewContainer(swipeLayout) ?: return@AndroidView
                                 webContainer.pullToRefreshEnabled = shouldEnablePullToRefresh
-                                if (webContainer.lastPrimaryArgb != primaryArgb) {
-                                    swipeLayout.setColorSchemeColors(primaryArgb)
-                                    webContainer.lastPrimaryArgb = primaryArgb
-                                }
-                                if (webContainer.lastSurfaceArgb != surfaceArgb) {
-                                    swipeLayout.setProgressBackgroundColorSchemeColor(surfaceArgb)
-                                    webContainer.lastSurfaceArgb = surfaceArgb
-                                }
                                 webContainer.syncSurfaceBackground(session.surfaceBackgroundColor)
 
                                 val targetWebView = session.webView
@@ -587,19 +545,21 @@ fun BrowserScreen(
                                 }
                                 val isActiveTab = !isExiting && tab.id == currentActiveTabId
                                 if (isActiveTab) {
-                                    collapseBridge.attachActiveContainer(webContainer, swipeLayout)
+                                    collapseBridge.attachActiveContainer(webContainer)
                                     val progress = collapseBridge.renderedProgress
                                     webContainer.updateChromeMetrics(
                                         topBarHeightPx = collapseBridge.topBarHeightPx,
                                         bottomBarHeightPx = collapseBridge.bottomBarHeightPx,
                                         collapseProgress = progress,
-                                        expandedViewport = progress > 0.001f || collapseBridge.isUserDragging
+                                        expandedViewport = progress > 0.001f
                                     )
-                                    swipeLayout.setProgressViewOffset(
-                                        false,
-                                        collapseBridge.topBarHeightPx,
-                                        collapseBridge.topBarHeightPx + collapseBridge.refreshSpinnerDropPx
-                                    )
+                                    webContainer.onPullToRefreshProgress = { pullPx, dragging ->
+                                        pullToRefreshVisualState.updatePull(pullPx, dragging)
+                                    }
+                                    webContainer.onPullToRefreshTrigger = {
+                                        pullToRefreshVisualState.triggerRefreshPulse()
+                                        viewModel.reloadActiveTab()
+                                    }
                                     webContainer.onGestureStart = {
                                         collapseBridge.isUserDragging = true
                                         collapseBridge.snapJob?.cancel()
@@ -651,6 +611,9 @@ fun BrowserScreen(
                                     targetWebView.onTopOverscroll = { deltaX, deltaY, scrollY, _ ->
                                         webContainer.handleWebViewTopOverscroll(deltaX, deltaY, scrollY)
                                     }
+                                    targetWebView.onDomPullToRefreshBlocked = {
+                                        webContainer.handleDomPullToRefreshBlocked()
+                                    }
                                     targetWebView.onScrollMetricsChanged = { scrollY, deltaY, scrollRange, scrollExtent ->
                                         collapseBridge.onFlingScrollMetrics(
                                             host = webContainer,
@@ -672,6 +635,7 @@ fun BrowserScreen(
                                     webContainer.clearGestureCallbacks()
                                     targetWebView.onScrollMetricsChanged = null
                                     targetWebView.onTopOverscroll = null
+                                    targetWebView.onDomPullToRefreshBlocked = null
                                     // Keep exiting tab aligned at its current top bar offset during slide-out
                                     webContainer.updateChromeMetrics(
                                         topBarHeightPx = collapseBridge.topBarHeightPx,
@@ -681,17 +645,17 @@ fun BrowserScreen(
                                     )
                                 }
                             },
-                            onRelease = { swipeLayout ->
-                                val webContainer = findWebViewContainer(swipeLayout)
+                            onRelease = { webContainer ->
                                 collapseBridge.detachContainer(webContainer)
-                                webContainer?.pullToRefreshEnabled = false
-                                webContainer?.clearGestureCallbacks()
-                                (webContainer?.getChildAt(0) as? SwiftfoxWebView)?.apply {
+                                webContainer.pullToRefreshEnabled = false
+                                webContainer.clearGestureCallbacks()
+                                (webContainer.getChildAt(0) as? SwiftfoxWebView)?.apply {
                                     onScrollMetricsChanged = null
                                     onTopOverscroll = null
+                                    onDomPullToRefreshBlocked = null
                                     translationY = 0f
                                 }
-                                webContainer?.removeAllViews()
+                                webContainer.removeAllViews()
                             }
                         )
                     }
@@ -1235,6 +1199,7 @@ fun BrowserShellLayout(
     ),
     toolbarsCollapsed: Boolean = false,
     toolbarCollapseProgressProvider: () -> Float = { 0f },
+    pullToRefreshVisualState: PullToRefreshVisualState? = null,
     onChromeHeightsMeasured: (topBarPx: Int, bottomBarPx: Int) -> Unit = { _, _ -> }
 ) {
     val reduceMotion = rememberReduceMotion()
@@ -1524,6 +1489,13 @@ fun BrowserShellLayout(
                 },
                 hudOverlay = {
                     Box(modifier = Modifier.fillMaxSize()) {
+                        if (!hideChrome && pullToRefreshVisualState != null) {
+                            PullToRefreshIndicatorOverlay(
+                                visualState = pullToRefreshVisualState,
+                                modifier = Modifier.align(Alignment.TopCenter)
+                            )
+                        }
+
                         // Loading progress indicator in Side Rail mode (no top/bottom bar)
                         if (!hideChrome && placement == ToolbarPlacement.SIDE_RAIL) {
                             ToolbarProgressSlot(

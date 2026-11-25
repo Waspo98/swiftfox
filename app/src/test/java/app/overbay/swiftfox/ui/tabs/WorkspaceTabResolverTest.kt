@@ -536,28 +536,33 @@ class WorkspaceTabResolverTest {
     @Test
     fun resolveTabCardSwipeDismissDirection_handlesDistanceVelocityReversalAndFloor() {
         val width = 400f
-        val minFling = 1200f
+        val minFling = 800f
 
-        // Slow drag past 38% distance dismisses in drag direction
-        assertEquals(1, resolveTabCardSwipeDismissDirection(offsetX = 160f, velocityX = 100f, cardWidthPx = width, minFlingVelocityPxPerSec = minFling))
-        assertEquals(-1, resolveTabCardSwipeDismissDirection(offsetX = -160f, velocityX = -100f, cardWidthPx = width, minFlingVelocityPxPerSec = minFling))
+        // Slow drag past 32% distance dismisses in drag direction
+        assertEquals(1, resolveTabCardSwipeDismissDirection(offsetX = 132f, velocityX = 100f, cardWidthPx = width, minFlingVelocityPxPerSec = minFling))
+        assertEquals(-1, resolveTabCardSwipeDismissDirection(offsetX = -132f, velocityX = -100f, cardWidthPx = width, minFlingVelocityPxPerSec = minFling))
 
-        // Slow drag below 38% snaps back
-        assertEquals(0, resolveTabCardSwipeDismissDirection(offsetX = 140f, velocityX = 200f, cardWidthPx = width, minFlingVelocityPxPerSec = minFling))
-        assertEquals(0, resolveTabCardSwipeDismissDirection(offsetX = -140f, velocityX = -200f, cardWidthPx = width, minFlingVelocityPxPerSec = minFling))
+        // Slow drag below 32% snaps back
+        assertEquals(0, resolveTabCardSwipeDismissDirection(offsetX = 110f, velocityX = 200f, cardWidthPx = width, minFlingVelocityPxPerSec = minFling))
+        assertEquals(0, resolveTabCardSwipeDismissDirection(offsetX = -110f, velocityX = -200f, cardWidthPx = width, minFlingVelocityPxPerSec = minFling))
 
-        // Fast fling past 14% floor dismisses cleanly
-        assertEquals(1, resolveTabCardSwipeDismissDirection(offsetX = 60f, velocityX = 1500f, cardWidthPx = width, minFlingVelocityPxPerSec = minFling))
-        assertEquals(-1, resolveTabCardSwipeDismissDirection(offsetX = -60f, velocityX = -1500f, cardWidthPx = width, minFlingVelocityPxPerSec = minFling))
+        // Fast fling past 10% floor dismisses cleanly
+        assertEquals(1, resolveTabCardSwipeDismissDirection(offsetX = 48f, velocityX = 1000f, cardWidthPx = width, minFlingVelocityPxPerSec = minFling))
+        assertEquals(-1, resolveTabCardSwipeDismissDirection(offsetX = -48f, velocityX = -1000f, cardWidthPx = width, minFlingVelocityPxPerSec = minFling))
 
-        // Tiny jitter (< 14% floor) with high velocity does not accidentally dismiss
-        assertEquals(0, resolveTabCardSwipeDismissDirection(offsetX = 30f, velocityX = 1800f, cardWidthPx = width, minFlingVelocityPxPerSec = minFling))
+        // Tiny jitter (< 10% floor) with high velocity does not accidentally dismiss
+        assertEquals(0, resolveTabCardSwipeDismissDirection(offsetX = 24f, velocityX = 1800f, cardWidthPx = width, minFlingVelocityPxPerSec = minFling))
 
         // Dragged right past threshold but flicked sharply back left cancels cleanly
-        assertEquals(0, resolveTabCardSwipeDismissDirection(offsetX = 180f, velocityX = -1500f, cardWidthPx = width, minFlingVelocityPxPerSec = minFling))
-        assertEquals(0, resolveTabCardSwipeDismissDirection(offsetX = -180f, velocityX = 1500f, cardWidthPx = width, minFlingVelocityPxPerSec = minFling))
+        assertEquals(0, resolveTabCardSwipeDismissDirection(offsetX = 160f, velocityX = -1000f, cardWidthPx = width, minFlingVelocityPxPerSec = minFling))
+        assertEquals(0, resolveTabCardSwipeDismissDirection(offsetX = -160f, velocityX = 1000f, cardWidthPx = width, minFlingVelocityPxPerSec = minFling))
 
         // Unmeasured card width never dismisses
         assertEquals(0, resolveTabCardSwipeDismissDirection(offsetX = 200f, velocityX = 2000f, cardWidthPx = 0f, minFlingVelocityPxPerSec = minFling))
+
+        // Exit animation duration carries release velocity and stays snappy (50..105ms)
+        assertEquals(50, computeTabCardSwipeExitDurationMs(remainingDistancePx = 220f, velocityX = 6000f, minExitSpeedPxPerSec = 4000f))
+        assertEquals(105, computeTabCardSwipeExitDurationMs(remainingDistancePx = 800f, velocityX = 200f, minExitSpeedPxPerSec = 4000f))
+        assertTrue(computeTabCardSwipeExitDurationMs(remainingDistancePx = 300f, velocityX = 4000f, minExitSpeedPxPerSec = 4000f) in 50..105)
     }
 }

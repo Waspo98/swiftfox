@@ -1,6 +1,7 @@
 package app.overbay.swiftfox.ui.tabs
 
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -96,7 +97,6 @@ import app.overbay.swiftfox.data.prefs.SiteMode
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
 import app.overbay.swiftfox.ui.browser.BrowserTabUi
 import app.overbay.swiftfox.ui.browser.BrowserUiState
-import app.overbay.swiftfox.ui.browser.EmphasizedAccelerateEasing
 import app.overbay.swiftfox.ui.browser.TabThumbnailsSnapshot
 import app.overbay.swiftfox.ui.components.CustomIconPickerSheet
 import app.overbay.swiftfox.ui.components.DragAxis
@@ -116,6 +116,7 @@ import app.overbay.swiftfox.ui.theme.rememberReduceMotion
 import app.overbay.swiftfox.ui.theme.spaceIconFor
 import kotlinx.coroutines.launch
 import kotlin.math.abs
+import kotlin.math.roundToInt
 import kotlin.math.sign
 
 @Composable
@@ -447,7 +448,14 @@ fun SpacesTabSwitcher(
                             enabled = canSwipeDismiss,
                             staysInGridAfterDismiss = isPinnedTab,
                             onDismiss = closeOrUnloadTab,
-                            modifier = Modifier.animateItem()
+                            modifier = Modifier.animateItem(
+                                fadeInSpec = tween(durationMillis = 120),
+                                placementSpec = spring(
+                                    dampingRatio = Spring.DampingRatioNoBouncy,
+                                    stiffness = 650f
+                                ),
+                                fadeOutSpec = null
+                            )
                         ) {
                             TabPreviewCard(
                                 tab = tab,
@@ -1050,8 +1058,8 @@ internal fun resolveTabCardSwipeDismissDirection(
     velocityX: Float,
     cardWidthPx: Float,
     minFlingVelocityPxPerSec: Float,
-    dismissDistanceFraction: Float = 0.38f,
-    minFlingDistanceFraction: Float = 0.14f
+    dismissDistanceFraction: Float = 0.32f,
+    minFlingDistanceFraction: Float = 0.10f
 ): Int {
     if (cardWidthPx <= 0f) return 0
     val distanceThreshold = cardWidthPx * dismissDistanceFraction
@@ -1068,6 +1076,17 @@ internal fun resolveTabCardSwipeDismissDirection(
     return 0
 }
 
+internal fun computeTabCardSwipeExitDurationMs(
+    remainingDistancePx: Float,
+    velocityX: Float,
+    minExitSpeedPxPerSec: Float
+): Int {
+    val safeSpeed = maxOf(abs(velocityX), minExitSpeedPxPerSec.coerceAtLeast(1f))
+    return ((remainingDistancePx.coerceAtLeast(0f) / safeSpeed) * 1000f)
+        .roundToInt()
+        .coerceIn(50, 105)
+}
+
 @Composable
 private fun SwipeToDismissTabCard(
     tabId: String,
@@ -1080,7 +1099,9 @@ private fun SwipeToDismissTabCard(
     val reduceMotion = rememberReduceMotion()
     val haptic = LocalHapticFeedback.current
     val scope = rememberCoroutineScope()
-    val minFlingVelocityPx = with(LocalDensity.current) { 420.dp.toPx() }
+    val density = LocalDensity.current
+    val minFlingVelocityPx = with(density) { 280.dp.toPx() }
+    val minExitSpeedPx = with(density) { 1500.dp.toPx() }
     val offsetX = remember(tabId) { Animatable(0f) }
     var cardWidthPx by remember(tabId) { mutableIntStateOf(0) }
     var isDragging by remember(tabId) { mutableStateOf(false) }
@@ -1100,7 +1121,7 @@ private fun SwipeToDismissTabCard(
         modifier = modifier
             .zIndex(if (isDragging || isDismissing) 1f else 0f)
             .onSizeChanged { cardWidthPx = it.width }
-            .pointerInput(tabId, enabled, minFlingVelocityPx) {
+            .pointerInput(tabId, enabled, minFlingVelocityPx, minExitSpeedPx) {
                 if (!enabled) return@pointerInput
                 val velocityTracker = VelocityTracker()
                 var currentDragOffset = 0f
@@ -1121,7 +1142,7 @@ private fun SwipeToDismissTabCard(
                         velocityTracker.addPosition(change.uptimeMillis, change.position)
                         currentDragOffset += dragAmount
                         val targetOffset = currentDragOffset
-                        val threshold = cardWidthPx * 0.38f
+                        val threshold = cardWidthPx * 0.32f
                         val nowCrossed = cardWidthPx > 0 && abs(targetOffset) >= threshold
                         if (nowCrossed && !crossedThreshold) {
                             crossedThreshold = true
@@ -1143,7 +1164,13 @@ private fun SwipeToDismissTabCard(
                         )
                         if (direction != 0) {
                             isDismissing = true
-                            val exitTarget = direction * (cardWidthPx.coerceAtLeast(1) * 1.25f)
+                            val exitTarget = direction * (cardWidthPx.coerceAtLeast(1) * 1.12f)
+                            val remainingPx = abs(exitTarget - currentDragOffset)
+                            val exitDurationMs = computeTabCardSwipeExitDurationMs(
+                                remainingDistancePx = remainingPx,
+                                velocityX = vx,
+                                minExitSpeedPxPerSec = minExitSpeedPx
+                            )
                             scope.launch {
                                 if (currentReduceMotion) {
                                     offsetX.snapTo(exitTarget)
@@ -1151,8 +1178,8 @@ private fun SwipeToDismissTabCard(
                                     offsetX.animateTo(
                                         targetValue = exitTarget,
                                         animationSpec = tween(
-                                            durationMillis = 165,
-                                            easing = EmphasizedAccelerateEasing
+                                            durationMillis = exitDurationMs,
+                                            easing = LinearEasing
                                         )
                                     )
                                 }
@@ -1165,7 +1192,7 @@ private fun SwipeToDismissTabCard(
                                             targetValue = 0f,
                                             animationSpec = spring(
                                                 dampingRatio = Spring.DampingRatioNoBouncy,
-                                                stiffness = Spring.StiffnessMedium
+                                                stiffness = 700f
                                             )
                                         )
                                     }
@@ -1179,9 +1206,10 @@ private fun SwipeToDismissTabCard(
                                 } else {
                                     offsetX.animateTo(
                                         targetValue = 0f,
+                                        initialVelocity = vx,
                                         animationSpec = spring(
                                             dampingRatio = Spring.DampingRatioNoBouncy,
-                                            stiffness = Spring.StiffnessMediumLow
+                                            stiffness = 700f
                                         )
                                     )
                                 }
@@ -1199,7 +1227,7 @@ private fun SwipeToDismissTabCard(
                                     targetValue = 0f,
                                     animationSpec = spring(
                                         dampingRatio = Spring.DampingRatioNoBouncy,
-                                        stiffness = Spring.StiffnessMediumLow
+                                        stiffness = 700f
                                     )
                                 )
                             }
@@ -1214,7 +1242,7 @@ private fun SwipeToDismissTabCard(
                 translationX = dx
                 val width = size.width.coerceAtLeast(1f)
                 val progress = (abs(dx) / (width * 0.95f)).coerceIn(0f, 1f)
-                alpha = (1f - progress * 0.85f).coerceIn(0.15f, 1f)
+                alpha = (1f - progress).coerceIn(0f, 1f)
                 if (!reduceMotion) {
                     rotationZ = sign(dx) * (progress * 5f)
                 }

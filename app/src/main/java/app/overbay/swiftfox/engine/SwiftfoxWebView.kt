@@ -26,6 +26,28 @@ class SwiftfoxWebView @JvmOverloads constructor(
      */
     var onTopOverscroll: ((deltaX: Int, deltaY: Int, scrollY: Int, isTouchEvent: Boolean) -> Boolean)? = null
 
+    /**
+     * Updated by the passive main-frame `touchGate` script on `touchstart`, inner-container
+     * `scroll`, and `defaultPrevented` touch handlers so pull-to-refresh respects inner CSS
+     * scroll containers, `overscroll-behavior-y: contain|none`, `touch-action`, and JS touch apps.
+     */
+    @Volatile
+    var domTouchBlockedForPullToRefresh: Boolean = false
+        private set
+
+    var onDomPullToRefreshBlocked: (() -> Unit)? = null
+
+    fun beginDomTouchGesture() {
+        domTouchBlockedForPullToRefresh = false
+    }
+
+    fun updateDomTouchGate(blocked: Boolean) {
+        domTouchBlockedForPullToRefresh = blocked
+        if (blocked) {
+            onDomPullToRefreshBlocked?.invoke()
+        }
+    }
+
     val verticalScrollRangePx: Int
         get() = computeVerticalScrollRange()
 

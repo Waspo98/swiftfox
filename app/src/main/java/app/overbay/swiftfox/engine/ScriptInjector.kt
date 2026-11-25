@@ -374,6 +374,151 @@ object ScriptInjector {
         }.getOrNull()
     }
 
+    /**
+     * Lightweight, 100% passive `document-start` DOM scroll & touch observer for main-frame
+     * pages. Reports to native `SwiftfoxNativeChannel` (`channel: "touchGate"`) whenever a touch
+     * starts inside a scrolled inner `overflow-y: auto/scroll` container, a region declaring
+     * `overscroll-behavior-y: contain|none` (e.g. Google Fi's `.SSPGKf`), a restrictive
+     * `touch-action`, an active inner scroll, or a JS `preventDefault()` touch handler — giving
+     * pull-to-refresh true browser-grade DOM awareness with zero scroll blocking.
+     */
+    fun buildTouchScrollGateScript(): String = """
+        (function() {
+            if (window !== window.top) return;
+            if (window.__sfTouchGateInstalled) return;
+            window.__sfTouchGateInstalled = true;
+
+            var touching = false;
+            var blockedSentForTouch = false;
+
+            function postGate(blocked) {
+                try {
+                    var ch = window.SwiftfoxNativeChannel;
+                    if (ch && typeof ch.postMessage === 'function') {
+                        ch.postMessage(JSON.stringify({
+                            channel: 'touchGate',
+                            blocked: !!blocked
+                        }));
+                    }
+                } catch (_e) {}
+            }
+
+            function blocksVerticalPull(touchAction) {
+                if (!touchAction || touchAction === 'auto' || touchAction === 'manipulation') {
+                    return false;
+                }
+                var lower = touchAction.toLowerCase();
+                if (lower.indexOf('pan-y') !== -1 || lower.indexOf('pan-down') !== -1) {
+                    return false;
+                }
+                return true;
+            }
+
+            function inspectTarget(target) {
+                try {
+                    if (window.scrollY > 1) return true;
+                    var se = document.scrollingElement;
+                    if (se && se.scrollTop > 1) return true;
+
+                    var el = target && target.nodeType === 1
+                        ? target
+                        : (target && target.parentElement ? target.parentElement : null);
+                    var steps = 0;
+                    while (el && steps < 48) {
+                        steps++;
+                        var tag = el.tagName;
+                        if (tag === 'CANVAS' || tag === 'IFRAME') {
+                            return true;
+                        }
+                        if (tag === 'INPUT' && (el.type === 'range' || el.type === 'color')) {
+                            return true;
+                        }
+                        var style = window.getComputedStyle ? window.getComputedStyle(el) : null;
+                        if (style) {
+                            var obY = style.overscrollBehaviorY || style.overscrollBehavior || '';
+                            if (obY === 'contain' || obY === 'none') {
+                                return true;
+                            }
+                            if (blocksVerticalPull(style.touchAction)) {
+                                return true;
+                            }
+                            var ovY = style.overflowY;
+                            if ((ovY === 'auto' || ovY === 'scroll' || ovY === 'overlay') &&
+                                el.scrollHeight > el.clientHeight + 1 &&
+                                el.scrollTop > 1) {
+                                return true;
+                            }
+                        }
+                        var next = el.parentElement;
+                        if (!next && el.getRootNode) {
+                            var root = el.getRootNode();
+                            if (root && root.host) {
+                                next = root.host;
+                            }
+                        }
+                        el = next;
+                    }
+                    var docEl = document.documentElement;
+                    if (docEl && window.getComputedStyle) {
+                        var rootStyle = window.getComputedStyle(docEl);
+                        var rootObY = rootStyle.overscrollBehaviorY || rootStyle.overscrollBehavior || '';
+                        if (rootObY === 'contain' || rootObY === 'none') {
+                            return true;
+                        }
+                    }
+                } catch (_e) {}
+                return false;
+            }
+
+            document.addEventListener('touchstart', function(e) {
+                touching = true;
+                var multiTouch = !!(e.touches && e.touches.length > 1);
+                var blocked = multiTouch || inspectTarget(e.target);
+                blockedSentForTouch = blocked;
+                postGate(blocked);
+            }, { capture: true, passive: true });
+
+            document.addEventListener('touchstart', function(e) {
+                if (touching && !blockedSentForTouch && e.defaultPrevented) {
+                    blockedSentForTouch = true;
+                    postGate(true);
+                }
+            }, { passive: true });
+
+            document.addEventListener('touchmove', function(e) {
+                if (touching && !blockedSentForTouch && e.defaultPrevented) {
+                    blockedSentForTouch = true;
+                    postGate(true);
+                }
+            }, { passive: true });
+
+            document.addEventListener('scroll', function() {
+                if (touching && !blockedSentForTouch) {
+                    blockedSentForTouch = true;
+                    postGate(true);
+                }
+            }, { capture: true, passive: true });
+
+            var endTouch = function(e) {
+                if (!e.touches || e.touches.length === 0) {
+                    touching = false;
+                    blockedSentForTouch = false;
+                }
+            };
+            document.addEventListener('touchend', endTouch, { capture: true, passive: true });
+            document.addEventListener('touchcancel', endTouch, { capture: true, passive: true });
+        })();
+    """.trimIndent()
+
+    fun registerGlobalTouchScrollGateScript(webView: WebView): ScriptHandler? {
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            return null
+        }
+        return runCatching {
+            WebViewCompat.addDocumentStartJavaScript(webView, buildTouchScrollGateScript(), setOf("*"))
+        }.getOrNull()
+    }
+
     fun registerDocumentStartScripts(
         webView: WebView,
         previousHandlers: List<ScriptHandler>,

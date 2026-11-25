@@ -129,6 +129,7 @@ class BrowserSession(
     )
     private val defaultMobileUserAgent: String
     private val documentStartHandlers = mutableListOf<ScriptHandler>()
+    private var touchScrollGateHandler: ScriptHandler? = null
     private var prepaintDarkHandler: ScriptHandler? = null
     private var lastPrepaintDarkScript: String? = null
     private var subframeDarkRuntimeHandler: ScriptHandler? = null
@@ -347,11 +348,16 @@ class BrowserSession(
                     handleNativeChannelMessage(obj, sourceOrigin.toString())
                 }
             }
+            touchScrollGateHandler = ScriptInjector.registerGlobalTouchScrollGateScript(webView)
         }
     }
 
     private fun handleNativeChannelMessage(obj: JSONObject, sourceOriginRaw: String) {
         val channel = obj.optString("channel")
+        if (channel == "touchGate") {
+            webView.updateDomTouchGate(obj.optBoolean("blocked", false))
+            return
+        }
         val token = obj.optString("token")
         val curTokens = tokens
         val committedUrl = webViewClient.committedMainFrameUrl
@@ -822,6 +828,10 @@ class BrowserSession(
         isDestroyed = true
         webView.isMediaCurrentlyPlaying = false
         webView.onScrollMetricsChanged = null
+        webView.onTopOverscroll = null
+        webView.onDomPullToRefreshBlocked = null
+        runCatching { touchScrollGateHandler?.remove() }
+        touchScrollGateHandler = null
         clearDocumentStartScripts()
         clearGlobalPrepaintDarkScript()
         clearSubframeDarkReaderRuntime()

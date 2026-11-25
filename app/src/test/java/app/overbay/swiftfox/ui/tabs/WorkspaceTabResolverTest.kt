@@ -532,4 +532,32 @@ class WorkspaceTabResolverTest {
         assertEquals(2, separatedState.tabSwitcherCountForSpace("space_work"))
         assertEquals(2, separatedState.tabSwitcherCountForSpace("space_personal"))
     }
+
+    @Test
+    fun resolveTabCardSwipeDismissDirection_handlesDistanceVelocityReversalAndFloor() {
+        val width = 400f
+        val minFling = 1200f
+
+        // Slow drag past 38% distance dismisses in drag direction
+        assertEquals(1, resolveTabCardSwipeDismissDirection(offsetX = 160f, velocityX = 100f, cardWidthPx = width, minFlingVelocityPxPerSec = minFling))
+        assertEquals(-1, resolveTabCardSwipeDismissDirection(offsetX = -160f, velocityX = -100f, cardWidthPx = width, minFlingVelocityPxPerSec = minFling))
+
+        // Slow drag below 38% snaps back
+        assertEquals(0, resolveTabCardSwipeDismissDirection(offsetX = 140f, velocityX = 200f, cardWidthPx = width, minFlingVelocityPxPerSec = minFling))
+        assertEquals(0, resolveTabCardSwipeDismissDirection(offsetX = -140f, velocityX = -200f, cardWidthPx = width, minFlingVelocityPxPerSec = minFling))
+
+        // Fast fling past 14% floor dismisses cleanly
+        assertEquals(1, resolveTabCardSwipeDismissDirection(offsetX = 60f, velocityX = 1500f, cardWidthPx = width, minFlingVelocityPxPerSec = minFling))
+        assertEquals(-1, resolveTabCardSwipeDismissDirection(offsetX = -60f, velocityX = -1500f, cardWidthPx = width, minFlingVelocityPxPerSec = minFling))
+
+        // Tiny jitter (< 14% floor) with high velocity does not accidentally dismiss
+        assertEquals(0, resolveTabCardSwipeDismissDirection(offsetX = 30f, velocityX = 1800f, cardWidthPx = width, minFlingVelocityPxPerSec = minFling))
+
+        // Dragged right past threshold but flicked sharply back left cancels cleanly
+        assertEquals(0, resolveTabCardSwipeDismissDirection(offsetX = 180f, velocityX = -1500f, cardWidthPx = width, minFlingVelocityPxPerSec = minFling))
+        assertEquals(0, resolveTabCardSwipeDismissDirection(offsetX = -180f, velocityX = 1500f, cardWidthPx = width, minFlingVelocityPxPerSec = minFling))
+
+        // Unmeasured card width never dismisses
+        assertEquals(0, resolveTabCardSwipeDismissDirection(offsetX = 200f, velocityX = 2000f, cardWidthPx = 0f, minFlingVelocityPxPerSec = minFling))
+    }
 }

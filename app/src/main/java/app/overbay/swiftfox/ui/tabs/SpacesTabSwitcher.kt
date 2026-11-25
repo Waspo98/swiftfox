@@ -1,10 +1,15 @@
 package app.overbay.swiftfox.ui.tabs
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -60,8 +65,11 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -69,11 +77,18 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import app.overbay.swiftfox.data.db.EssentialEntity
 import app.overbay.swiftfox.data.db.SpaceEntity
 import app.overbay.swiftfox.data.db.ZenPinnedItemEntity
@@ -81,6 +96,7 @@ import app.overbay.swiftfox.data.prefs.SiteMode
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
 import app.overbay.swiftfox.ui.browser.BrowserTabUi
 import app.overbay.swiftfox.ui.browser.BrowserUiState
+import app.overbay.swiftfox.ui.browser.EmphasizedAccelerateEasing
 import app.overbay.swiftfox.ui.browser.TabThumbnailsSnapshot
 import app.overbay.swiftfox.ui.components.CustomIconPickerSheet
 import app.overbay.swiftfox.ui.components.DragAxis
@@ -96,7 +112,11 @@ import app.overbay.swiftfox.ui.components.rememberDragReorderController
 import app.overbay.swiftfox.ui.theme.LocalSwiftfoxColors
 import app.overbay.swiftfox.ui.theme.SwiftfoxEmblem
 import app.overbay.swiftfox.ui.theme.SwiftfoxEmblemVariant
+import app.overbay.swiftfox.ui.theme.rememberReduceMotion
 import app.overbay.swiftfox.ui.theme.spaceIconFor
+import kotlinx.coroutines.launch
+import kotlin.math.abs
+import kotlin.math.sign
 
 @Composable
 fun SpacesTabSwitcher(
@@ -412,29 +432,39 @@ fun SpacesTabSwitcher(
                         contentType = { "tab_card" }
                     ) { tab ->
                         val isLoaded = !tab.isUnloaded
-                        TabPreviewCard(
-                            tab = tab,
-                            isActive = isLoaded && tab.id == state.activeTabId,
-                            isLoaded = isLoaded,
-                            thumbnail = if (isLoaded) thumbnails.bitmaps[tab.id] else null,
-                            onSelect = {
-                                if (tab.isPinned && !tab.isPrivate) {
-                                    itemCallbacks.onActivatePinnedTab(tab.id)
-                                } else {
-                                    onSelectTab(tab.id)
-                                }
-                            },
-                            onLongPress = { actionTab = tab },
-                            onClose = {
-                                val essId = tab.essentialId
-                                if (essId != null) {
-                                    itemCallbacks.onCloseEssentialTab(essId)
-                                } else {
-                                    onCloseTab(tab.id)
-                                }
-                            },
+                        val isPinnedTab = tab.isPinned && !tab.isPrivate
+                        val canSwipeDismiss = !isPinnedTab || isLoaded
+                        val closeOrUnloadTab = {
+                            val essId = tab.essentialId
+                            when {
+                                essId != null -> itemCallbacks.onCloseEssentialTab(essId)
+                                isPinnedTab -> itemCallbacks.onClosePinnedTab(tab.id)
+                                else -> onCloseTab(tab.id)
+                            }
+                        }
+                        SwipeToDismissTabCard(
+                            tabId = tab.id,
+                            enabled = canSwipeDismiss,
+                            staysInGridAfterDismiss = isPinnedTab,
+                            onDismiss = closeOrUnloadTab,
                             modifier = Modifier.animateItem()
-                        )
+                        ) {
+                            TabPreviewCard(
+                                tab = tab,
+                                isActive = isLoaded && tab.id == state.activeTabId,
+                                isLoaded = isLoaded,
+                                thumbnail = if (isLoaded) thumbnails.bitmaps[tab.id] else null,
+                                onSelect = {
+                                    if (isPinnedTab) {
+                                        itemCallbacks.onActivatePinnedTab(tab.id)
+                                    } else {
+                                        onSelectTab(tab.id)
+                                    }
+                                },
+                                onLongPress = { actionTab = tab },
+                                onClose = closeOrUnloadTab
+                            )
+                        }
                     }
                 }
             }
@@ -1013,6 +1043,186 @@ internal fun parseHexColorOrNull(hex: String?): Color? {
     if (cleaned.length != 6) return null
     val rgb = cleaned.toLongOrNull(16) ?: return null
     return Color((0xFF000000L or rgb).toInt())
+}
+
+internal fun resolveTabCardSwipeDismissDirection(
+    offsetX: Float,
+    velocityX: Float,
+    cardWidthPx: Float,
+    minFlingVelocityPxPerSec: Float,
+    dismissDistanceFraction: Float = 0.38f,
+    minFlingDistanceFraction: Float = 0.14f
+): Int {
+    if (cardWidthPx <= 0f) return 0
+    val distanceThreshold = cardWidthPx * dismissDistanceFraction
+    val flingDistanceFloor = cardWidthPx * minFlingDistanceFraction
+
+    val dismissRight = (offsetX >= distanceThreshold && velocityX > -minFlingVelocityPxPerSec) ||
+        (offsetX >= flingDistanceFloor && velocityX >= minFlingVelocityPxPerSec)
+    if (dismissRight) return 1
+
+    val dismissLeft = (offsetX <= -distanceThreshold && velocityX < minFlingVelocityPxPerSec) ||
+        (offsetX <= -flingDistanceFloor && velocityX <= -minFlingVelocityPxPerSec)
+    if (dismissLeft) return -1
+
+    return 0
+}
+
+@Composable
+private fun SwipeToDismissTabCard(
+    tabId: String,
+    enabled: Boolean,
+    staysInGridAfterDismiss: Boolean,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit
+) {
+    val reduceMotion = rememberReduceMotion()
+    val haptic = LocalHapticFeedback.current
+    val scope = rememberCoroutineScope()
+    val minFlingVelocityPx = with(LocalDensity.current) { 420.dp.toPx() }
+    val offsetX = remember(tabId) { Animatable(0f) }
+    var cardWidthPx by remember(tabId) { mutableIntStateOf(0) }
+    var isDragging by remember(tabId) { mutableStateOf(false) }
+    var isDismissing by remember(tabId) { mutableStateOf(false) }
+
+    val currentOnDismiss by rememberUpdatedState(onDismiss)
+    val currentReduceMotion by rememberUpdatedState(reduceMotion)
+    val currentStaysInGrid by rememberUpdatedState(staysInGridAfterDismiss)
+
+    LaunchedEffect(tabId, enabled) {
+        if (!enabled && !isDismissing && offsetX.value != 0f) {
+            offsetX.snapTo(0f)
+        }
+    }
+
+    Box(
+        modifier = modifier
+            .zIndex(if (isDragging || isDismissing) 1f else 0f)
+            .onSizeChanged { cardWidthPx = it.width }
+            .pointerInput(tabId, enabled, minFlingVelocityPx) {
+                if (!enabled) return@pointerInput
+                val velocityTracker = VelocityTracker()
+                var currentDragOffset = 0f
+                var crossedThreshold = false
+
+                detectHorizontalDragGestures(
+                    onDragStart = {
+                        if (isDismissing) return@detectHorizontalDragGestures
+                        velocityTracker.resetTracking()
+                        currentDragOffset = offsetX.value
+                        crossedThreshold = false
+                        isDragging = true
+                        scope.launch { offsetX.stop() }
+                    },
+                    onHorizontalDrag = { change, dragAmount ->
+                        if (isDismissing) return@detectHorizontalDragGestures
+                        change.consume()
+                        velocityTracker.addPosition(change.uptimeMillis, change.position)
+                        currentDragOffset += dragAmount
+                        val targetOffset = currentDragOffset
+                        val threshold = cardWidthPx * 0.38f
+                        val nowCrossed = cardWidthPx > 0 && abs(targetOffset) >= threshold
+                        if (nowCrossed && !crossedThreshold) {
+                            crossedThreshold = true
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        } else if (!nowCrossed) {
+                            crossedThreshold = false
+                        }
+                        scope.launch { offsetX.snapTo(targetOffset) }
+                    },
+                    onDragEnd = {
+                        isDragging = false
+                        if (isDismissing) return@detectHorizontalDragGestures
+                        val vx = velocityTracker.calculateVelocity().x
+                        val direction = resolveTabCardSwipeDismissDirection(
+                            offsetX = currentDragOffset,
+                            velocityX = vx,
+                            cardWidthPx = cardWidthPx.toFloat(),
+                            minFlingVelocityPxPerSec = minFlingVelocityPx
+                        )
+                        if (direction != 0) {
+                            isDismissing = true
+                            val exitTarget = direction * (cardWidthPx.coerceAtLeast(1) * 1.25f)
+                            scope.launch {
+                                if (currentReduceMotion) {
+                                    offsetX.snapTo(exitTarget)
+                                } else {
+                                    offsetX.animateTo(
+                                        targetValue = exitTarget,
+                                        animationSpec = tween(
+                                            durationMillis = 165,
+                                            easing = EmphasizedAccelerateEasing
+                                        )
+                                    )
+                                }
+                                currentOnDismiss()
+                                if (currentStaysInGrid) {
+                                    if (currentReduceMotion) {
+                                        offsetX.snapTo(0f)
+                                    } else {
+                                        offsetX.animateTo(
+                                            targetValue = 0f,
+                                            animationSpec = spring(
+                                                dampingRatio = Spring.DampingRatioNoBouncy,
+                                                stiffness = Spring.StiffnessMedium
+                                            )
+                                        )
+                                    }
+                                    isDismissing = false
+                                }
+                            }
+                        } else {
+                            scope.launch {
+                                if (currentReduceMotion) {
+                                    offsetX.snapTo(0f)
+                                } else {
+                                    offsetX.animateTo(
+                                        targetValue = 0f,
+                                        animationSpec = spring(
+                                            dampingRatio = Spring.DampingRatioNoBouncy,
+                                            stiffness = Spring.StiffnessMediumLow
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                    },
+                    onDragCancel = {
+                        isDragging = false
+                        if (isDismissing) return@detectHorizontalDragGestures
+                        scope.launch {
+                            if (currentReduceMotion) {
+                                offsetX.snapTo(0f)
+                            } else {
+                                offsetX.animateTo(
+                                    targetValue = 0f,
+                                    animationSpec = spring(
+                                        dampingRatio = Spring.DampingRatioNoBouncy,
+                                        stiffness = Spring.StiffnessMediumLow
+                                    )
+                                )
+                            }
+                        }
+                    }
+                )
+            }
+    ) {
+        Box(
+            modifier = Modifier.graphicsLayer {
+                val dx = offsetX.value
+                translationX = dx
+                val width = size.width.coerceAtLeast(1f)
+                val progress = (abs(dx) / (width * 0.95f)).coerceIn(0f, 1f)
+                alpha = (1f - progress * 0.85f).coerceIn(0.15f, 1f)
+                if (!reduceMotion) {
+                    rotationZ = sign(dx) * (progress * 5f)
+                }
+            }
+        ) {
+            content()
+        }
+    }
 }
 
 @OptIn(ExperimentalFoundationApi::class)

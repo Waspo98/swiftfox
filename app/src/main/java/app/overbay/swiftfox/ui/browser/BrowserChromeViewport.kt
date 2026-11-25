@@ -23,6 +23,9 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.layoutId
+import androidx.core.view.NestedScrollingChild3
+import androidx.core.view.NestedScrollingChildHelper
+import androidx.core.view.ViewCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import app.overbay.swiftfox.engine.SwiftfoxWebView
@@ -512,6 +515,164 @@ internal class VerticalDragGestureState(private val touchSlop: Int) {
     }
 }
 
+/**
+ * Pure state machine coordinating Chromium WebView top-boundary overscroll (`overScrollBy`) with
+ * AndroidX [SwipeRefreshLayout] over nested scrolling.
+ *
+ * Prevents eager `SwipeRefreshLayout.onInterceptTouchEvent` hijacking on sites whose inner CSS
+ * containers scroll instead of the root document viewport (e.g. `body, html { height: 100% }` with
+ * `body { overflow-y: scroll }` or inner `overflow-y: auto` shells like Google Fi), while
+ * preserving smooth top-of-page pull-to-refresh and CSS `overscroll-behavior` compliance.
+ */
+internal class PullToRefreshOverscrollState(
+    private val touchSlopPx: Int,
+    private val maxUnoverscrolledDownwardDragPx: Float
+) {
+    var touchActive: Boolean = false
+        private set
+    var eligible: Boolean = false
+        private set
+    var activePullPx: Int = 0
+        private set
+
+    private var downRawY: Float = 0f
+    private var maxDownwardDragPx: Float = 0f
+    private var maxUpwardDragPx: Float = 0f
+    private var hasReceivedTopOverscroll: Boolean = false
+    private var retractResidualPx: Float = 0f
+
+    fun onTouchDown(
+        rawY: Float,
+        initialScrollY: Int,
+        initialCollapseProgress: Float,
+        enabled: Boolean
+    ) {
+        touchActive = true
+        activePullPx = 0
+        downRawY = rawY
+        maxDownwardDragPx = 0f
+        maxUpwardDragPx = 0f
+        hasReceivedTopOverscroll = false
+        retractResidualPx = 0f
+        eligible = enabled && initialScrollY <= 0 && initialCollapseProgress <= 0.001f
+    }
+
+    /**
+     * Tracks finger movement (`rawDy = prevRawY - rawY`; `> 0` when dragging finger up).
+     * Returns positive pixels to pass to `dispatchNestedPreScroll` to retract an actively pulled
+     * refresh spinner when the user reverses upward, or `0`.
+     */
+    fun onTouchMove(
+        rawY: Float,
+        rawDy: Float,
+        currentScrollY: Int,
+        currentCollapseProgress: Float
+    ): Int {
+        if (!touchActive) return 0
+
+        if (activePullPx > 0) {
+            if (rawDy > 0f) {
+                retractResidualPx += rawDy
+                val wholePx = retractResidualPx.toInt().coerceIn(0, activePullPx)
+                retractResidualPx -= wholePx
+                return wholePx
+            } else {
+                retractResidualPx = 0f
+                return 0
+            }
+        }
+
+        if (!eligible) return 0
+
+        if (currentScrollY > 0 || currentCollapseProgress > 0.001f) {
+            eligible = false
+            return 0
+        }
+
+        val netDownward = rawY - downRawY
+        if (netDownward > maxDownwardDragPx) maxDownwardDragPx = netDownward
+        val netUpward = downRawY - rawY
+        if (netUpward > maxUpwardDragPx) maxUpwardDragPx = netUpward
+
+        if (maxUpwardDragPx > touchSlopPx) {
+            eligible = false
+            return 0
+        }
+
+        if (!hasReceivedTopOverscroll && maxDownwardDragPx > maxUnoverscrolledDownwardDragPx) {
+            eligible = false
+            return 0
+        }
+
+        return 0
+    }
+
+    fun onPreScrollRetracted(consumedUpPx: Int) {
+        if (consumedUpPx > 0) {
+            activePullPx = (activePullPx - consumedUpPx).coerceAtLeast(0)
+            if (activePullPx == 0) {
+                retractResidualPx = 0f
+            }
+        }
+    }
+
+    /**
+     * Evaluates a native Chromium `WebView.overScrollBy` top overscroll delta (`deltaY < 0`).
+     * Returns negative `dyUnconsumed` to forward to `SwipeRefreshLayout.dispatchNestedScroll`,
+     * or `0` when overscroll must not engage pull-to-refresh.
+     */
+    fun onTopOverscroll(
+        deltaX: Int,
+        deltaY: Int,
+        scrollY: Int,
+        collapseProgress: Float,
+        horizontalAxisLocked: Boolean
+    ): Int {
+        if (!touchActive || !eligible || horizontalAxisLocked) return 0
+        if (deltaY >= 0 || scrollY > 0 || collapseProgress > 0.001f) return 0
+        if (abs(deltaY) < abs(deltaX)) return 0
+        hasReceivedTopOverscroll = true
+        return deltaY
+    }
+
+    fun onNestedScrollPulled(consumedDy: Int) {
+        if (consumedDy < 0) {
+            activePullPx += abs(consumedDy)
+            retractResidualPx = 0f
+        }
+    }
+
+    fun onAbortGesture(): Int {
+        eligible = false
+        val toRetract = activePullPx
+        activePullPx = 0
+        retractResidualPx = 0f
+        return toRetract
+    }
+
+    fun onTouchEnd(isCancel: Boolean): Int {
+        val toRetract = if (isCancel) activePullPx else 0
+        touchActive = false
+        eligible = false
+        activePullPx = 0
+        maxDownwardDragPx = 0f
+        maxUpwardDragPx = 0f
+        hasReceivedTopOverscroll = false
+        retractResidualPx = 0f
+        return toRetract
+    }
+
+    fun reset() {
+        touchActive = false
+        eligible = false
+        activePullPx = 0
+        maxDownwardDragPx = 0f
+        maxUpwardDragPx = 0f
+        hasReceivedTopOverscroll = false
+        retractResidualPx = 0f
+    }
+}
+
 internal enum class ViewportHeightMode {
     /** Resting expanded: inset by both top and bottom bars so fixed web footers stay above the bottom bar. */
     INSET_BOTH,
@@ -568,10 +729,28 @@ internal fun computeWebViewHeightPx(
         .coerceAtLeast(1)
 }
 
-internal class WebViewContainer(context: Context) : FrameLayout(context), FrameCallbackScheduler {
+internal class WebViewContainer(context: Context) : FrameLayout(context), FrameCallbackScheduler, NestedScrollingChild3 {
     var lastPrimaryArgb: Int? = null
     var lastSurfaceArgb: Int? = null
     private var lastContainerBgArgb: Int? = null
+
+    private val nestedScrollingChildHelper = NestedScrollingChildHelper(this)
+    private val nestedConsumed = IntArray(2)
+    private var dispatchingTopOverscroll: Boolean = false
+    private var lastTouchRawY: Float = 0f
+
+    var pullToRefreshEnabled: Boolean = true
+        set(value) {
+            if (field == value) return
+            field = value
+            if (!value) {
+                abortPullToRefreshNestedScroll()
+            }
+        }
+
+    init {
+        isNestedScrollingEnabled = true
+    }
 
     fun syncSurfaceBackground(colorArgb: Int) {
         if (lastContainerBgArgb == colorArgb) return
@@ -604,14 +783,69 @@ internal class WebViewContainer(context: Context) : FrameLayout(context), FrameC
     private val maxFlingVelocityPx = ViewConfiguration.get(context).scaledMaximumFlingVelocity.toFloat()
 
     private val gestureState = VerticalDragGestureState(touchSlop)
+    private val pullToRefreshState = PullToRefreshOverscrollState(
+        touchSlopPx = touchSlop,
+        maxUnoverscrolledDownwardDragPx = touchSlop + 56f * context.resources.displayMetrics.density
+    )
     private var velocityTracker: VelocityTracker? = null
 
     fun clearGestureCallbacks() {
         onGestureStart = null
         onGestureDragDelta = null
         onGestureEnd = null
+        abortPullToRefreshNestedScroll()
+        pullToRefreshState.reset()
         gestureState.reset()
         recycleVelocityTracker()
+    }
+
+    fun isPullToRefreshOverscrollAllowed(): Boolean {
+        if (!dispatchingTopOverscroll || !pullToRefreshEnabled) return false
+        if (currentCollapseProgress > 0.001f) return false
+        val childWebView = getChildAt(0) ?: return false
+        return childWebView.scrollY <= 0 && !childWebView.canScrollVertically(-1)
+    }
+
+    fun handleWebViewTopOverscroll(deltaX: Int, deltaY: Int, scrollY: Int): Boolean {
+        if (!pullToRefreshEnabled) return false
+        val dyUnconsumed = pullToRefreshState.onTopOverscroll(
+            deltaX = deltaX,
+            deltaY = deltaY,
+            scrollY = scrollY,
+            collapseProgress = currentCollapseProgress,
+            horizontalAxisLocked = gestureState.axis == GestureAxis.IGNORED
+        )
+        if (dyUnconsumed >= 0) return false
+        if (!hasNestedScrollingParent(ViewCompat.TYPE_TOUCH)) {
+            startNestedScroll(ViewCompat.SCROLL_AXIS_VERTICAL, ViewCompat.TYPE_TOUCH)
+        }
+        nestedConsumed[0] = 0
+        nestedConsumed[1] = 0
+        dispatchingTopOverscroll = true
+        try {
+            dispatchNestedScroll(0, 0, 0, dyUnconsumed, null, ViewCompat.TYPE_TOUCH, nestedConsumed)
+        } finally {
+            dispatchingTopOverscroll = false
+        }
+        pullToRefreshState.onNestedScrollPulled(nestedConsumed[1])
+        return nestedConsumed[1] < 0
+    }
+
+    private fun retractNestedPull(retractPx: Int) {
+        if (retractPx <= 0 || !hasNestedScrollingParent(ViewCompat.TYPE_TOUCH)) return
+        nestedConsumed[0] = 0
+        nestedConsumed[1] = 0
+        dispatchNestedPreScroll(0, retractPx, nestedConsumed, null, ViewCompat.TYPE_TOUCH)
+    }
+
+    private fun abortPullToRefreshNestedScroll() {
+        val toRetract = pullToRefreshState.onAbortGesture()
+        if (toRetract > 0) {
+            retractNestedPull(toRetract)
+        }
+        if (hasNestedScrollingParent(ViewCompat.TYPE_TOUCH)) {
+            stopNestedScroll(ViewCompat.TYPE_TOUCH)
+        }
     }
 
     fun updateChromeMetrics(
@@ -689,43 +923,75 @@ internal class WebViewContainer(context: Context) : FrameLayout(context), FrameC
         val childWebView = getChildAt(0) as? SwiftfoxWebView
         val dragCallback = onGestureDragDelta
         if (childWebView == null || dragCallback == null) {
+            abortPullToRefreshNestedScroll()
+            pullToRefreshState.reset()
             gestureState.reset()
             recycleVelocityTracker()
             return super.dispatchTouchEvent(ev)
         }
 
         val action = ev.actionMasked
+        var hadActivePullAtEnd = false
         when (action) {
             MotionEvent.ACTION_DOWN -> {
                 recycleVelocityTracker()
                 velocityTracker = VelocityTracker.obtain()
                 addScreenVelocityEvent(ev)
+                lastTouchRawY = ev.rawY
                 gestureState.onDown(ev.rawX, ev.rawY)
+                pullToRefreshState.onTouchDown(
+                    rawY = ev.rawY,
+                    initialScrollY = childWebView.scrollY,
+                    initialCollapseProgress = currentCollapseProgress,
+                    enabled = pullToRefreshEnabled
+                )
+                startNestedScroll(ViewCompat.SCROLL_AXIS_VERTICAL, ViewCompat.TYPE_TOUCH)
                 onGestureStart?.invoke()
             }
 
             MotionEvent.ACTION_POINTER_DOWN -> {
+                abortPullToRefreshNestedScroll()
                 if (gestureState.onPointerDown()) {
                     finishGesture(childWebView, cancelled = true)
                 }
             }
 
             MotionEvent.ACTION_MOVE -> {
+                val rawMoveDy = lastTouchRawY - ev.rawY
+                lastTouchRawY = ev.rawY
+                val retractPx = pullToRefreshState.onTouchMove(
+                    rawY = ev.rawY,
+                    rawDy = rawMoveDy,
+                    currentScrollY = childWebView.scrollY,
+                    currentCollapseProgress = currentCollapseProgress
+                )
+                var retractedSpinner = false
+                if (retractPx > 0 && hasNestedScrollingParent(ViewCompat.TYPE_TOUCH)) {
+                    nestedConsumed[0] = 0
+                    nestedConsumed[1] = 0
+                    dispatchNestedPreScroll(0, retractPx, nestedConsumed, null, ViewCompat.TYPE_TOUCH)
+                    pullToRefreshState.onPreScrollRetracted(nestedConsumed[1])
+                    retractedSpinner = nestedConsumed[1] > 0
+                }
+
                 if (gestureState.shouldRecordVelocityOnMove()) {
                     addScreenVelocityEvent(ev)
                 }
                 when (val result = gestureState.onMove(ev.rawX, ev.rawY)) {
                     VerticalDragGestureState.MoveResult.Ignored -> Unit
                     VerticalDragGestureState.MoveResult.LockedHorizontalCancel -> {
+                        abortPullToRefreshNestedScroll()
                         finishGesture(childWebView, cancelled = true)
                     }
                     is VerticalDragGestureState.MoveResult.VerticalDelta -> {
-                        val consumedPx = dragCallback(result.rawDy, childWebView)
-                        // Sync child translationY synchronously BEFORE super.dispatchTouchEvent
-                        // so Android transforms ev into childWebView with zero frame lag.
-                        syncChildTranslation()
-                        gestureState.lastMoveShiftedWebView =
-                            topBarHeightPx > 0 && abs(consumedPx) > 0.5f
+                        if (!retractedSpinner && pullToRefreshState.activePullPx == 0) {
+                            val consumedPx = dragCallback(result.rawDy, childWebView)
+                            // Sync child translationY synchronously BEFORE super.dispatchTouchEvent
+                            // so Android transforms ev into childWebView with zero frame lag.
+                            syncChildTranslation()
+                            gestureState.lastMoveShiftedWebView =
+                                topBarHeightPx > 0 && abs(consumedPx) > 0.5f
+                        }
                     }
                 }
             }
@@ -733,6 +999,18 @@ internal class WebViewContainer(context: Context) : FrameLayout(context), FrameC
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 if (gestureState.shouldRecordTerminalVelocity()) {
                     addScreenVelocityEvent(ev)
+                }
+                // End nested pull-to-refresh BEFORE delivering UP/CANCEL to WebView so a
+                // synchronous fling overscroll on pointer release can never push the spinner
+                // past the refresh trigger threshold.
+                val isCancel = action == MotionEvent.ACTION_CANCEL
+                hadActivePullAtEnd = pullToRefreshState.activePullPx > 0
+                val toRetract = pullToRefreshState.onTouchEnd(isCancel = isCancel)
+                if (toRetract > 0) {
+                    retractNestedPull(toRetract)
+                }
+                if (hasNestedScrollingParent(ViewCompat.TYPE_TOUCH)) {
+                    stopNestedScroll(ViewCompat.TYPE_TOUCH)
                 }
             }
         }
@@ -742,7 +1020,7 @@ internal class WebViewContainer(context: Context) : FrameLayout(context), FrameC
         if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
             val outcome = gestureState.onUpOrCancel(isCancel = (action == MotionEvent.ACTION_CANCEL))
             if (outcome.shouldFinish) {
-                finishGesture(childWebView, cancelled = outcome.cancelled)
+                finishGesture(childWebView, cancelled = outcome.cancelled || hadActivePullAtEnd)
             }
         }
         return handled
@@ -779,10 +1057,95 @@ internal class WebViewContainer(context: Context) : FrameLayout(context), FrameC
     }
 
     override fun onDetachedFromWindow() {
+        abortPullToRefreshNestedScroll()
+        pullToRefreshState.reset()
         gestureState.reset()
         recycleVelocityTracker()
         super.onDetachedFromWindow()
     }
+
+    override fun setNestedScrollingEnabled(enabled: Boolean) {
+        nestedScrollingChildHelper.isNestedScrollingEnabled = enabled
+    }
+
+    override fun isNestedScrollingEnabled(): Boolean =
+        nestedScrollingChildHelper.isNestedScrollingEnabled
+
+    override fun startNestedScroll(axes: Int): Boolean =
+        nestedScrollingChildHelper.startNestedScroll(axes)
+
+    override fun startNestedScroll(axes: Int, type: Int): Boolean =
+        nestedScrollingChildHelper.startNestedScroll(axes, type)
+
+    override fun stopNestedScroll() {
+        nestedScrollingChildHelper.stopNestedScroll()
+    }
+
+    override fun stopNestedScroll(type: Int) {
+        nestedScrollingChildHelper.stopNestedScroll(type)
+    }
+
+    override fun hasNestedScrollingParent(): Boolean =
+        nestedScrollingChildHelper.hasNestedScrollingParent()
+
+    override fun hasNestedScrollingParent(type: Int): Boolean =
+        nestedScrollingChildHelper.hasNestedScrollingParent(type)
+
+    override fun dispatchNestedScroll(
+        dxConsumed: Int,
+        dyConsumed: Int,
+        dxUnconsumed: Int,
+        dyUnconsumed: Int,
+        offsetInWindow: IntArray?
+    ): Boolean = nestedScrollingChildHelper.dispatchNestedScroll(
+        dxConsumed, dyConsumed, dxUnconsumed, dyUnconsumed, offsetInWindow
+    )
+
+    override fun dispatchNestedScroll(
+        dxConsumed: Int,
+        dyConsumed: Int,
+        dxUnconsumed: Int,
+        dyUnconsumed: Int,
+        offsetInWindow: IntArray?,
+        type: Int
+    ): Boolean = nestedScrollingChildHelper.dispatchNestedScroll(
+        dxConsumed, dyConsumed, dxUnconsumed, dyUnconsumed, offsetInWindow, type
+    )
+
+    override fun dispatchNestedScroll(
+        dxConsumed: Int,
+        dyConsumed: Int,
+        dxUnconsumed: Int,
+        dyUnconsumed: Int,
+        offsetInWindow: IntArray?,
+        type: Int,
+        consumed: IntArray
+    ) {
+        nestedScrollingChildHelper.dispatchNestedScroll(
+            dxConsumed, dyConsumed, dxUnconsumed, dyUnconsumed, offsetInWindow, type, consumed
+        )
+    }
+
+    override fun dispatchNestedPreScroll(
+        dx: Int,
+        dy: Int,
+        consumed: IntArray?,
+        offsetInWindow: IntArray?
+    ): Boolean = nestedScrollingChildHelper.dispatchNestedPreScroll(dx, dy, consumed, offsetInWindow)
+
+    override fun dispatchNestedPreScroll(
+        dx: Int,
+        dy: Int,
+        consumed: IntArray?,
+        offsetInWindow: IntArray?,
+        type: Int
+    ): Boolean = nestedScrollingChildHelper.dispatchNestedPreScroll(dx, dy, consumed, offsetInWindow, type)
+
+    override fun dispatchNestedFling(velocityX: Float, velocityY: Float, consumed: Boolean): Boolean =
+        nestedScrollingChildHelper.dispatchNestedFling(velocityX, velocityY, consumed)
+
+    override fun dispatchNestedPreFling(velocityX: Float, velocityY: Float): Boolean =
+        nestedScrollingChildHelper.dispatchNestedPreFling(velocityX, velocityY)
 }
 
 internal fun findWebViewContainer(swipeLayout: SwipeRefreshLayout): WebViewContainer? {

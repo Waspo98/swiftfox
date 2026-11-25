@@ -4,6 +4,7 @@ import androidx.compose.runtime.snapshots.Snapshot
 import app.overbay.swiftfox.data.prefs.BrowserSettings
 import app.overbay.swiftfox.ui.browser.FrameCallbackScheduler
 import app.overbay.swiftfox.ui.browser.GestureAxis
+import app.overbay.swiftfox.ui.browser.PullToRefreshOverscrollState
 import app.overbay.swiftfox.ui.browser.ToolbarCollapseBridge
 import app.overbay.swiftfox.ui.browser.ToolbarScrollCollapseController
 import app.overbay.swiftfox.ui.browser.VerticalDragGestureState
@@ -708,5 +709,116 @@ class ToolbarScrollCollapseControllerTest {
         val bottomOnlyMode = resolveViewportHeightMode(0, collapseProgress = 0.25f, expandedViewport = true)
         assertEquals(ViewportHeightMode.FULL, bottomOnlyMode)
         assertEquals(0f, computeWebViewTranslationYPx(0, collapseProgress = 0.25f), 0f)
+    }
+
+    @Test
+    fun pullToRefreshOverscrollIgnoresInnerScrollContainersLikeGoogleFi() {
+        // Simulates fi.google.com where html/body stay at WebView.scrollY == 0 while an inner
+        // body/div overflow-y container scrolls up during a downward finger drag.
+        val ptr = PullToRefreshOverscrollState(touchSlopPx = 24, maxUnoverscrolledDownwardDragPx = 160f)
+        ptr.onTouchDown(rawY = 400f, initialScrollY = 0, initialCollapseProgress = 0f, enabled = true)
+        assertTrue(ptr.eligible)
+
+        // Finger drags downward 200px while Chromium scrolls the inner container (no overScrollBy yet)
+        assertEquals(0, ptr.onTouchMove(rawY = 460f, rawDy = -60f, currentScrollY = 0, currentCollapseProgress = 0f))
+        assertTrue(ptr.eligible)
+        assertEquals(0, ptr.onTouchMove(rawY = 600f, rawDy = -140f, currentScrollY = 0, currentCollapseProgress = 0f))
+        assertFalse(
+            "Exceeding unoverscrolled downward drag window must disqualify pull-to-refresh for this gesture",
+            ptr.eligible
+        )
+
+        // Even if the inner scroller later reaches scrollTop == 0 and chains overscroll, it must be ignored
+        assertEquals(
+            0,
+            ptr.onTopOverscroll(deltaX = 0, deltaY = -28, scrollY = 0, collapseProgress = 0f, horizontalAxisLocked = false)
+        )
+        assertEquals(0, ptr.activePullPx)
+    }
+
+    @Test
+    fun pullToRefreshOverscrollEngagesAtTopRetractsOnReversalAndResetsOnCancel() {
+        val ptr = PullToRefreshOverscrollState(touchSlopPx = 24, maxUnoverscrolledDownwardDragPx = 160f)
+        ptr.onTouchDown(rawY = 300f, initialScrollY = 0, initialCollapseProgress = 0f, enabled = true)
+
+        // Horizontal-dominant overscroll is ignored
+        assertEquals(
+            0,
+            ptr.onTopOverscroll(deltaX = -40, deltaY = -10, scrollY = 0, collapseProgress = 0f, horizontalAxisLocked = false)
+        )
+
+        // Vertical top overscroll engages cleanly and tracks consumed pull distance
+        assertEquals(
+            -50,
+            ptr.onTopOverscroll(deltaX = -2, deltaY = -50, scrollY = 0, collapseProgress = 0f, horizontalAxisLocked = false)
+        )
+        ptr.onNestedScrollPulled(-50)
+        assertEquals(50, ptr.activePullPx)
+
+        // Sub-pixel 120Hz upward reversal accumulates smoothly without dropping fractional deltas
+        assertEquals(0, ptr.onTouchMove(rawY = 349.4f, rawDy = 0.6f, currentScrollY = 0, currentCollapseProgress = 0f))
+        assertEquals(1, ptr.onTouchMove(rawY = 348.8f, rawDy = 0.6f, currentScrollY = 0, currentCollapseProgress = 0f))
+        ptr.onPreScrollRetracted(1)
+        assertEquals(49, ptr.activePullPx)
+
+        // Retracting all the way back to 0 and pulling down again in the same gesture still works
+        assertEquals(49, ptr.onTouchMove(rawY = 290f, rawDy = 58.8f, currentScrollY = 0, currentCollapseProgress = 0f))
+        ptr.onPreScrollRetracted(49)
+        assertEquals(0, ptr.activePullPx)
+        assertEquals(
+            -35,
+            ptr.onTopOverscroll(deltaX = 0, deltaY = -35, scrollY = 0, collapseProgress = 0f, horizontalAxisLocked = false)
+        )
+        ptr.onNestedScrollPulled(-35)
+        assertEquals(35, ptr.activePullPx)
+
+        // ACTION_UP returns 0 retraction so SwipeRefreshLayout.onStopNestedScroll finishes/triggers refresh
+        assertEquals(0, ptr.onTouchEnd(isCancel = false))
+        assertFalse(ptr.touchActive)
+
+        // ACTION_CANCEL or multi-touch abort returns activePullPx so SwipeRefreshLayout resets without refreshing
+        ptr.onTouchDown(rawY = 300f, initialScrollY = 0, initialCollapseProgress = 0f, enabled = true)
+        assertEquals(
+            -80,
+            ptr.onTopOverscroll(deltaX = 0, deltaY = -80, scrollY = 0, collapseProgress = 0f, horizontalAxisLocked = false)
+        )
+        ptr.onNestedScrollPulled(-80)
+        assertEquals(80, ptr.onTouchEnd(isCancel = true))
+        assertEquals(0, ptr.activePullPx)
+    }
+
+    @Test
+    fun pullToRefreshOverscrollDisqualifiesNonTopStartsCollapsedBarsAndUpwardFirstScrolls() {
+        val ptr = PullToRefreshOverscrollState(touchSlopPx = 24, maxUnoverscrolledDownwardDragPx = 160f)
+
+        // Non-zero initial scrollY disqualifies immediately
+        ptr.onTouchDown(rawY = 500f, initialScrollY = 120, initialCollapseProgress = 0f, enabled = true)
+        assertFalse(ptr.eligible)
+        assertEquals(
+            0,
+            ptr.onTopOverscroll(deltaX = 0, deltaY = -40, scrollY = 0, collapseProgress = 0f, horizontalAxisLocked = false)
+        )
+
+        // Collapsed toolbars disqualify immediately
+        ptr.onTouchDown(rawY = 500f, initialScrollY = 0, initialCollapseProgress = 0.8f, enabled = true)
+        assertFalse(ptr.eligible)
+
+        // Dragging finger UP (scrolling down) past touchSlop before pull engages disqualifies reversal
+        ptr.onTouchDown(rawY = 500f, initialScrollY = 0, initialCollapseProgress = 0f, enabled = true)
+        assertTrue(ptr.eligible)
+        assertEquals(0, ptr.onTouchMove(rawY = 460f, rawDy = 40f, currentScrollY = 0, currentCollapseProgress = 0f))
+        assertFalse(ptr.eligible)
+        assertEquals(
+            0,
+            ptr.onTopOverscroll(deltaX = 0, deltaY = -40, scrollY = 0, collapseProgress = 0f, horizontalAxisLocked = false)
+        )
+
+        // Multi-touch abort retracts any active pull
+        ptr.onTouchDown(rawY = 500f, initialScrollY = 0, initialCollapseProgress = 0f, enabled = true)
+        ptr.onTopOverscroll(deltaX = 0, deltaY = -64, scrollY = 0, collapseProgress = 0f, horizontalAxisLocked = false)
+        ptr.onNestedScrollPulled(-64)
+        assertEquals(64, ptr.onAbortGesture())
+        assertFalse(ptr.eligible)
+        assertEquals(0, ptr.activePullPx)
     }
 }

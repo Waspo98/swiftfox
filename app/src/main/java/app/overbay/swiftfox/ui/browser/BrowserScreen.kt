@@ -511,11 +511,15 @@ fun BrowserScreen(
                                     // internal mCircleView.bringToFront() never alters WebView attachment
                                     // or leaves mTarget stale across tab switches.
                                     addView(webContainer)
+                                    // Require a deliberate top pull (~96dp) and drive pull-to-refresh
+                                    // exclusively through Chromium's top-boundary overScrollBy via
+                                    // nested scrolling so inner CSS scroll containers (e.g. body/div
+                                    // overflow-y scrollers on Google Fi) never get hijacked.
+                                    setDistanceToTriggerSync(
+                                        (96f * ctx.resources.displayMetrics.density).roundToInt()
+                                    )
                                     setOnChildScrollUpCallback { _, _ ->
-                                        val childWebView = webContainer.getChildAt(0)
-                                        webContainer.currentCollapseProgress > 0.001f ||
-                                            (childWebView != null &&
-                                                (childWebView.scrollY > 0 || childWebView.canScrollVertically(-1)))
+                                        !webContainer.isPullToRefreshOverscrollAllowed()
                                     }
                                     setProgressViewOffset(
                                         false,
@@ -532,9 +536,11 @@ fun BrowserScreen(
                                 if (session.isDestroyed) {
                                     val container = findWebViewContainer(swipeLayout)
                                     collapseBridge.detachContainer(container)
+                                    container?.pullToRefreshEnabled = false
                                     container?.clearGestureCallbacks()
                                     (container?.getChildAt(0) as? SwiftfoxWebView)?.apply {
                                         onScrollMetricsChanged = null
+                                        onTopOverscroll = null
                                         translationY = 0f
                                     }
                                     container?.removeAllViews()
@@ -549,6 +555,7 @@ fun BrowserScreen(
                                 }
 
                                 val webContainer = findWebViewContainer(swipeLayout) ?: return@AndroidView
+                                webContainer.pullToRefreshEnabled = shouldEnablePullToRefresh
                                 if (webContainer.lastPrimaryArgb != primaryArgb) {
                                     swipeLayout.setColorSchemeColors(primaryArgb)
                                     webContainer.lastPrimaryArgb = primaryArgb
@@ -641,6 +648,9 @@ fun BrowserScreen(
                                             }
                                         }
                                     }
+                                    targetWebView.onTopOverscroll = { deltaX, deltaY, scrollY, _ ->
+                                        webContainer.handleWebViewTopOverscroll(deltaX, deltaY, scrollY)
+                                    }
                                     targetWebView.onScrollMetricsChanged = { scrollY, deltaY, scrollRange, scrollExtent ->
                                         collapseBridge.onFlingScrollMetrics(
                                             host = webContainer,
@@ -658,8 +668,10 @@ fun BrowserScreen(
                                     }
                                 } else {
                                     collapseBridge.detachContainer(webContainer)
+                                    webContainer.pullToRefreshEnabled = false
                                     webContainer.clearGestureCallbacks()
                                     targetWebView.onScrollMetricsChanged = null
+                                    targetWebView.onTopOverscroll = null
                                     // Keep exiting tab aligned at its current top bar offset during slide-out
                                     webContainer.updateChromeMetrics(
                                         topBarHeightPx = collapseBridge.topBarHeightPx,
@@ -672,9 +684,11 @@ fun BrowserScreen(
                             onRelease = { swipeLayout ->
                                 val webContainer = findWebViewContainer(swipeLayout)
                                 collapseBridge.detachContainer(webContainer)
+                                webContainer?.pullToRefreshEnabled = false
                                 webContainer?.clearGestureCallbacks()
                                 (webContainer?.getChildAt(0) as? SwiftfoxWebView)?.apply {
                                     onScrollMetricsChanged = null
+                                    onTopOverscroll = null
                                     translationY = 0f
                                 }
                                 webContainer?.removeAllViews()
@@ -1390,7 +1404,6 @@ fun BrowserShellLayout(
                                     onFocusOmnibox = { rect -> onFocusOmniboxFromRect(rect, true) },
                                     onGoBack = onGoBack,
                                     onGoForward = onGoForward,
-                                    onReloadOrStop = onReloadOrStop,
                                     onOpenReaderMode = onOpenReaderMode,
                                     onOpenSettings = onOpenSettings,
                                     onOpenTabSwitcher = onOpenTabSwitcher,
@@ -1407,7 +1420,6 @@ fun BrowserShellLayout(
                                         onFocusOmnibox = { rect -> onFocusOmniboxFromRect(rect, true) },
                                         onGoBack = onGoBack,
                                         onGoForward = onGoForward,
-                                        onReloadOrStop = onReloadOrStop,
                                         onOpenReaderMode = onOpenReaderMode,
                                         onOpenSettings = onOpenSettings,
                                         onOpenTabSwitcher = onOpenTabSwitcher,
@@ -1451,7 +1463,6 @@ fun BrowserShellLayout(
                                     onFocusOmnibox = { rect -> onFocusOmniboxFromRect(rect, true) },
                                     onGoBack = onGoBack,
                                     onGoForward = onGoForward,
-                                    onReloadOrStop = onReloadOrStop,
                                     onOpenReaderMode = onOpenReaderMode,
                                     onOpenSettings = onOpenSettings,
                                     onOpenTabSwitcher = onOpenTabSwitcher,
@@ -1840,7 +1851,6 @@ private fun FullOmniboxToolbar(
     onFocusOmnibox: (Rect?) -> Unit,
     onGoBack: () -> Unit,
     onGoForward: () -> Unit,
-    onReloadOrStop: () -> Unit,
     onOpenReaderMode: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenTabSwitcher: () -> Unit,
@@ -2008,10 +2018,19 @@ private fun FullOmniboxToolbar(
                             }
                             .then(swipeModifier)
                     ) {
+                        val showDesktopIndicator = activeTab != null &&
+                            !activeTab.isStartPage &&
+                            activeTab.resolvedSiteMode == SiteMode.DESKTOP
+                        val showReaderButton = activeTab != null &&
+                            !activeTab.isStartPage &&
+                            activeTab.isReaderAvailable
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(start = 12.dp, end = 4.dp),
+                                .padding(
+                                    start = 12.dp,
+                                    end = if (showReaderButton) 4.dp else 12.dp
+                                ),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
@@ -2055,7 +2074,7 @@ private fun FullOmniboxToolbar(
                                 modifier = Modifier.weight(1f)
                             )
 
-                            if (activeTab != null && !activeTab.isStartPage && activeTab.resolvedSiteMode == SiteMode.DESKTOP) {
+                            if (showDesktopIndicator) {
                                 Icon(
                                     imageVector = Icons.Rounded.DesktopWindows,
                                     contentDescription = "Desktop view active",
@@ -2064,7 +2083,7 @@ private fun FullOmniboxToolbar(
                                 )
                             }
 
-                            if (activeTab != null && !activeTab.isStartPage && activeTab.isReaderAvailable) {
+                            if (showReaderButton) {
                                 IconButton(
                                     onClick = onOpenReaderMode,
                                     modifier = Modifier.size(48.dp)
@@ -2073,19 +2092,6 @@ private fun FullOmniboxToolbar(
                                         imageVector = Icons.AutoMirrored.Rounded.MenuBook,
                                         contentDescription = "Reader mode",
                                         tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                }
-                            }
-
-                            if (activeTab != null && !activeTab.isStartPage) {
-                                IconButton(
-                                    onClick = onReloadOrStop,
-                                    modifier = Modifier.size(48.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = if (activeTab.isLoading) Icons.Rounded.Close else Icons.Rounded.Refresh,
-                                        contentDescription = if (activeTab.isLoading) "Stop loading" else "Reload page",
                                         modifier = Modifier.size(20.dp)
                                     )
                                 }

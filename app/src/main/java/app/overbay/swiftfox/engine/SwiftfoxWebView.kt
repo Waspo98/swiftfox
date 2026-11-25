@@ -19,6 +19,13 @@ class SwiftfoxWebView @JvmOverloads constructor(
 
     var onScrollMetricsChanged: ((scrollY: Int, deltaY: Int, scrollRange: Int, scrollExtent: Int) -> Unit)? = null
 
+    /**
+     * Receives native Chromium top-boundary overscroll deltas (`deltaY < 0` while `scrollY <= 0`)
+     * from `AwContents.didOverscroll` -> `AwScrollOffsetManager.overScrollBy`. Return `true` when
+     * consumed by pull-to-refresh so the view doesn't double-overscroll vertically.
+     */
+    var onTopOverscroll: ((deltaX: Int, deltaY: Int, scrollY: Int, isTouchEvent: Boolean) -> Boolean)? = null
+
     val verticalScrollRangePx: Int
         get() = computeVerticalScrollRange()
 
@@ -31,6 +38,35 @@ class SwiftfoxWebView @JvmOverloads constructor(
         } else {
             super.onWindowVisibilityChanged(visibility)
         }
+    }
+
+    override fun overScrollBy(
+        deltaX: Int,
+        deltaY: Int,
+        scrollX: Int,
+        scrollY: Int,
+        scrollRangeX: Int,
+        scrollRangeY: Int,
+        maxOverScrollX: Int,
+        maxOverScrollY: Int,
+        isTouchEvent: Boolean
+    ): Boolean {
+        val consumedTopOverscroll = if (deltaY < 0 && scrollY <= 0) {
+            onTopOverscroll?.invoke(deltaX, deltaY, scrollY, isTouchEvent) == true
+        } else {
+            false
+        }
+        return super.overScrollBy(
+            deltaX,
+            if (consumedTopOverscroll) 0 else deltaY,
+            scrollX,
+            scrollY,
+            scrollRangeX,
+            scrollRangeY,
+            maxOverScrollX,
+            maxOverScrollY,
+            isTouchEvent
+        )
     }
 
     override fun onScrollChanged(l: Int, t: Int, oldl: Int, oldt: Int) {

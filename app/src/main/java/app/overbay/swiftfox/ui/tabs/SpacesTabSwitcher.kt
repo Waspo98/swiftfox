@@ -85,7 +85,6 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
-import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -261,7 +260,8 @@ fun SpacesTabSwitcher(
                 }
 
                 Surface(
-                    onClick = { onTogglePrivate(!state.isPrivateView) },
+                    checked = state.isPrivateView,
+                    onCheckedChange = onTogglePrivate,
                     shape = RoundedCornerShape(18.dp),
                     color = if (state.isPrivateView) {
                         foxColors.privateContainer
@@ -272,7 +272,6 @@ fun SpacesTabSwitcher(
                         .heightIn(min = 48.dp)
                         .semantics(mergeDescendants = true) {
                             role = Role.Switch
-                            selected = state.isPrivateView
                         }
                 ) {
                     Row(
@@ -955,14 +954,6 @@ private fun CompactZenPinnedPill(
             }
         }
     }
-}
-
-internal fun parseHexColorOrNull(hex: String?): Color? {
-    if (hex.isNullOrBlank()) return null
-    val cleaned = hex.trim().removePrefix("#")
-    if (cleaned.length != 6) return null
-    val rgb = cleaned.toLongOrNull(16) ?: return null
-    return Color((0xFF000000L or rgb).toInt())
 }
 
 internal fun resolveTabCardSwipeDismissDirection(

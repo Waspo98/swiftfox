@@ -58,55 +58,92 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import app.overbay.swiftfox.data.db.SpaceEntity
 import app.overbay.swiftfox.ui.theme.rememberReduceMotion
 
+internal data class HorizontalFadeFractions(
+    val leftFraction: Float,
+    val rightFraction: Float
+)
+
+internal fun resolveHorizontalFadeFractions(
+    showStartFade: Boolean,
+    showEndFade: Boolean,
+    startFadeWidthPx: Float,
+    endFadeWidthPx: Float,
+    widthPx: Float,
+    isRtl: Boolean
+): HorizontalFadeFractions? {
+    if ((!showStartFade && !showEndFade) || widthPx <= 1f) return null
+    val showLeft = if (isRtl) showEndFade else showStartFade
+    val showRight = if (isRtl) showStartFade else showEndFade
+    val leftWidthPx = if (isRtl) endFadeWidthPx else startFadeWidthPx
+    val rightWidthPx = if (isRtl) startFadeWidthPx else endFadeWidthPx
+    val leftCap = if (isRtl) 0.34f else 0.28f
+    val rightCap = if (isRtl) 0.28f else 0.34f
+    val leftFraction = if (showLeft) (leftWidthPx / widthPx).coerceIn(0f, leftCap) else 0f
+    val rightFraction = if (showRight) (rightWidthPx / widthPx).coerceIn(0f, rightCap) else 0f
+    if (leftFraction <= 0f && rightFraction <= 0f) return null
+    return HorizontalFadeFractions(
+        leftFraction = leftFraction,
+        rightFraction = rightFraction
+    )
+}
+
 /**
- * Applies smooth background-agnostic fading masks on the leading and/or trailing edges of a
- * horizontally scrollable row using `CompositingStrategy.Offscreen` + `BlendMode.DstIn`.
- * Gradient brushes are cached per geometry via `drawWithCache` so scrolling stays 120Hz-smooth.
+ * Applies smooth, RTL-aware, background-agnostic fading masks on the leading and/or trailing edges
+ * of a horizontally scrollable row using `CompositingStrategy.Offscreen` + `BlendMode.DstIn`.
+ * Keeps a stable modifier chain (switching to `CompositingStrategy.Auto` when idle) and caches
+ * gradient brushes via `drawWithCache` so 120Hz scrolling stays free of mid-fling node churn.
  */
 fun Modifier.horizontalFadingEdges(
     showStartFade: Boolean,
     showEndFade: Boolean,
     startFadeWidth: Dp = 20.dp,
     endFadeWidth: Dp = 28.dp
-): Modifier {
-    if (!showStartFade && !showEndFade) return this
-    return this
-        .graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen)
-        .drawWithCache {
-            val width = size.width
-            val brush = if (width <= 1f) {
-                null
-            } else {
-                val startFrac = if (showStartFade) (startFadeWidth.toPx() / width).coerceIn(0f, 0.28f) else 0f
-                val endFrac = if (showEndFade) (endFadeWidth.toPx() / width).coerceIn(0f, 0.34f) else 0f
-                val stops = buildList {
-                    if (showStartFade) {
-                        add(0f to Color.Transparent)
-                        add(startFrac to Color.Black)
-                    } else {
-                        add(0f to Color.Black)
-                    }
-                    if (showEndFade) {
-                        add((1f - endFrac).coerceAtLeast(startFrac) to Color.Black)
-                        add(1f to Color.Transparent)
-                    } else {
-                        add(1f to Color.Black)
-                    }
-                }.toTypedArray()
-                Brush.horizontalGradient(colorStops = stops)
-            }
-            onDrawWithContent {
-                drawContent()
-                if (brush != null) {
-                    drawRect(brush = brush, blendMode = BlendMode.DstIn)
+): Modifier = this
+    .graphicsLayer {
+        compositingStrategy = if (showStartFade || showEndFade) {
+            CompositingStrategy.Offscreen
+        } else {
+            CompositingStrategy.Auto
+        }
+    }
+    .drawWithCache {
+        val fractions = resolveHorizontalFadeFractions(
+            showStartFade = showStartFade,
+            showEndFade = showEndFade,
+            startFadeWidthPx = startFadeWidth.toPx(),
+            endFadeWidthPx = endFadeWidth.toPx(),
+            widthPx = size.width,
+            isRtl = layoutDirection == LayoutDirection.Rtl
+        )
+        val brush = fractions?.let { (leftFrac, rightFrac) ->
+            val stops = buildList {
+                if (leftFrac > 0f) {
+                    add(0f to Color.Transparent)
+                    add(leftFrac to Color.Black)
+                } else {
+                    add(0f to Color.Black)
                 }
+                if (rightFrac > 0f) {
+                    add((1f - rightFrac).coerceAtLeast(leftFrac) to Color.Black)
+                    add(1f to Color.Transparent)
+                } else {
+                    add(1f to Color.Black)
+                }
+            }.toTypedArray()
+            Brush.horizontalGradient(colorStops = stops)
+        }
+        onDrawWithContent {
+            drawContent()
+            if (brush != null) {
+                drawRect(brush = brush, blendMode = BlendMode.DstIn)
             }
         }
-}
+    }
 
 /**
  * Full-bleed borderless Editorial Tabs strip for switching between Swiftfox Spaces on the

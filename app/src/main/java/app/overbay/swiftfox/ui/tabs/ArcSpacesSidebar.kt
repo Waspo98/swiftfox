@@ -105,6 +105,7 @@ import app.overbay.swiftfox.ui.components.SpaceIconGlyph
 import app.overbay.swiftfox.ui.components.dragReorderContainer
 import app.overbay.swiftfox.ui.components.dragReorderItem
 import app.overbay.swiftfox.ui.components.horizontalFadingEdges
+import app.overbay.swiftfox.ui.components.parseSpaceColorHexOrNull
 import app.overbay.swiftfox.ui.components.rememberDragReorderController
 import app.overbay.swiftfox.ui.theme.LocalSwiftfoxColors
 import app.overbay.swiftfox.ui.theme.SwiftfoxEmblem
@@ -1137,19 +1138,23 @@ private fun ColumnScope.ArcExpandedSidebarContent(
     val footerCanScrollForward by remember(footerListState) { derivedStateOf { footerListState.canScrollForward } }
 
     LaunchedEffect(state.activeSpaceId, state.isPrivateView, displayedSpaces.size, isReorderingSpaces) {
-        if (isReorderingSpaces || state.isPrivateView) return@LaunchedEffect
-        val index = displayedSpaces.indexOfFirst { it.id == state.activeSpaceId }
-        if (index >= 0) {
+        if (isReorderingSpaces) return@LaunchedEffect
+        val targetIndex = if (state.isPrivateView) {
+            displayedSpaces.size + 1 // Spaces + 1 divider item before the Private glyph
+        } else {
+            displayedSpaces.indexOfFirst { it.id == state.activeSpaceId }
+        }
+        if (targetIndex >= 0) {
             val visible = footerListState.layoutInfo.visibleItemsInfo.any { item ->
-                item.index == index &&
+                item.index == targetIndex &&
                     item.offset >= 0 &&
                     item.offset + item.size <= footerListState.layoutInfo.viewportEndOffset
             }
             if (!visible) {
                 if (reduceMotion) {
-                    footerListState.scrollToItem(index)
+                    footerListState.scrollToItem(targetIndex)
                 } else {
-                    footerListState.animateScrollToItem(index)
+                    footerListState.animateScrollToItem(targetIndex)
                 }
             }
         }
@@ -1167,7 +1172,7 @@ private fun ColumnScope.ArcExpandedSidebarContent(
             ),
         userScrollEnabled = !isReorderingSpaces,
         contentPadding = PaddingValues(vertical = 2.dp),
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         items(
@@ -1183,7 +1188,7 @@ private fun ColumnScope.ArcExpandedSidebarContent(
                 onClick = { if (!isReorderingSpaces) onSelectSpace(space.id) },
                 onLongClick = { if (!isReorderingSpaces) onLongPressSpace(space) },
                 isReorderMode = isReorderingSpaces,
-                themeDotColor = parseHexColorOrNull(space.themeColorHex),
+                themeDotColor = parseSpaceColorHexOrNull(space.themeColorHex),
                 modifier = Modifier
                     .then(if (!isReorderingSpaces) Modifier.animateItem() else Modifier)
                     .dragReorderItem(
@@ -1746,7 +1751,7 @@ private fun ColumnScope.ArcCollapsedSidebarRail(
     }
 
     Column(
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
             .fillMaxWidth()
@@ -1761,7 +1766,7 @@ private fun ColumnScope.ArcCollapsedSidebarRail(
                 contentDescriptionText = "${space.name} Space",
                 onClick = { onSelectSpace(space.id) },
                 onLongClick = { onLongPressSpace(space) },
-                themeDotColor = parseHexColorOrNull(space.themeColorHex)
+                themeDotColor = parseSpaceColorHexOrNull(space.themeColorHex)
             ) { glyphTint ->
                 SpaceIconGlyph(
                     iconKey = space.iconKey,

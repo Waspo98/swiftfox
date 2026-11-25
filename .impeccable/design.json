@@ -356,7 +356,7 @@
       },
       "label-large": {
         "displayName": "Label Large (14sp SemiBold)",
-        "purpose": "Space pills, Quick Action pills, Extended FAB, sidebar tab titles, and Settings groups."
+        "purpose": "Quick Action pills, Extended FAB, sidebar tab titles, and Settings groups."
       },
       "label-medium": {
         "displayName": "Label Medium (12sp SemiBold / Bold count)",
@@ -507,7 +507,7 @@
   ],
   "narrative": {
     "northStar": "The Warm Amber Cockpit",
-    "overview": "Swiftfox is a native Android Material Design 3 browser engineered for 120Hz foldable hardware. Its chrome behaves like a calm, responsive cockpit wrapped around live web content: warm tonal surfaces stay visually quiet so scrolling pages hold center stage, while generous splashes of Fox Amber light up the controls that matter right now—active Space pills, the Tab Count badge, security indicators, focused search rings, and tactile Quick Actions toggles.\n\nRather than forcing a single layout across cover and inner displays, Swiftfox treats folded one-handed reach and unfolded tablet browsing as independent ergonomic states. Every surface avoids sterile flat-grey utility chrome and harsh right-angle corners, favoring soft pill capsules, generous `48dp` thumb targets, and clear tonal elevation across Day, Dark, and true AMOLED Black themes.",
+    "overview": "Swiftfox is a native Android Material Design 3 browser engineered for 120Hz foldable hardware. Its chrome behaves like a calm, responsive cockpit wrapped around live web content: warm tonal surfaces stay visually quiet so scrolling pages hold center stage, while generous splashes of Fox Amber light up the controls that matter right now—active Editorial Space tabs, the Tab Count badge, security indicators, focused search rings, and tactile Quick Actions toggles.\n\nRather than forcing a single layout across cover and inner displays, Swiftfox treats folded one-handed reach and unfolded tablet browsing as independent ergonomic states. Every surface avoids sterile flat-grey utility chrome and harsh right-angle corners, favoring soft pill capsules, generous `48dp` thumb targets, and clear tonal elevation across Day, Dark, and true AMOLED Black themes.",
     "keyCharacteristics": [
       "Webpage-first tonal chrome in Warm Paper Day, Charcoal-Plum Dark, and true `#000000` AMOLED Black.",
       "Deliberate Fox Amber accent splashes on active state, switchable across Midnight Indigo, Forest, Monochrome, and Android Material You dynamic color.",
@@ -518,7 +518,7 @@
     "rules": [
       {
         "name": "The Warm Splash Rule",
-        "body": "Reserve saturated accent fills (`primaryContainer` paired with `primary` icons and tinted borders) for live state—active Quick Actions tiles, selected Space pills, the Tab Count badge, the Split-bar New Tab button, focused omnibox borders, and primary CTAs—so resting toolbars remain calm and webpage-first.",
+        "body": "Reserve saturated accent treatments (`primaryContainer` fills, `primary` icons, tinted borders, and active tab underlines) for live state—active Quick Actions tiles, active Editorial Space tabs, the Tab Count badge, the Split-bar New Tab button, focused omnibox borders, and primary CTAs—so resting toolbars remain calm and webpage-first.",
         "section": "colors"
       },
       {

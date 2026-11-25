@@ -376,11 +376,13 @@ object ScriptInjector {
 
     /**
      * Lightweight, 100% passive `document-start` DOM scroll & touch observer for main-frame
-     * pages. Reports to native `SwiftfoxNativeChannel` (`channel: "touchGate"`) whenever a touch
-     * starts inside a scrolled inner `overflow-y: auto/scroll` container, a region declaring
-     * `overscroll-behavior-y: contain|none` (e.g. Google Fi's `.SSPGKf`), a restrictive
-     * `touch-action`, an active inner scroll, or a JS `preventDefault()` touch handler — giving
-     * pull-to-refresh true browser-grade DOM awareness with zero scroll blocking.
+     * top-of-page (`scrollTop == 0`) pull-to-refresh. Announces `touchGateReady` on load,
+     * `DOMContentLoaded`, and `pageshow` (bfcache restore), and reports (`channel: "touchGate"`)
+     * whenever a touch starts inside a scrolled container (`scrollTop > 1`),
+     * `overscroll-behavior-y: none`, a nested modal/sheet using `overscroll-behavior-y: contain`,
+     * a restrictive `touch-action`, an active inner scroll, or a JS `preventDefault()` touch
+     * handler — while allowing top-of-page pull at `scrollTop == 0` on full-viewport main
+     * scrollers (such as Google Fi's `.SSPGKf`).
      */
     fun buildTouchScrollGateScript(): String = """
         (function() {
@@ -391,17 +393,29 @@ object ScriptInjector {
             var touching = false;
             var blockedSentForTouch = false;
 
-            function postGate(blocked) {
+            function postChannel(payload) {
                 try {
                     var ch = window.SwiftfoxNativeChannel;
                     if (ch && typeof ch.postMessage === 'function') {
-                        ch.postMessage(JSON.stringify({
-                            channel: 'touchGate',
-                            blocked: !!blocked
-                        }));
+                        ch.postMessage(JSON.stringify(payload));
                     }
                 } catch (_e) {}
             }
+
+            function postReady() {
+                postChannel({ channel: 'touchGateReady' });
+            }
+
+            function postGate(blocked) {
+                postChannel({
+                    channel: 'touchGate',
+                    blocked: !!blocked
+                });
+            }
+
+            postReady();
+            document.addEventListener('DOMContentLoaded', postReady, { once: true, passive: true });
+            window.addEventListener('pageshow', postReady, { passive: true });
 
             function blocksVerticalPull(touchAction) {
                 if (!touchAction || touchAction === 'auto' || touchAction === 'manipulation') {
@@ -420,6 +434,9 @@ object ScriptInjector {
                     var se = document.scrollingElement;
                     if (se && se.scrollTop > 1) return true;
 
+                    var viewportH = window.innerHeight ||
+                        (document.documentElement ? document.documentElement.clientHeight : 0) ||
+                        0;
                     var el = target && target.nodeType === 1
                         ? target
                         : (target && target.parentElement ? target.parentElement : null);
@@ -436,7 +453,7 @@ object ScriptInjector {
                         var style = window.getComputedStyle ? window.getComputedStyle(el) : null;
                         if (style) {
                             var obY = style.overscrollBehaviorY || style.overscrollBehavior || '';
-                            if (obY === 'contain' || obY === 'none') {
+                            if (obY === 'none') {
                                 return true;
                             }
                             if (blocksVerticalPull(style.touchAction)) {
@@ -447,6 +464,16 @@ object ScriptInjector {
                                 el.scrollHeight > el.clientHeight + 1 &&
                                 el.scrollTop > 1) {
                                 return true;
+                            }
+                            // Block pull-to-refresh on nested modals/sheets/textareas using
+                            // overscroll-behavior-y: contain, while allowing top-of-page pull
+                            // at scrollTop == 0 on full-viewport main scrollers (e.g. Google Fi).
+                            if (obY === 'contain') {
+                                var isFullViewportMainScroller =
+                                    viewportH > 0 && el.clientHeight >= viewportH * 0.7;
+                                if (!isFullViewportMainScroller) {
+                                    return true;
+                                }
                             }
                         }
                         var next = el.parentElement;
@@ -462,7 +489,7 @@ object ScriptInjector {
                     if (docEl && window.getComputedStyle) {
                         var rootStyle = window.getComputedStyle(docEl);
                         var rootObY = rootStyle.overscrollBehaviorY || rootStyle.overscrollBehavior || '';
-                        if (rootObY === 'contain' || rootObY === 'none') {
+                        if (rootObY === 'none') {
                             return true;
                         }
                     }

@@ -354,9 +354,15 @@ class BrowserSession(
 
     private fun handleNativeChannelMessage(obj: JSONObject, sourceOriginRaw: String) {
         val channel = obj.optString("channel")
-        if (channel == "touchGate") {
-            webView.updateDomTouchGate(obj.optBoolean("blocked", false))
-            return
+        when (channel) {
+            "touchGateReady" -> {
+                webView.markDomTouchGateReady()
+                return
+            }
+            "touchGate" -> {
+                webView.updateDomTouchGate(obj.optBoolean("blocked", false))
+                return
+            }
         }
         val token = obj.optString("token")
         val curTokens = tokens
@@ -828,7 +834,6 @@ class BrowserSession(
         isDestroyed = true
         webView.isMediaCurrentlyPlaying = false
         webView.onScrollMetricsChanged = null
-        webView.onTopOverscroll = null
         webView.onDomPullToRefreshBlocked = null
         runCatching { touchScrollGateHandler?.remove() }
         touchScrollGateHandler = null

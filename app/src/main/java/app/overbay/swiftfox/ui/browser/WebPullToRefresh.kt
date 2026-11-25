@@ -27,33 +27,33 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.dp
+import app.overbay.swiftfox.engine.DomTouchGateState
 import app.overbay.swiftfox.ui.theme.rememberReduceMotion
 import kotlinx.coroutines.delay
-import kotlin.math.abs
 import kotlin.math.ln
 
 /**
- * Pure state machine for browser pull-to-refresh driven by Chromium's native top-boundary
- * `WebView.overScrollBy` signal combined with passive DOM touch/scroll gating.
+ * Pure state machine for top-of-page (`scrollTop == 0`) browser pull-to-refresh driven directly
+ * from `WebViewContainer`'s vertical finger drag deltas and gated by passive main-frame DOM
+ * `touchGate` inspection.
  *
- * Replaces `SwipeRefreshLayout` completely so `WebView` always receives 100% unmodified,
- * un-intercepted Chromium touch events. Inner CSS scroll containers (`overflow-y: auto/scroll`,
- * e.g. `fi.google.com`'s `.SSPGKf`), `overscroll-behavior-y: contain|none`, `touch-action`,
- * iframes, canvases, and JS `preventDefault()` gestures never get hijacked.
+ * Keeps `WebView` completely free of `SwipeRefreshLayout` touch interception so inner CSS scroll
+ * containers (e.g. `fi.google.com`'s `.SSPGKf`), scrolled elements (`scrollTop > 1`), nested
+ * `overscroll-behavior-y: contain` modals, `overscroll-behavior-y: none` apps, restrictive
+ * `touch-action` regions, cross-origin iframes, and JS `preventDefault()` handlers scroll
+ * cleanly while top-of-page pull-to-refresh works reliably at `scrollTop == 0`.
  */
 internal class PullToRefreshController(
-    private val touchSlopPx: Int,
-    private val maxUnoverscrolledDownwardDragPx: Float,
     val triggerDistancePx: Float,
     val maxPullDistancePx: Float = triggerDistancePx * 1.65f,
     private val dragRate: Float = 0.55f,
-    private val showDeadzonePx: Float = 6f
+    private val showDeadzonePx: Float = 12f
 ) {
     var touchActive: Boolean = false
         private set
     var eligible: Boolean = false
         private set
-    var rawOverscrollPx: Float = 0f
+    var rawPullPx: Float = 0f
         private set
     var pullDistancePx: Float = 0f
         private set
@@ -61,156 +61,135 @@ internal class PullToRefreshController(
     val isThresholdReached: Boolean
         get() = pullDistancePx >= triggerDistancePx
 
-    private var downRawY: Float = 0f
-    private var maxDownwardDragPx: Float = 0f
-    private var maxUpwardDragPx: Float = 0f
-    private var hasReceivedTopOverscroll: Boolean = false
-
     fun onTouchDown(
-        rawY: Float,
         initialScrollY: Int,
+        canWebViewScrollUp: Boolean,
         initialCollapseProgress: Float,
         enabled: Boolean
     ) {
         touchActive = true
-        rawOverscrollPx = 0f
+        rawPullPx = 0f
         pullDistancePx = 0f
-        downRawY = rawY
-        maxDownwardDragPx = 0f
-        maxUpwardDragPx = 0f
-        hasReceivedTopOverscroll = false
-        eligible = enabled && initialScrollY <= 0 && initialCollapseProgress <= 0.001f
+        eligible = enabled &&
+            initialScrollY <= 0 &&
+            !canWebViewScrollUp &&
+            initialCollapseProgress <= 0.001f
     }
 
     /**
-     * Tracks finger movement (`rawDy = prevRawY - rawY`; `> 0` when dragging finger up).
-     * Returns `true` when an actively pulled indicator retracted during this move so callers
-     * can keep toolbar collapse paused while retracting.
+     * Evaluates a vertical-locked finger drag delta (`rawDy = lastRawY - rawY`; `< 0` when
+     * dragging finger downward to pull-to-refresh, `> 0` when dragging finger upward to scroll).
+     *
+     * Returns `true` while pull-to-refresh actively holds/retracts the indicator so toolbar
+     * collapse stays paused during the pull.
      */
-    fun onTouchMove(
-        rawY: Float,
+    fun onVerticalDragDelta(
         rawDy: Float,
         currentScrollY: Int,
+        canWebViewScrollUp: Boolean,
         currentCollapseProgress: Float,
-        domBlocked: Boolean
+        hasDomTouchGate: Boolean,
+        domGateState: DomTouchGateState
     ): Boolean {
         if (!touchActive) return false
 
-        if (domBlocked) {
+        if (domGateState == DomTouchGateState.BLOCKED) {
             blockByDom()
             return false
         }
 
-        if (rawOverscrollPx > 0f) {
-            if (rawDy > 0f) {
-                rawOverscrollPx = (rawOverscrollPx - rawDy).coerceAtLeast(0f)
-                pullDistancePx = computeDampedPullPx(rawOverscrollPx)
+        // Actively pulling down: allow smooth downward extension and upward retraction.
+        if (rawPullPx > 0f) {
+            if (currentScrollY > 0 || canWebViewScrollUp || currentCollapseProgress > 0.001f) {
+                cancelPull()
+                return false
+            }
+            if (rawDy < 0f) {
+                rawPullPx += -rawDy
+                pullDistancePx = computeDampedPullPx(rawPullPx)
                 return true
             }
-            return false
+            if (rawDy > 0f) {
+                rawPullPx = (rawPullPx - rawDy).coerceAtLeast(0f)
+                pullDistancePx = computeDampedPullPx(rawPullPx)
+                if (rawPullPx <= 0f) {
+                    // User retracted all the way back to 0 and pushed upward into content:
+                    // disqualify for the rest of this gesture.
+                    eligible = false
+                }
+                return true
+            }
+            return true
         }
 
         if (!eligible) return false
 
-        if (currentScrollY > 0 || currentCollapseProgress > 0.001f) {
+        if (currentScrollY > 0 || canWebViewScrollUp || currentCollapseProgress > 0.001f) {
             eligible = false
             return false
         }
 
-        val netDownward = rawY - downRawY
-        if (netDownward > maxDownwardDragPx) maxDownwardDragPx = netDownward
-        val netUpward = downRawY - rawY
-        if (netUpward > maxUpwardDragPx) maxUpwardDragPx = netUpward
-
-        // Scrolling down into content disqualifies pull-to-refresh for this gesture so
-        // reversing back up without lifting never triggers refresh mid-scroll.
-        if (maxUpwardDragPx > touchSlopPx) {
+        // First vertical movement is upward (scrolling down into the page) -> disqualify for this gesture.
+        if (rawDy > 0f) {
             eligible = false
             return false
         }
 
-        // Substantial downward drag without Chromium top overscroll means an inner scroller,
-        // cross-origin iframe, or JS touch handler consumed the drag. Latch off so reaching
-        // the top of that inner scroller mid-gesture never pops pull-to-refresh.
-        if (!hasReceivedTopOverscroll && maxDownwardDragPx > maxUnoverscrolledDownwardDragPx) {
-            eligible = false
+        if (rawDy >= 0f) return false
+
+        // When the passive DOM touchGate is installed on the page, require an explicit ALLOWED
+        // reply (scrollTop == 0 across root & all ancestors). Cross-origin iframes stay PENDING
+        // because main-frame touchstart never fires, keeping them safely protected. When JS is
+        // disabled (hasDomTouchGate == false), fall back to native scrollY == 0 gating.
+        if (hasDomTouchGate && domGateState != DomTouchGateState.ALLOWED) {
             return false
         }
 
-        return false
-    }
-
-    /**
-     * Evaluates Chromium's `WebView.overScrollBy` top overscroll (`deltaY < 0` while `scrollY <= 0`).
-     * Returns `true` if consumed into pull-to-refresh.
-     */
-    fun onTopOverscroll(
-        deltaX: Int,
-        deltaY: Int,
-        scrollY: Int,
-        collapseProgress: Float,
-        horizontalAxisLocked: Boolean,
-        domBlocked: Boolean
-    ): Boolean {
-        if (!touchActive || !eligible || horizontalAxisLocked) return false
-        if (domBlocked) {
-            blockByDom()
-            return false
-        }
-        if (deltaY >= 0 || scrollY > 0 || collapseProgress > 0.001f) return false
-        if (abs(deltaY) < abs(deltaX)) return false
-
-        hasReceivedTopOverscroll = true
-        rawOverscrollPx += abs(deltaY).toFloat()
-        pullDistancePx = computeDampedPullPx(rawOverscrollPx)
+        rawPullPx += -rawDy
+        pullDistancePx = computeDampedPullPx(rawPullPx)
         return true
     }
 
-    /**
-     * Called when the passive DOM touch/scroll observer reports `overscroll-behavior-y: contain|none`,
-     * a scrolled inner container (`scrollTop > 0`), `touch-action` restriction, active inner DOM
-     * scroll, or JS `preventDefault()`. Immediately cancels any in-flight pull for this gesture.
-     */
     fun blockByDom(): Boolean {
-        val wasPulling = pullDistancePx > 0f || rawOverscrollPx > 0f
+        val wasPulling = pullDistancePx > 0f || rawPullPx > 0f
         eligible = false
-        rawOverscrollPx = 0f
+        rawPullPx = 0f
         pullDistancePx = 0f
         return wasPulling
     }
 
     fun cancelPull(): Boolean {
-        val wasPulling = pullDistancePx > 0f || rawOverscrollPx > 0f
+        val wasPulling = pullDistancePx > 0f || rawPullPx > 0f
         eligible = false
-        rawOverscrollPx = 0f
+        rawPullPx = 0f
         pullDistancePx = 0f
         return wasPulling
     }
 
     /**
      * Finishes touch tracking on `ACTION_UP` or `ACTION_CANCEL`.
-     * Returns `true` iff the pull met [triggerDistancePx] on a non-cancelled pointer release.
+     * Returns `true` iff the pull met [triggerDistancePx] on a non-cancelled release.
      */
-    fun onTouchEnd(isCancel: Boolean, domBlocked: Boolean): Boolean {
-        val shouldTrigger = !isCancel && !domBlocked && eligible && pullDistancePx >= triggerDistancePx
+    fun onTouchEnd(
+        isCancel: Boolean,
+        hasDomTouchGate: Boolean,
+        domGateState: DomTouchGateState
+    ): Boolean {
+        val domPermits = domGateState != DomTouchGateState.BLOCKED &&
+            (!hasDomTouchGate || domGateState == DomTouchGateState.ALLOWED)
+        val shouldTrigger = !isCancel && domPermits && eligible && pullDistancePx >= triggerDistancePx
         touchActive = false
         eligible = false
-        rawOverscrollPx = 0f
+        rawPullPx = 0f
         pullDistancePx = 0f
-        maxDownwardDragPx = 0f
-        maxUpwardDragPx = 0f
-        hasReceivedTopOverscroll = false
         return shouldTrigger
     }
 
     fun reset() {
         touchActive = false
         eligible = false
-        rawOverscrollPx = 0f
+        rawPullPx = 0f
         pullDistancePx = 0f
-        maxDownwardDragPx = 0f
-        maxUpwardDragPx = 0f
-        hasReceivedTopOverscroll = false
     }
 
     private fun computeDampedPullPx(rawPx: Float): Float {

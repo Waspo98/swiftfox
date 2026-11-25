@@ -510,7 +510,6 @@ fun BrowserScreen(
                                     webContainer.clearGestureCallbacks()
                                     (webContainer.getChildAt(0) as? SwiftfoxWebView)?.apply {
                                         onScrollMetricsChanged = null
-                                        onTopOverscroll = null
                                         onDomPullToRefreshBlocked = null
                                         translationY = 0f
                                     }
@@ -608,9 +607,6 @@ fun BrowserScreen(
                                             }
                                         }
                                     }
-                                    targetWebView.onTopOverscroll = { deltaX, deltaY, scrollY, _ ->
-                                        webContainer.handleWebViewTopOverscroll(deltaX, deltaY, scrollY)
-                                    }
                                     targetWebView.onDomPullToRefreshBlocked = {
                                         webContainer.handleDomPullToRefreshBlocked()
                                     }
@@ -634,7 +630,6 @@ fun BrowserScreen(
                                     webContainer.pullToRefreshEnabled = false
                                     webContainer.clearGestureCallbacks()
                                     targetWebView.onScrollMetricsChanged = null
-                                    targetWebView.onTopOverscroll = null
                                     targetWebView.onDomPullToRefreshBlocked = null
                                     // Keep exiting tab aligned at its current top bar offset during slide-out
                                     webContainer.updateChromeMetrics(
@@ -651,7 +646,6 @@ fun BrowserScreen(
                                 webContainer.clearGestureCallbacks()
                                 (webContainer.getChildAt(0) as? SwiftfoxWebView)?.apply {
                                     onScrollMetricsChanged = null
-                                    onTopOverscroll = null
                                     onDomPullToRefreshBlocked = null
                                     translationY = 0f
                                 }

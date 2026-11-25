@@ -2,6 +2,7 @@ package app.overbay.swiftfox
 
 import androidx.compose.runtime.snapshots.Snapshot
 import app.overbay.swiftfox.data.prefs.BrowserSettings
+import app.overbay.swiftfox.engine.DomTouchGateState
 import app.overbay.swiftfox.ui.browser.FrameCallbackScheduler
 import app.overbay.swiftfox.ui.browser.GestureAxis
 import app.overbay.swiftfox.ui.browser.PullToRefreshController
@@ -707,191 +708,368 @@ class ToolbarScrollCollapseControllerTest {
     }
 
     @Test
-    fun pullToRefreshControllerBlocksGoogleFiStyleDomOverscrollAndScrolledInnerContainers() {
+    fun pullToRefreshControllerEnforcesDomScrollTopZeroGateAndCrossOriginPendingGuard() {
         val ptr = PullToRefreshController(
-            touchSlopPx = 24,
-            maxUnoverscrolledDownwardDragPx = 160f,
-            triggerDistancePx = 180f,
+            triggerDistancePx = 100f,
+            dragRate = 0.5f,
             showDeadzonePx = 10f
         )
 
-        // Case 1: Passive DOM gate reports overscroll-behavior-y: contain (e.g. fi.google.com .SSPGKf)
-        // or scrolled inner container (scrollTop > 0) -> overscroll is never consumed and refresh never triggers
-        ptr.onTouchDown(rawY = 400f, initialScrollY = 0, initialCollapseProgress = 0f, enabled = true)
+        // Case 1: Scrolled inner container (e.g. fi.google.com .SSPGKf with scrollTop > 1),
+        // nested overscroll-behavior-y: contain modal, or overscroll-behavior-y: none -> BLOCKED
+        ptr.onTouchDown(
+            initialScrollY = 0,
+            canWebViewScrollUp = false,
+            initialCollapseProgress = 0f,
+            enabled = true
+        )
         assertFalse(
-            ptr.onTopOverscroll(
-                deltaX = 0,
-                deltaY = -90,
-                scrollY = 0,
-                collapseProgress = 0f,
-                horizontalAxisLocked = false,
-                domBlocked = true
+            ptr.onVerticalDragDelta(
+                rawDy = -90f,
+                currentScrollY = 0,
+                canWebViewScrollUp = false,
+                currentCollapseProgress = 0f,
+                hasDomTouchGate = true,
+                domGateState = DomTouchGateState.BLOCKED
             )
         )
         assertEquals(0f, ptr.pullDistancePx, 0.001f)
         assertFalse(ptr.eligible)
-        assertFalse(ptr.onTouchEnd(isCancel = false, domBlocked = true))
+        assertFalse(
+            ptr.onTouchEnd(
+                isCancel = false,
+                hasDomTouchGate = true,
+                domGateState = DomTouchGateState.BLOCKED
+            )
+        )
 
-        // Case 2: Async DOM touchGate block arriving after initial overscroll cancels active pull immediately
-        ptr.onTouchDown(rawY = 400f, initialScrollY = 0, initialCollapseProgress = 0f, enabled = true)
+        // Case 2: Cross-origin iframe / unacked touch stays PENDING while DOM gate is active:
+        // downward drag must NOT pull while PENDING, and releasing never triggers refresh
+        ptr.onTouchDown(
+            initialScrollY = 0,
+            canWebViewScrollUp = false,
+            initialCollapseProgress = 0f,
+            enabled = true
+        )
+        assertFalse(
+            ptr.onVerticalDragDelta(
+                rawDy = -120f,
+                currentScrollY = 0,
+                canWebViewScrollUp = false,
+                currentCollapseProgress = 0f,
+                hasDomTouchGate = true,
+                domGateState = DomTouchGateState.PENDING
+            )
+        )
+        assertEquals(0f, ptr.pullDistancePx, 0.001f)
+        assertTrue(ptr.eligible)
+        assertFalse(
+            ptr.onTouchEnd(
+                isCancel = false,
+                hasDomTouchGate = true,
+                domGateState = DomTouchGateState.PENDING
+            )
+        )
+
+        // Case 3: Async DOM touchGate block (e.g. capture scroll event or JS preventDefault())
+        // arriving mid-pull immediately cancels and disqualifies the active pull
+        ptr.onTouchDown(
+            initialScrollY = 0,
+            canWebViewScrollUp = false,
+            initialCollapseProgress = 0f,
+            enabled = true
+        )
         assertTrue(
-            ptr.onTopOverscroll(
-                deltaX = 0,
-                deltaY = -80,
-                scrollY = 0,
-                collapseProgress = 0f,
-                horizontalAxisLocked = false,
-                domBlocked = false
+            ptr.onVerticalDragDelta(
+                rawDy = -120f,
+                currentScrollY = 0,
+                canWebViewScrollUp = false,
+                currentCollapseProgress = 0f,
+                hasDomTouchGate = true,
+                domGateState = DomTouchGateState.ALLOWED
             )
         )
         assertTrue(ptr.pullDistancePx > 0f)
         assertTrue(ptr.blockByDom())
         assertEquals(0f, ptr.pullDistancePx, 0.001f)
         assertFalse(ptr.eligible)
-        assertFalse(ptr.onTouchEnd(isCancel = false, domBlocked = true))
-
-        // Case 3: JS-disabled fallback — downward drag past grace window without top overscroll latches off
-        ptr.onTouchDown(rawY = 400f, initialScrollY = 0, initialCollapseProgress = 0f, enabled = true)
-        assertFalse(ptr.onTouchMove(rawY = 460f, rawDy = -60f, currentScrollY = 0, currentCollapseProgress = 0f, domBlocked = false))
-        assertTrue(ptr.eligible)
-        assertFalse(ptr.onTouchMove(rawY = 600f, rawDy = -140f, currentScrollY = 0, currentCollapseProgress = 0f, domBlocked = false))
-        assertFalse(ptr.eligible)
         assertFalse(
-            ptr.onTopOverscroll(
-                deltaX = 0,
-                deltaY = -60,
-                scrollY = 0,
-                collapseProgress = 0f,
-                horizontalAxisLocked = false,
-                domBlocked = false
+            ptr.onTouchEnd(
+                isCancel = false,
+                hasDomTouchGate = true,
+                domGateState = DomTouchGateState.BLOCKED
+            )
+        )
+
+        // Case 4: JS-disabled / error page fallback (hasDomTouchGate = false) uses native scrollY == 0
+        ptr.onTouchDown(
+            initialScrollY = 0,
+            canWebViewScrollUp = false,
+            initialCollapseProgress = 0f,
+            enabled = true
+        )
+        assertTrue(
+            ptr.onVerticalDragDelta(
+                rawDy = -230f,
+                currentScrollY = 0,
+                canWebViewScrollUp = false,
+                currentCollapseProgress = 0f,
+                hasDomTouchGate = false,
+                domGateState = DomTouchGateState.PENDING
+            )
+        )
+        assertTrue(ptr.isThresholdReached)
+        assertTrue(
+            ptr.onTouchEnd(
+                isCancel = false,
+                hasDomTouchGate = false,
+                domGateState = DomTouchGateState.PENDING
             )
         )
     }
 
     @Test
-    fun pullToRefreshControllerTriggersAtThresholdRetractsOnReversalAndResetsOnCancel() {
+    fun pullToRefreshControllerTriggersAtScrollTopZeroRetractsSmoothlyAndResetsOnCancel() {
         val ptr = PullToRefreshController(
-            touchSlopPx = 24,
-            maxUnoverscrolledDownwardDragPx = 160f,
             triggerDistancePx = 100f,
             dragRate = 0.5f,
             showDeadzonePx = 10f
         )
-        ptr.onTouchDown(rawY = 300f, initialScrollY = 0, initialCollapseProgress = 0f, enabled = true)
-
-        // Horizontal-dominant overscroll is ignored
-        assertFalse(
-            ptr.onTopOverscroll(
-                deltaX = -40,
-                deltaY = -10,
-                scrollY = 0,
-                collapseProgress = 0f,
-                horizontalAxisLocked = false,
-                domBlocked = false
-            )
+        ptr.onTouchDown(
+            initialScrollY = 0,
+            canWebViewScrollUp = false,
+            initialCollapseProgress = 0f,
+            enabled = true
         )
 
-        // Small pull inside deadzone stays invisible
+        // Small downward pull inside deadzone stays invisible
         assertTrue(
-            ptr.onTopOverscroll(
-                deltaX = 0,
-                deltaY = -8,
-                scrollY = 0,
-                collapseProgress = 0f,
-                horizontalAxisLocked = false,
-                domBlocked = false
+            ptr.onVerticalDragDelta(
+                rawDy = -8f,
+                currentScrollY = 0,
+                canWebViewScrollUp = false,
+                currentCollapseProgress = 0f,
+                hasDomTouchGate = true,
+                domGateState = DomTouchGateState.ALLOWED
             )
         )
         assertEquals(0f, ptr.pullDistancePx, 0.001f)
 
         // Pull past trigger threshold (raw 8 + 220 = 228 -> (228 - 10) * 0.5 = 109 >= 100)
         assertTrue(
-            ptr.onTopOverscroll(
-                deltaX = 0,
-                deltaY = -220,
-                scrollY = 0,
-                collapseProgress = 0f,
-                horizontalAxisLocked = false,
-                domBlocked = false
+            ptr.onVerticalDragDelta(
+                rawDy = -220f,
+                currentScrollY = 0,
+                canWebViewScrollUp = false,
+                currentCollapseProgress = 0f,
+                hasDomTouchGate = true,
+                domGateState = DomTouchGateState.ALLOWED
             )
         )
         assertTrue(ptr.isThresholdReached)
 
-        // Reversing upward retracts smoothly below threshold
-        assertTrue(ptr.onTouchMove(rawY = 200f, rawDy = 100f, currentScrollY = 0, currentCollapseProgress = 0f, domBlocked = false))
+        // Pushing finger upward retracts smoothly below threshold while remaining above 0
+        assertTrue(
+            ptr.onVerticalDragDelta(
+                rawDy = 100f,
+                currentScrollY = 0,
+                canWebViewScrollUp = false,
+                currentCollapseProgress = 0f,
+                hasDomTouchGate = true,
+                domGateState = DomTouchGateState.ALLOWED
+            )
+        )
         assertFalse(ptr.isThresholdReached)
         assertTrue(ptr.pullDistancePx > 0f)
 
         // Releasing below threshold does NOT trigger refresh
-        assertFalse(ptr.onTouchEnd(isCancel = false, domBlocked = false))
+        assertFalse(
+            ptr.onTouchEnd(
+                isCancel = false,
+                hasDomTouchGate = true,
+                domGateState = DomTouchGateState.ALLOWED
+            )
+        )
 
-        // Full pull released cleanly triggers refresh
-        ptr.onTouchDown(rawY = 300f, initialScrollY = 0, initialCollapseProgress = 0f, enabled = true)
+        // Retracting all the way back to 0 disqualifies the rest of that gesture
+        ptr.onTouchDown(
+            initialScrollY = 0,
+            canWebViewScrollUp = false,
+            initialCollapseProgress = 0f,
+            enabled = true
+        )
         assertTrue(
-            ptr.onTopOverscroll(
-                deltaX = 0,
-                deltaY = -260,
-                scrollY = 0,
-                collapseProgress = 0f,
-                horizontalAxisLocked = false,
-                domBlocked = false
+            ptr.onVerticalDragDelta(
+                rawDy = -80f,
+                currentScrollY = 0,
+                canWebViewScrollUp = false,
+                currentCollapseProgress = 0f,
+                hasDomTouchGate = true,
+                domGateState = DomTouchGateState.ALLOWED
+            )
+        )
+        assertTrue(
+            ptr.onVerticalDragDelta(
+                rawDy = 100f,
+                currentScrollY = 0,
+                canWebViewScrollUp = false,
+                currentCollapseProgress = 0f,
+                hasDomTouchGate = true,
+                domGateState = DomTouchGateState.ALLOWED
+            )
+        )
+        assertEquals(0f, ptr.pullDistancePx, 0.001f)
+        assertFalse(ptr.eligible)
+        assertFalse(
+            ptr.onVerticalDragDelta(
+                rawDy = -250f,
+                currentScrollY = 0,
+                canWebViewScrollUp = false,
+                currentCollapseProgress = 0f,
+                hasDomTouchGate = true,
+                domGateState = DomTouchGateState.ALLOWED
+            )
+        )
+
+        // Full pull at scrollTop == 0 released cleanly triggers refresh
+        ptr.onTouchDown(
+            initialScrollY = 0,
+            canWebViewScrollUp = false,
+            initialCollapseProgress = 0f,
+            enabled = true
+        )
+        assertTrue(
+            ptr.onVerticalDragDelta(
+                rawDy = -260f,
+                currentScrollY = 0,
+                canWebViewScrollUp = false,
+                currentCollapseProgress = 0f,
+                hasDomTouchGate = true,
+                domGateState = DomTouchGateState.ALLOWED
             )
         )
         assertTrue(ptr.isThresholdReached)
-        assertTrue(ptr.onTouchEnd(isCancel = false, domBlocked = false))
+        assertTrue(
+            ptr.onTouchEnd(
+                isCancel = false,
+                hasDomTouchGate = true,
+                domGateState = DomTouchGateState.ALLOWED
+            )
+        )
 
         // Full pull cancelled (ACTION_CANCEL or pinch-zoom) never triggers refresh
-        ptr.onTouchDown(rawY = 300f, initialScrollY = 0, initialCollapseProgress = 0f, enabled = true)
-        ptr.onTopOverscroll(deltaX = 0, deltaY = -260, scrollY = 0, collapseProgress = 0f, horizontalAxisLocked = false, domBlocked = false)
+        ptr.onTouchDown(
+            initialScrollY = 0,
+            canWebViewScrollUp = false,
+            initialCollapseProgress = 0f,
+            enabled = true
+        )
+        ptr.onVerticalDragDelta(
+            rawDy = -260f,
+            currentScrollY = 0,
+            canWebViewScrollUp = false,
+            currentCollapseProgress = 0f,
+            hasDomTouchGate = true,
+            domGateState = DomTouchGateState.ALLOWED
+        )
         assertTrue(ptr.isThresholdReached)
-        assertFalse(ptr.onTouchEnd(isCancel = true, domBlocked = false))
+        assertFalse(
+            ptr.onTouchEnd(
+                isCancel = true,
+                hasDomTouchGate = true,
+                domGateState = DomTouchGateState.ALLOWED
+            )
+        )
     }
 
     @Test
     fun pullToRefreshControllerDisqualifiesNonTopStartsCollapsedBarsUpwardScrollsAndAborts() {
         val ptr = PullToRefreshController(
-            touchSlopPx = 24,
-            maxUnoverscrolledDownwardDragPx = 160f,
             triggerDistancePx = 100f
         )
 
         // Non-zero initial scrollY disqualifies immediately
-        ptr.onTouchDown(rawY = 500f, initialScrollY = 120, initialCollapseProgress = 0f, enabled = true)
+        ptr.onTouchDown(
+            initialScrollY = 120,
+            canWebViewScrollUp = true,
+            initialCollapseProgress = 0f,
+            enabled = true
+        )
         assertFalse(ptr.eligible)
         assertFalse(
-            ptr.onTopOverscroll(
-                deltaX = 0,
-                deltaY = -40,
-                scrollY = 0,
-                collapseProgress = 0f,
-                horizontalAxisLocked = false,
-                domBlocked = false
+            ptr.onVerticalDragDelta(
+                rawDy = -80f,
+                currentScrollY = 0,
+                canWebViewScrollUp = false,
+                currentCollapseProgress = 0f,
+                hasDomTouchGate = true,
+                domGateState = DomTouchGateState.ALLOWED
             )
         )
 
-        // Collapsed toolbars disqualify immediately
-        ptr.onTouchDown(rawY = 500f, initialScrollY = 0, initialCollapseProgress = 0.8f, enabled = true)
+        // canWebViewScrollUp == true disqualifies even when scrollY reports 0
+        ptr.onTouchDown(
+            initialScrollY = 0,
+            canWebViewScrollUp = true,
+            initialCollapseProgress = 0f,
+            enabled = true
+        )
         assertFalse(ptr.eligible)
 
-        // Dragging finger UP (scrolling down) past touchSlop before pull engages disqualifies reversal
-        ptr.onTouchDown(rawY = 500f, initialScrollY = 0, initialCollapseProgress = 0f, enabled = true)
+        // Collapsed toolbars disqualify immediately
+        ptr.onTouchDown(
+            initialScrollY = 0,
+            canWebViewScrollUp = false,
+            initialCollapseProgress = 0.8f,
+            enabled = true
+        )
+        assertFalse(ptr.eligible)
+
+        // Dragging finger UP (scrolling down into the page) disqualifies reversal without lifting
+        ptr.onTouchDown(
+            initialScrollY = 0,
+            canWebViewScrollUp = false,
+            initialCollapseProgress = 0f,
+            enabled = true
+        )
         assertTrue(ptr.eligible)
-        assertFalse(ptr.onTouchMove(rawY = 460f, rawDy = 40f, currentScrollY = 0, currentCollapseProgress = 0f, domBlocked = false))
+        assertFalse(
+            ptr.onVerticalDragDelta(
+                rawDy = 40f,
+                currentScrollY = 0,
+                canWebViewScrollUp = false,
+                currentCollapseProgress = 0f,
+                hasDomTouchGate = true,
+                domGateState = DomTouchGateState.ALLOWED
+            )
+        )
         assertFalse(ptr.eligible)
         assertFalse(
-            ptr.onTopOverscroll(
-                deltaX = 0,
-                deltaY = -40,
-                scrollY = 0,
-                collapseProgress = 0f,
-                horizontalAxisLocked = false,
-                domBlocked = false
+            ptr.onVerticalDragDelta(
+                rawDy = -160f,
+                currentScrollY = 0,
+                canWebViewScrollUp = false,
+                currentCollapseProgress = 0f,
+                hasDomTouchGate = true,
+                domGateState = DomTouchGateState.ALLOWED
             )
         )
 
         // Multi-touch cancelPull resets pull and disqualifies gesture
-        ptr.onTouchDown(rawY = 500f, initialScrollY = 0, initialCollapseProgress = 0f, enabled = true)
-        ptr.onTopOverscroll(deltaX = 0, deltaY = -120, scrollY = 0, collapseProgress = 0f, horizontalAxisLocked = false, domBlocked = false)
+        ptr.onTouchDown(
+            initialScrollY = 0,
+            canWebViewScrollUp = false,
+            initialCollapseProgress = 0f,
+            enabled = true
+        )
+        ptr.onVerticalDragDelta(
+            rawDy = -120f,
+            currentScrollY = 0,
+            canWebViewScrollUp = false,
+            currentCollapseProgress = 0f,
+            hasDomTouchGate = true,
+            domGateState = DomTouchGateState.ALLOWED
+        )
         assertTrue(ptr.cancelPull())
         assertFalse(ptr.eligible)
         assertEquals(0f, ptr.pullDistancePx, 0.001f)

@@ -554,7 +554,6 @@ internal fun computeWebViewHeightPx(
 
 internal class WebViewContainer(context: Context) : FrameLayout(context), FrameCallbackScheduler {
     private var lastContainerBgArgb: Int? = null
-    private var lastTouchRawY: Float = 0f
 
     var pullToRefreshEnabled: Boolean = true
         set(value) {
@@ -600,10 +599,8 @@ internal class WebViewContainer(context: Context) : FrameLayout(context), FrameC
 
     private val gestureState = VerticalDragGestureState(touchSlop)
     private val pullToRefreshController = PullToRefreshController(
-        touchSlopPx = touchSlop,
-        maxUnoverscrolledDownwardDragPx = touchSlop + 56f * density,
         triggerDistancePx = 72f * density,
-        showDeadzonePx = 4f * density
+        showDeadzonePx = 8f * density
     )
     private var velocityTracker: VelocityTracker? = null
 
@@ -617,23 +614,6 @@ internal class WebViewContainer(context: Context) : FrameLayout(context), FrameC
         pullToRefreshController.reset()
         gestureState.reset()
         recycleVelocityTracker()
-    }
-
-    fun handleWebViewTopOverscroll(deltaX: Int, deltaY: Int, scrollY: Int): Boolean {
-        if (!pullToRefreshEnabled) return false
-        val childWebView = getChildAt(0) as? SwiftfoxWebView ?: return false
-        val consumed = pullToRefreshController.onTopOverscroll(
-            deltaX = deltaX,
-            deltaY = deltaY,
-            scrollY = scrollY,
-            collapseProgress = currentCollapseProgress,
-            horizontalAxisLocked = gestureState.axis == GestureAxis.IGNORED,
-            domBlocked = childWebView.domTouchBlockedForPullToRefresh
-        )
-        if (consumed) {
-            onPullToRefreshProgress?.invoke(pullToRefreshController.pullDistancePx, true)
-        }
-        return consumed
     }
 
     fun handleDomPullToRefreshBlocked() {
@@ -737,12 +717,11 @@ internal class WebViewContainer(context: Context) : FrameLayout(context), FrameC
                 recycleVelocityTracker()
                 velocityTracker = VelocityTracker.obtain()
                 addScreenVelocityEvent(ev)
-                lastTouchRawY = ev.rawY
                 childWebView.beginDomTouchGesture()
                 gestureState.onDown(ev.rawX, ev.rawY)
                 pullToRefreshController.onTouchDown(
-                    rawY = ev.rawY,
                     initialScrollY = childWebView.scrollY,
+                    canWebViewScrollUp = childWebView.canScrollVertically(-1),
                     initialCollapseProgress = currentCollapseProgress,
                     enabled = pullToRefreshEnabled
                 )
@@ -757,23 +736,6 @@ internal class WebViewContainer(context: Context) : FrameLayout(context), FrameC
             }
 
             MotionEvent.ACTION_MOVE -> {
-                val rawMoveDy = lastTouchRawY - ev.rawY
-                lastTouchRawY = ev.rawY
-                val wasPulling = pullToRefreshController.pullDistancePx > 0f
-                val retractedPull = pullToRefreshController.onTouchMove(
-                    rawY = ev.rawY,
-                    rawDy = rawMoveDy,
-                    currentScrollY = childWebView.scrollY,
-                    currentCollapseProgress = currentCollapseProgress,
-                    domBlocked = childWebView.domTouchBlockedForPullToRefresh
-                )
-                if (retractedPull || (wasPulling && pullToRefreshController.pullDistancePx <= 0f)) {
-                    onPullToRefreshProgress?.invoke(
-                        pullToRefreshController.pullDistancePx,
-                        pullToRefreshController.pullDistancePx > 0f
-                    )
-                }
-
                 if (gestureState.shouldRecordVelocityOnMove()) {
                     addScreenVelocityEvent(ev)
                 }
@@ -784,7 +746,20 @@ internal class WebViewContainer(context: Context) : FrameLayout(context), FrameC
                         finishGesture(childWebView, cancelled = true)
                     }
                     is VerticalDragGestureState.MoveResult.VerticalDelta -> {
-                        if (!retractedPull && pullToRefreshController.pullDistancePx <= 0.5f) {
+                        val wasPulling = pullToRefreshController.pullDistancePx > 0f
+                        val pullHandled = pullToRefreshController.onVerticalDragDelta(
+                            rawDy = result.rawDy,
+                            currentScrollY = childWebView.scrollY,
+                            canWebViewScrollUp = childWebView.canScrollVertically(-1),
+                            currentCollapseProgress = currentCollapseProgress,
+                            hasDomTouchGate = childWebView.hasDomTouchGate,
+                            domGateState = childWebView.domTouchGateState
+                        )
+                        val nextPullPx = pullToRefreshController.pullDistancePx
+                        if (nextPullPx > 0f || wasPulling) {
+                            onPullToRefreshProgress?.invoke(nextPullPx, nextPullPx > 0f)
+                        }
+                        if (!pullHandled && nextPullPx <= 0.5f) {
                             val consumedPx = dragCallback(result.rawDy, childWebView)
                             // Sync child translationY synchronously BEFORE super.dispatchTouchEvent
                             // so Android transforms ev into childWebView with zero frame lag.
@@ -800,13 +775,12 @@ internal class WebViewContainer(context: Context) : FrameLayout(context), FrameC
                 if (gestureState.shouldRecordTerminalVelocity()) {
                     addScreenVelocityEvent(ev)
                 }
-                // End pull-to-refresh BEFORE delivering UP/CANCEL to WebView so a synchronous
-                // fling overscroll on pointer release can never trigger a refresh.
                 val isCancel = action == MotionEvent.ACTION_CANCEL
                 hadActivePullAtEnd = pullToRefreshController.pullDistancePx > 0.5f
                 val shouldTrigger = pullToRefreshController.onTouchEnd(
                     isCancel = isCancel,
-                    domBlocked = childWebView.domTouchBlockedForPullToRefresh
+                    hasDomTouchGate = childWebView.hasDomTouchGate,
+                    domGateState = childWebView.domTouchGateState
                 )
                 if (shouldTrigger) {
                     onPullToRefreshTrigger?.invoke()

@@ -449,7 +449,10 @@ class SwiftfoxWebViewClient(
 
     override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
         super.onPageStarted(view, url, favicon)
-        (view as? SwiftfoxWebView)?.isMediaCurrentlyPlaying = false
+        (view as? SwiftfoxWebView)?.apply {
+            isMediaCurrentlyPlaying = false
+            onPageNavigationStarted()
+        }
         if (!url.isNullOrBlank()) {
             oneShotInAppUrls.remove(url)
             committedMainFrameUrl = url

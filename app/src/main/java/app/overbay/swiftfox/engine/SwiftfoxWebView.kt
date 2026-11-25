@@ -5,6 +5,12 @@ import android.util.AttributeSet
 import android.view.View
 import android.webkit.WebView
 
+enum class DomTouchGateState {
+    PENDING,
+    ALLOWED,
+    BLOCKED
+}
+
 class SwiftfoxWebView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
@@ -20,29 +26,36 @@ class SwiftfoxWebView @JvmOverloads constructor(
     var onScrollMetricsChanged: ((scrollY: Int, deltaY: Int, scrollRange: Int, scrollExtent: Int) -> Unit)? = null
 
     /**
-     * Receives native Chromium top-boundary overscroll deltas (`deltaY < 0` while `scrollY <= 0`)
-     * from `AwContents.didOverscroll` -> `AwScrollOffsetManager.overScrollBy`. Return `true` when
-     * consumed by pull-to-refresh so the view doesn't double-overscroll vertically.
-     */
-    var onTopOverscroll: ((deltaX: Int, deltaY: Int, scrollY: Int, isTouchEvent: Boolean) -> Boolean)? = null
-
-    /**
-     * Updated by the passive main-frame `touchGate` script on `touchstart`, inner-container
-     * `scroll`, and `defaultPrevented` touch handlers so pull-to-refresh respects inner CSS
-     * scroll containers, `overscroll-behavior-y: contain|none`, `touch-action`, and JS touch apps.
+     * Tracks whether the passive main-frame `touchGate` script is active on the current document
+     * and whether the active touch gesture started cleanly at `scrollTop == 0` with no blocking
+     * inner scroller, modal, `overscroll-behavior-y: none`, `touch-action`, or JS `preventDefault()`.
      */
     @Volatile
-    var domTouchBlockedForPullToRefresh: Boolean = false
+    var hasDomTouchGate: Boolean = false
+        private set
+
+    @Volatile
+    var domTouchGateState: DomTouchGateState = DomTouchGateState.PENDING
         private set
 
     var onDomPullToRefreshBlocked: (() -> Unit)? = null
 
+    fun onPageNavigationStarted() {
+        hasDomTouchGate = false
+        domTouchGateState = DomTouchGateState.PENDING
+    }
+
+    fun markDomTouchGateReady() {
+        hasDomTouchGate = true
+    }
+
     fun beginDomTouchGesture() {
-        domTouchBlockedForPullToRefresh = false
+        domTouchGateState = DomTouchGateState.PENDING
     }
 
     fun updateDomTouchGate(blocked: Boolean) {
-        domTouchBlockedForPullToRefresh = blocked
+        hasDomTouchGate = true
+        domTouchGateState = if (blocked) DomTouchGateState.BLOCKED else DomTouchGateState.ALLOWED
         if (blocked) {
             onDomPullToRefreshBlocked?.invoke()
         }
@@ -60,35 +73,6 @@ class SwiftfoxWebView @JvmOverloads constructor(
         } else {
             super.onWindowVisibilityChanged(visibility)
         }
-    }
-
-    override fun overScrollBy(
-        deltaX: Int,
-        deltaY: Int,
-        scrollX: Int,
-        scrollY: Int,
-        scrollRangeX: Int,
-        scrollRangeY: Int,
-        maxOverScrollX: Int,
-        maxOverScrollY: Int,
-        isTouchEvent: Boolean
-    ): Boolean {
-        val consumedTopOverscroll = if (deltaY < 0 && scrollY <= 0) {
-            onTopOverscroll?.invoke(deltaX, deltaY, scrollY, isTouchEvent) == true
-        } else {
-            false
-        }
-        return super.overScrollBy(
-            deltaX,
-            if (consumedTopOverscroll) 0 else deltaY,
-            scrollX,
-            scrollY,
-            scrollRangeX,
-            scrollRangeY,
-            maxOverScrollX,
-            maxOverScrollY,
-            isTouchEvent
-        )
     }
 
     override fun onScrollChanged(l: Int, t: Int, oldl: Int, oldt: Int) {

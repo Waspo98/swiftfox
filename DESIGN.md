@@ -184,19 +184,20 @@ components:
     rounded: "{rounded.tile}"
     padding: "14px"
     height: "82px"
-  space-pill:
-    backgroundColor: "{colors.dark-surface-high}"
-    textColor: "{colors.dark-on-surface}"
-    typography: "{typography.label-large}"
-    rounded: "{rounded.pill}"
-    padding: "12px 16px"
+  space-tab:
+    backgroundColor: "transparent"
+    textColor: "{colors.dark-on-surface-variant}"
+    typography: "{typography.title-small}"
+    rounded: "{rounded.small}"
+    padding: "12px 6px"
     height: "48px"
-  space-pill-selected:
-    backgroundColor: "{colors.fox-amber-dark-container}"
-    textColor: "{colors.fox-amber-dark-on-container}"
-    typography: "{typography.label-large}"
-    rounded: "{rounded.pill}"
-    padding: "12px 16px"
+  space-tab-selected:
+    backgroundColor: "transparent"
+    textColor: "{colors.dark-on-surface}"
+    indicatorColor: "{colors.fox-amber-dark-primary}"
+    typography: "{typography.title-small}"
+    rounded: "{rounded.small}"
+    padding: "12px 6px"
     height: "48px"
   tab-count-badge:
     backgroundColor: "{colors.fox-amber-dark-container}"
@@ -369,10 +370,10 @@ Swiftfox's UI components feel **tactile, pill-soft, and state-honest**: resting 
 
 - **Segmented Selector (`SwiftfoxSegmentedControl`):** Full-width connected tonal track (`18dp` radius on `surfaceContainerHigh`, subtle `1dp` `outlineVariant` 35% stroke) housing equal-width `48dp`-touch segments (`Role.RadioButton` inside `selectableGroup()`) with concentric `14dp` active capsules in high-contrast `primary` / `onPrimary` (used for 2–4 exclusive options across Settings sub-pages, `SiteRulesSheet`, `ReaderModeOverlay`, and `SyncOverlay`).
 - **Tonal Selectable Pill (`SwiftfoxSelectablePill`):** `20dp` radius, `48dp` min height filled `surfaceContainerHigh` pill transitioning to `primaryContainer` + `1.5dp primary` border + check icon when selected (used for wrapable multi-word User-Agent presets and Bookmark folder filters, eliminating hollow wireframe chips).
-- **Space Pill Chip (`SpacePillChip`):** `22dp` radius, `48dp` minimum height, `16dp` horizontal / `12dp` vertical padding. Resting uses `surfaceContainerHigh` with `onSurface` label and `onSurfaceVariant` icon/count; selected switches to `primaryContainer` with a `1.5dp` solid `primary` border, `onPrimaryContainer` label, and `primary`-tinted icon, optional container-isolation lock icon (`14dp`), and tab count.
+- **Editorial Space Tab Strip (`EditorialSpacesTabStrip`):** Full-bleed borderless horizontal tab strip anchored on a `1dp` `outlineVariant` (`34%` alpha) hairline with background-agnostic `drawWithCache` edge fade masks when scrollable. Every tab enforces a `48dp` hit target (`titleSmall`, `maxLines = 1`) with quiet muted ink at rest (`onSurfaceVariant` `82%` alpha, zero pill container) and crisp `onBackground` text + `primary`-tinted icon + `2.5dp` rounded bottom accent bar when active. Tab Switcher tabs append an optional `6dp` synced Space color dot, `13dp` container-isolation lock icon, non-zero tabular tab counts (suppressing `0`s), and a trailing borderless `+ New` Space action; drag-and-drop Reorder Mode temporarily elevates tabs into `14dp` draggable chips.
 - **Quick Action Pill (`QuickActionPill`):** `24dp` radius, `48dp` minimum height, `16dp` horizontal / `12dp` vertical padding on `surfaceContainerHigh`, pairing an `18dp` `primary`-tinted rounded icon with a `labelLarge` caption (`Zap element`, `Reader mode`, `Site rules`, `Find in page`, `Pin essential`, `Send to Zen`).
 - **Split-Bar New Tab Button:** Centered in `SplitBottomActionBar`, `CircleShape`, `48dp` target filled in `primaryContainer` (or `privateContainer` in Private Mode) with a `1dp` `primary` (`45%` alpha) border and `24dp` `+` icon (tap for New Tab, long-press for Private Tab).
-- **Private Filter Toggle:** `SpacesTabSwitcher` Private toggle uses `20dp` radius shifting to `privateContainer` / `onPrivateContainer` with `privateAccent` shield icon.
+- **Private Filter Toggle:** `SpacesTabSwitcher` top-bar Private toggle uses a borderless `18dp`-rounded `48dp`-height button that stays transparent at rest and shifts cleanly to `privateContainer` / `onPrivateContainer` with `privateAccent` shield icon when active.
 
 ### Cards & Containers
 
@@ -390,7 +391,7 @@ Swiftfox's UI components feel **tactile, pill-soft, and state-honest**: resting 
 
 - **Posture-Adaptive Toolbars:** `FullOmniboxToolbar` and `SplitBottomActionBar` anchor on `surfaceContainerLow` (`2dp` tonal elevation) with `2.5dp` `primary` linear page-load progress bars and `outlineVariant` (`35%` alpha) edge hairlines. `ErgonomicSideRail` (`68dp` wide, unfolded `SIDE_RAIL` mode) stacks a `48dp` circular `primaryContainer` Search button, New Tab, Back/Forward/Reload, a `16dp`-rounded `primaryContainer` Settings & Quick Actions button, and the Tab Count badge.
 - **Tab Count Badge (`TabCountBadgeButton`):** `48×48dp` interactive button centering a `28×28dp` minimum `10dp`-rounded pill (`primaryContainer` + `1.5dp primary` border in normal mode; `privateContainer` + `1.5dp privateAccent` border in Private Mode) displaying bold `labelMedium` counts capped at `99+`.
-- **Arc/Zen Spaces Sidebar (`ArcSpacesSidebar`):** `surfaceContainerLow` (`1dp` docked / `3dp` folded slide-over drawer) collapsing between a `72dp` icon rail (`48dp` rounded space/tab buttons) and a `232dp`/`264dp` (or `82%`, max `304dp` folded drawer) vertical workspace showing `SwiftfoxEmblem`, a 4-column Essentials grid, Zen pinned items, `52dp`-tall vertical tab rows (`16dp` radius, active tab highlighted in `primaryContainer` + `1dp primary` 55% border), a `20dp`-rounded `primary` New Tab button, and a bottom Space/Private switcher strip.
+- **Arc/Zen Spaces Sidebar (`ArcSpacesSidebar`):** `surfaceContainerLow` (`1dp` docked / `3dp` folded slide-over drawer) collapsing between a `72dp` icon rail (`EditorialSpaceRailGlyph` bare Space icons with a `3×20dp` leading vertical accent indicator above `48dp` rounded-square Essential/tab favicons) and a `232dp`/`264dp` (or `82%`, max `304dp` folded drawer) vertical layout showing `SwiftfoxEmblem`, a 4-column Essentials grid, Zen pinned items, `52dp`-tall vertical tab rows (`16dp` radius, active tab highlighted in `primaryContainer` + `1dp primary` 55% border), a `20dp`-rounded `primary` New Tab button, and a bottom bare-glyph Editorial Spaces/Private footer (`EditorialSpaceFooterGlyph`, `18×2.5dp` bottom accent bar on active, separated by a `1×18dp` hairline from Private and `+`).
 
 ### Quick Actions & Settings Hub
 

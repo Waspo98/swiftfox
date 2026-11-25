@@ -35,6 +35,7 @@ import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -65,6 +66,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -91,6 +93,9 @@ import app.overbay.swiftfox.ui.browser.EmphasizedDecelerateEasing
 import app.overbay.swiftfox.ui.components.CustomIconPickerSheet
 import app.overbay.swiftfox.ui.components.DragAxis
 import app.overbay.swiftfox.ui.components.EditTitleAndUrlDialog
+import app.overbay.swiftfox.ui.components.EditorialFooterActionGlyph
+import app.overbay.swiftfox.ui.components.EditorialSpaceFooterGlyph
+import app.overbay.swiftfox.ui.components.EditorialSpaceRailGlyph
 import app.overbay.swiftfox.ui.components.ItemActionBottomSheet
 import app.overbay.swiftfox.ui.components.RenameSpaceDialog
 import app.overbay.swiftfox.ui.components.ReorderModeBanner
@@ -99,6 +104,7 @@ import app.overbay.swiftfox.ui.components.SiteIconBadge
 import app.overbay.swiftfox.ui.components.SpaceIconGlyph
 import app.overbay.swiftfox.ui.components.dragReorderContainer
 import app.overbay.swiftfox.ui.components.dragReorderItem
+import app.overbay.swiftfox.ui.components.horizontalFadingEdges
 import app.overbay.swiftfox.ui.components.rememberDragReorderController
 import app.overbay.swiftfox.ui.theme.LocalSwiftfoxColors
 import app.overbay.swiftfox.ui.theme.SwiftfoxEmblem
@@ -288,7 +294,7 @@ fun ArcSpacesSidebar(
     actionSpace?.let { target ->
         ItemActionBottomSheet(
             title = target.name,
-            subtitle = if (!target.containerProfileName.isNullOrBlank()) "Isolated container workspace" else "Workspace",
+            subtitle = if (!target.containerProfileName.isNullOrBlank()) "Isolated container Space" else "Space",
             leadingIcon = {
                 Surface(
                     shape = RoundedCornerShape(12.dp),
@@ -306,7 +312,7 @@ fun ArcSpacesSidebar(
             },
             actions = listOf(
                 SheetActionItem(
-                    label = "Rename workspace",
+                    label = "Rename Space",
                     icon = Icons.Rounded.Edit,
                     onClick = { spaceToRename = target }
                 ),
@@ -316,13 +322,13 @@ fun ArcSpacesSidebar(
                     onClick = { spaceToPickIcon = target }
                 ),
                 SheetActionItem(
-                    label = "Reorder workspaces",
+                    label = "Reorder Spaces",
                     icon = Icons.Rounded.SwapVert,
                     enabled = state.spaces.size > 1 && isEffectiveExpanded,
                     onClick = { reorderMode = SidebarReorderMode.SPACES }
                 ),
                 SheetActionItem(
-                    label = "Delete workspace",
+                    label = "Delete Space",
                     icon = Icons.Rounded.DeleteOutline,
                     isDestructive = true,
                     enabled = state.spaces.size > 1,
@@ -1112,25 +1118,56 @@ private fun ColumnScope.ArcExpandedSidebarContent(
         }
     }
 
-    // 4. Bottom Icon-Only Workspace Switcher & Private Toggle pinned in thumb reach
-    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
+    // 4. Bottom Editorial Bare-Glyph Spaces Switcher & Private Toggle pinned in thumb reach
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.36f))
 
     if (reorderMode == SidebarReorderMode.SPACES) {
         ReorderModeBanner(
             visible = true,
-            label = "Drag workspaces",
+            label = "Drag Spaces",
             onDone = onExitReorderMode
         )
     }
 
     val isReorderingSpaces = reorderMode == SidebarReorderMode.SPACES
     val displayedSpaces = if (isReorderingSpaces) spacesReorder.items.toList() else state.spaces
+    val reduceMotion = rememberReduceMotion()
+    val footerListState = rememberLazyListState()
+    val footerCanScrollBackward by remember(footerListState) { derivedStateOf { footerListState.canScrollBackward } }
+    val footerCanScrollForward by remember(footerListState) { derivedStateOf { footerListState.canScrollForward } }
+
+    LaunchedEffect(state.activeSpaceId, state.isPrivateView, displayedSpaces.size, isReorderingSpaces) {
+        if (isReorderingSpaces || state.isPrivateView) return@LaunchedEffect
+        val index = displayedSpaces.indexOfFirst { it.id == state.activeSpaceId }
+        if (index >= 0) {
+            val visible = footerListState.layoutInfo.visibleItemsInfo.any { item ->
+                item.index == index &&
+                    item.offset >= 0 &&
+                    item.offset + item.size <= footerListState.layoutInfo.viewportEndOffset
+            }
+            if (!visible) {
+                if (reduceMotion) {
+                    footerListState.scrollToItem(index)
+                } else {
+                    footerListState.animateScrollToItem(index)
+                }
+            }
+        }
+    }
 
     LazyRow(
-        modifier = Modifier.fillMaxWidth(),
+        state = footerListState,
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalFadingEdges(
+                showStartFade = !isReorderingSpaces && footerCanScrollBackward,
+                showEndFade = !isReorderingSpaces && footerCanScrollForward,
+                startFadeWidth = 14.dp,
+                endFadeWidth = 22.dp
+            ),
         userScrollEnabled = !isReorderingSpaces,
         contentPadding = PaddingValues(vertical = 2.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         items(
@@ -1139,12 +1176,14 @@ private fun ColumnScope.ArcExpandedSidebarContent(
             contentType = { "sidebar_bottom_space_icon" }
         ) { space ->
             val selected = !state.isPrivateView && state.activeSpaceId == space.id
-            SidebarBottomSpaceIconTile(
-                space = space,
+            EditorialSpaceFooterGlyph(
                 selected = selected,
-                isReorderMode = isReorderingSpaces,
+                accentColor = MaterialTheme.colorScheme.primary,
+                contentDescriptionText = "${space.name} Space",
                 onClick = { if (!isReorderingSpaces) onSelectSpace(space.id) },
                 onLongClick = { if (!isReorderingSpaces) onLongPressSpace(space) },
+                isReorderMode = isReorderingSpaces,
+                themeDotColor = parseHexColorOrNull(space.themeColorHex),
                 modifier = Modifier
                     .then(if (!isReorderingSpaces) Modifier.animateItem() else Modifier)
                     .dragReorderItem(
@@ -1152,53 +1191,48 @@ private fun ColumnScope.ArcExpandedSidebarContent(
                         enabled = isReorderingSpaces,
                         controller = spacesReorder
                     )
-            )
+            ) { glyphTint ->
+                SpaceIconGlyph(
+                    iconKey = space.iconKey,
+                    tint = glyphTint,
+                    size = 20.dp
+                )
+            }
         }
 
         if (!isReorderingSpaces) {
+            item(key = "sidebar_bottom_divider", contentType = "sidebar_bottom_divider") {
+                Box(
+                    modifier = Modifier
+                        .padding(horizontal = 4.dp)
+                        .width(1.dp)
+                        .height(18.dp)
+                        .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                )
+            }
+
             item(key = "sidebar_bottom_private", contentType = "sidebar_bottom_private") {
-                Surface(
-                    onClick = { onTogglePrivate(!state.isPrivateView) },
-                    shape = RoundedCornerShape(16.dp),
-                    color = if (state.isPrivateView) {
-                        foxColors.privateContainer
-                    } else {
-                        MaterialTheme.colorScheme.surfaceContainerHigh
-                    },
-                    border = if (state.isPrivateView) {
-                        BorderStroke(1.5.dp, foxColors.privateAccent)
-                    } else {
-                        null
-                    },
-                    modifier = Modifier.size(48.dp)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            imageVector = Icons.Rounded.Shield,
-                            contentDescription = "Private Space",
-                            tint = if (state.isPrivateView) foxColors.privateAccent else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
+                EditorialSpaceFooterGlyph(
+                    selected = state.isPrivateView,
+                    accentColor = foxColors.privateAccent,
+                    contentDescriptionText = "Private Space",
+                    onClick = { onTogglePrivate(!state.isPrivateView) }
+                ) { glyphTint ->
+                    Icon(
+                        imageVector = Icons.Rounded.Shield,
+                        contentDescription = null,
+                        tint = glyphTint,
+                        modifier = Modifier.size(20.dp)
+                    )
                 }
             }
 
             item(key = "sidebar_bottom_add_space", contentType = "sidebar_bottom_add_space") {
-                Surface(
-                    onClick = onRequestCreateSpace,
-                    shape = CircleShape,
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    modifier = Modifier.size(48.dp)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            imageVector = Icons.Rounded.Add,
-                            contentDescription = "Create Space",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                }
+                EditorialFooterActionGlyph(
+                    icon = Icons.Rounded.Add,
+                    contentDescription = "New Space",
+                    onClick = onRequestCreateSpace
+                )
             }
         }
     }
@@ -1670,67 +1704,6 @@ private fun SidebarTabRow(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun SidebarBottomSpaceIconTile(
-    space: SpaceEntity,
-    selected: Boolean,
-    isReorderMode: Boolean,
-    onClick: () -> Unit,
-    onLongClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Surface(
-        shape = RoundedCornerShape(16.dp),
-        color = if (selected) {
-            MaterialTheme.colorScheme.primaryContainer
-        } else {
-            MaterialTheme.colorScheme.surfaceContainerHigh
-        },
-        border = when {
-            isReorderMode -> BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
-            selected -> BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
-            else -> null
-        },
-        modifier = modifier
-            .size(48.dp)
-            .clip(RoundedCornerShape(16.dp))
-            .then(
-                if (!isReorderMode) {
-                    Modifier.combinedClickable(
-                        onClick = onClick,
-                        onLongClick = onLongClick
-                    )
-                } else {
-                    Modifier
-                }
-            )
-            .semantics {
-                contentDescription = "${space.name} workspace"
-            }
-    ) {
-        Box(contentAlignment = Alignment.Center) {
-            SpaceIconGlyph(
-                iconKey = space.iconKey,
-                tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                contentDescription = space.name,
-                size = 20.dp
-            )
-            val dotColor = parseHexColorOrNull(space.themeColorHex)
-            if (dotColor != null) {
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(6.dp)
-                        .size(7.dp)
-                        .clip(CircleShape)
-                        .background(dotColor)
-                )
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
 private fun ColumnScope.ArcCollapsedSidebarRail(
     state: BrowserUiState,
     onToggleExpanded: () -> Unit,
@@ -1773,7 +1746,7 @@ private fun ColumnScope.ArcCollapsedSidebarRail(
     }
 
     Column(
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
             .fillMaxWidth()
@@ -1782,57 +1755,33 @@ private fun ColumnScope.ArcCollapsedSidebarRail(
     ) {
         state.spaces.forEach { space ->
             val selected = !state.isPrivateView && state.activeSpaceId == space.id
-            Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
-                border = if (selected) BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary) else null,
-                modifier = Modifier
-                    .size(48.dp)
-                    .clip(RoundedCornerShape(16.dp))
-                    .combinedClickable(
-                        onClick = { onSelectSpace(space.id) },
-                        onLongClick = { onLongPressSpace(space) }
-                    )
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    SpaceIconGlyph(
-                        iconKey = space.iconKey,
-                        tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                        contentDescription = space.name,
-                        size = 20.dp
-                    )
-                    val dotColor = parseHexColorOrNull(space.themeColorHex)
-                    if (dotColor != null) {
-                        Box(
-                            modifier = Modifier
-                                .align(Alignment.TopEnd)
-                                .padding(7.dp)
-                                .size(7.dp)
-                                .clip(CircleShape)
-                                .background(dotColor)
-                        )
-                    }
-                }
-            }
-        }
-        Surface(
-            onClick = { onTogglePrivate(!state.isPrivateView) },
-            shape = RoundedCornerShape(16.dp),
-            color = if (state.isPrivateView) {
-                foxColors.privateContainer
-            } else {
-                MaterialTheme.colorScheme.surfaceContainerHigh
-            },
-            modifier = Modifier.size(48.dp)
-        ) {
-            Box(contentAlignment = Alignment.Center) {
-                Icon(
-                    imageVector = Icons.Rounded.Shield,
-                    contentDescription = "Private Space",
-                    tint = if (state.isPrivateView) foxColors.privateAccent else MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(20.dp)
+            EditorialSpaceRailGlyph(
+                selected = selected,
+                accentColor = MaterialTheme.colorScheme.primary,
+                contentDescriptionText = "${space.name} Space",
+                onClick = { onSelectSpace(space.id) },
+                onLongClick = { onLongPressSpace(space) },
+                themeDotColor = parseHexColorOrNull(space.themeColorHex)
+            ) { glyphTint ->
+                SpaceIconGlyph(
+                    iconKey = space.iconKey,
+                    tint = glyphTint,
+                    size = 20.dp
                 )
             }
+        }
+        EditorialSpaceRailGlyph(
+            selected = state.isPrivateView,
+            accentColor = foxColors.privateAccent,
+            contentDescriptionText = "Private Space",
+            onClick = { onTogglePrivate(!state.isPrivateView) }
+        ) { glyphTint ->
+            Icon(
+                imageVector = Icons.Rounded.Shield,
+                contentDescription = null,
+                tint = glyphTint,
+                modifier = Modifier.size(20.dp)
+            )
         }
     }
 

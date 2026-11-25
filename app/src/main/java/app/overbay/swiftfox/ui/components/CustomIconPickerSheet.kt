@@ -172,7 +172,7 @@ fun CustomIconPickerSheet(
                         text = if (allowResetToFavicon) {
                             "Choose an icon, emoji, or photo — or use the site's web favicon."
                         } else {
-                            "Pick a Material icon, emoji, or photo for this workspace."
+                            "Pick a Material icon, emoji, or photo for this Space."
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -542,12 +542,12 @@ fun RenameSpaceDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Rename Workspace") },
+        title = { Text("Rename Space") },
         text = {
             OutlinedTextField(
                 value = name,
                 onValueChange = { name = it },
-                label = { Text("Workspace name") },
+                label = { Text("Space name") },
                 singleLine = true,
                 shape = RoundedCornerShape(16.dp),
                 modifier = Modifier.fillMaxWidth()

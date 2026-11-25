@@ -2413,7 +2413,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             state.copy(spaces = state.spaces.map { if (it.id == spaceId) updated else it })
         }
         viewModelScope.launch { db.spaceDao().upsert(updated) }
-        showSnackbar("Renamed workspace to \"$trimmed\"")
+        showSnackbar("Renamed Space to \"$trimmed\"")
     }
 
     fun setSpaceIcon(spaceId: String, iconKey: String) {

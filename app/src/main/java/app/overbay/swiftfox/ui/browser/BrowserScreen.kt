@@ -1928,9 +1928,9 @@ private fun FullOmniboxToolbar(
                             Icon(
                                 imageVector = Icons.AutoMirrored.Rounded.ViewSidebar,
                                 contentDescription = if (isSidebarOpen) {
-                                    "Close workspace sidebar"
+                                    "Close Spaces sidebar"
                                 } else {
-                                    "Open workspace sidebar"
+                                    "Open Spaces sidebar"
                                 },
                                 tint = if (isSidebarOpen) accentTint else MaterialTheme.colorScheme.onSurface,
                                 modifier = Modifier.graphicsLayer { scaleX = -1f }
@@ -2225,9 +2225,9 @@ private fun SplitBottomActionBar(
                         Icon(
                             imageVector = Icons.AutoMirrored.Rounded.ViewSidebar,
                             contentDescription = if (isSidebarOpen) {
-                                "Close workspace sidebar"
+                                "Close Spaces sidebar"
                             } else {
-                                "Open workspace sidebar"
+                                "Open Spaces sidebar"
                             },
                             tint = if (isSidebarOpen) accentTint else MaterialTheme.colorScheme.onSurface,
                             modifier = Modifier.graphicsLayer { scaleX = -1f }

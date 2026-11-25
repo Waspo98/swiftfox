@@ -445,7 +445,7 @@ fun SyncOverlay(
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
                         SyncSwitchRow(
                             title = "Zen Spaces & Essentials",
-                            subtitle = "Sync encrypted Zen workspaces, Essentials, and pinned tabs",
+                            subtitle = "Sync encrypted Zen Spaces, Essentials, and pinned tabs",
                             checked = settings.syncZenSpacesEnabled,
                             onCheckedChange = onToggleSyncZenSpaces
                         )

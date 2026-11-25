@@ -43,7 +43,6 @@ import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.DesktopWindows
 import androidx.compose.material.icons.rounded.Devices
 import androidx.compose.material.icons.rounded.Edit
-import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.PushPin
 import androidx.compose.material.icons.rounded.Refresh
@@ -52,8 +51,6 @@ import androidx.compose.material.icons.rounded.StarOutline
 import androidx.compose.material.icons.rounded.SwapVert
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExtendedFloatingActionButton
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -86,6 +83,10 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -102,13 +103,13 @@ import app.overbay.swiftfox.ui.browser.TabThumbnailsSnapshot
 import app.overbay.swiftfox.ui.components.CustomIconPickerSheet
 import app.overbay.swiftfox.ui.components.DragAxis
 import app.overbay.swiftfox.ui.components.EditTitleAndUrlDialog
+import app.overbay.swiftfox.ui.components.EditorialSpacesTabStrip
 import app.overbay.swiftfox.ui.components.ItemActionBottomSheet
 import app.overbay.swiftfox.ui.components.RenameSpaceDialog
 import app.overbay.swiftfox.ui.components.ReorderModeBanner
 import app.overbay.swiftfox.ui.components.SheetActionItem
 import app.overbay.swiftfox.ui.components.SiteIconBadge
 import app.overbay.swiftfox.ui.components.SpaceIconGlyph
-import app.overbay.swiftfox.ui.components.dragReorderItem
 import app.overbay.swiftfox.ui.components.rememberDragReorderController
 import app.overbay.swiftfox.ui.theme.LocalSwiftfoxColors
 import app.overbay.swiftfox.ui.theme.SwiftfoxEmblem
@@ -197,7 +198,7 @@ fun SpacesTabSwitcher(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
@@ -212,8 +213,13 @@ fun SpacesTabSwitcher(
                 }
 
                 Text(
-                    text = if (state.isPrivateView) "Private Tabs" else (state.activeSpace?.name ?: "Spaces"),
+                    text = if (state.isPrivateView) "Private Tabs" else "Spaces",
                     style = MaterialTheme.typography.headlineSmall,
+                    color = if (state.isPrivateView) {
+                        foxColors.privateAccent
+                    } else {
+                        MaterialTheme.colorScheme.onBackground
+                    },
                     modifier = Modifier.weight(1f),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -221,11 +227,11 @@ fun SpacesTabSwitcher(
 
                 Surface(
                     onClick = onOpenSyncedTabs,
-                    shape = RoundedCornerShape(20.dp),
+                    shape = RoundedCornerShape(18.dp),
                     color = if (state.syncedRemoteTabs.isNotEmpty()) {
                         MaterialTheme.colorScheme.primaryContainer
                     } else {
-                        MaterialTheme.colorScheme.surfaceContainerHigh
+                        Color.Transparent
                     },
                     modifier = Modifier.heightIn(min = 48.dp)
                 ) {
@@ -242,7 +248,7 @@ fun SpacesTabSwitcher(
                             } else {
                                 MaterialTheme.colorScheme.onSurfaceVariant
                             },
-                            modifier = Modifier.size(18.dp)
+                            modifier = Modifier.size(20.dp)
                         )
                         if (state.syncedRemoteTabs.isNotEmpty()) {
                             Text(
@@ -254,93 +260,74 @@ fun SpacesTabSwitcher(
                     }
                 }
 
-                FilterChip(
-                    selected = state.isPrivateView,
+                Surface(
                     onClick = { onTogglePrivate(!state.isPrivateView) },
-                    label = { Text("Private") },
-                    leadingIcon = {
+                    shape = RoundedCornerShape(18.dp),
+                    color = if (state.isPrivateView) {
+                        foxColors.privateContainer
+                    } else {
+                        Color.Transparent
+                    },
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .semantics(mergeDescendants = true) {
+                            role = Role.Switch
+                            selected = state.isPrivateView
+                        }
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
                         Icon(
                             imageVector = Icons.Rounded.Shield,
                             contentDescription = null,
+                            tint = if (state.isPrivateView) {
+                                foxColors.privateAccent
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
                             modifier = Modifier.size(18.dp)
                         )
-                    },
-                    shape = RoundedCornerShape(20.dp),
-                    colors = FilterChipDefaults.filterChipColors(
-                        iconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                        selectedContainerColor = foxColors.privateContainer,
-                        selectedLabelColor = foxColors.onPrivateContainer,
-                        selectedLeadingIconColor = foxColors.privateAccent
-                    ),
-                    modifier = Modifier.heightIn(min = 48.dp)
-                )
+                        Text(
+                            text = "Private",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = if (state.isPrivateView) {
+                                foxColors.onPrivateContainer
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                        )
+                    }
+                }
             }
 
             if (isReorderingSpaces) {
                 ReorderModeBanner(
                     visible = true,
-                    label = "Drag workspaces to reorder",
+                    label = "Drag Spaces to reorder",
                     onDone = { isReorderingSpaces = false },
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
                 )
             }
 
-            // Spaces pill strip
+            // Full-bleed Editorial Spaces tab strip
             val displayedSpaces = if (isReorderingSpaces) spacesReorder.items.toList() else state.spaces
-            LazyRow(
-                userScrollEnabled = !isReorderingSpaces,
-                contentPadding = PaddingValues(horizontal = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                items(
-                    items = displayedSpaces,
-                    key = { it.id },
-                    contentType = { "space_pill" }
-                ) { space ->
-                    val selected = !state.isPrivateView && state.activeSpaceId == space.id
-                    SpacePillChip(
-                        space = space,
-                        tabCount = state.tabSwitcherCountForSpace(space.id),
-                        selected = selected,
-                        isReorderMode = isReorderingSpaces,
-                        onClick = { if (!isReorderingSpaces) onSelectSpace(space.id) },
-                        onLongClick = { if (!isReorderingSpaces) actionSpace = space },
-                        modifier = Modifier
-                            .then(if (!isReorderingSpaces) Modifier.animateItem() else Modifier)
-                            .dragReorderItem(
-                                key = space.id,
-                                enabled = isReorderingSpaces,
-                                controller = spacesReorder
-                            )
-                    )
-                }
-
-                if (!isReorderingSpaces) {
-                    item(key = "add_space", contentType = "add_space_pill") {
-                        Surface(
-                            onClick = { showCreateSpaceDialog = true },
-                            shape = RoundedCornerShape(24.dp),
-                            color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                            modifier = Modifier.heightIn(min = 48.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Rounded.Add,
-                                    contentDescription = "Create Space",
-                                    modifier = Modifier.size(18.dp),
-                                    tint = MaterialTheme.colorScheme.primary
-                                )
-                                Text("Space", style = MaterialTheme.typography.labelLarge)
-                            }
-                        }
-                    }
-                }
-            }
+            EditorialSpacesTabStrip(
+                spaces = displayedSpaces,
+                selectedSpaceId = if (state.isPrivateView) null else state.activeSpaceId,
+                onSelectSpace = onSelectSpace,
+                onLongPressSpace = { actionSpace = it },
+                horizontalPadding = 16.dp,
+                iconSize = 17.dp,
+                tabCountForSpace = { spaceId -> state.tabSwitcherCountForSpace(spaceId) },
+                showThemeDot = true,
+                showLockIndicator = true,
+                isReorderMode = isReorderingSpaces,
+                reorderController = spacesReorder,
+                onCreateSpaceClick = { showCreateSpaceDialog = true }
+            )
 
             // Zen Browser synced pinned items for active Space with web favicons
             val zenPinned = state.activeSpaceZenPinned
@@ -495,7 +482,7 @@ fun SpacesTabSwitcher(
     actionSpace?.let { target ->
         ItemActionBottomSheet(
             title = target.name,
-            subtitle = "Workspace",
+            subtitle = if (!target.containerProfileName.isNullOrBlank()) "Isolated container Space" else "Space",
             leadingIcon = {
                 Surface(
                     shape = RoundedCornerShape(12.dp),
@@ -513,7 +500,7 @@ fun SpacesTabSwitcher(
             },
             actions = listOf(
                 SheetActionItem(
-                    label = "Rename workspace",
+                    label = "Rename Space",
                     icon = Icons.Rounded.Edit,
                     onClick = { spaceToRename = target }
                 ),
@@ -523,13 +510,13 @@ fun SpacesTabSwitcher(
                     onClick = { spaceToPickIcon = target }
                 ),
                 SheetActionItem(
-                    label = "Reorder workspaces",
+                    label = "Reorder Spaces",
                     icon = Icons.Rounded.SwapVert,
                     enabled = state.spaces.size > 1,
                     onClick = { isReorderingSpaces = true }
                 ),
                 SheetActionItem(
-                    label = "Delete workspace",
+                    label = "Delete Space",
                     icon = Icons.Rounded.DeleteOutline,
                     isDestructive = true,
                     enabled = state.spaces.size > 1,
@@ -888,84 +875,6 @@ internal fun DeleteSpaceDialog(
             }
         }
     )
-}
-
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun SpacePillChip(
-    space: SpaceEntity,
-    tabCount: Int,
-    selected: Boolean,
-    isReorderMode: Boolean,
-    onClick: () -> Unit,
-    onLongClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Surface(
-        shape = RoundedCornerShape(22.dp),
-        color = if (selected) {
-            MaterialTheme.colorScheme.primaryContainer
-        } else {
-            MaterialTheme.colorScheme.surfaceContainerHigh
-        },
-        border = when {
-            isReorderMode -> BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
-            selected -> BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
-            else -> null
-        },
-        modifier = modifier
-            .heightIn(min = 48.dp)
-            .clip(RoundedCornerShape(22.dp))
-            .then(
-                if (!isReorderMode) {
-                    Modifier.combinedClickable(
-                        onClick = onClick,
-                        onLongClick = onLongClick
-                    )
-                } else {
-                    Modifier
-                }
-            )
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            val dotColor = parseHexColorOrNull(space.themeColorHex)
-            if (dotColor != null) {
-                Box(
-                    modifier = Modifier
-                        .size(8.dp)
-                        .clip(CircleShape)
-                        .background(dotColor)
-                )
-            }
-            SpaceIconGlyph(
-                iconKey = space.iconKey,
-                tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                size = 18.dp
-            )
-            Text(
-                text = space.name,
-                style = MaterialTheme.typography.labelLarge,
-                color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
-            )
-            if (!space.containerProfileName.isNullOrBlank()) {
-                Icon(
-                    imageVector = Icons.Rounded.Lock,
-                    contentDescription = "Isolated container",
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(14.dp)
-                )
-            }
-            Text(
-                text = tabCount.toString(),
-                style = MaterialTheme.typography.labelMedium,
-                color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-    }
 }
 
 @OptIn(ExperimentalFoundationApi::class)

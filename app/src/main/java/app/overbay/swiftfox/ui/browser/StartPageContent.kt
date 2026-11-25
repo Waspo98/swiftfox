@@ -6,7 +6,6 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -20,8 +19,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsBottomHeight
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -73,6 +70,7 @@ import app.overbay.swiftfox.features.omnibox.OmniboxSearchScope
 import app.overbay.swiftfox.ui.components.CustomIconPickerSheet
 import app.overbay.swiftfox.ui.components.DragAxis
 import app.overbay.swiftfox.ui.components.EditTitleAndUrlDialog
+import app.overbay.swiftfox.ui.components.EditorialSpacesTabStrip
 import app.overbay.swiftfox.ui.components.ItemActionBottomSheet
 import app.overbay.swiftfox.ui.components.RenameSpaceDialog
 import app.overbay.swiftfox.ui.components.ReorderModeBanner
@@ -159,14 +157,14 @@ fun StartPageContent(
                     state = rememberScrollState(),
                     enabled = !isReorderingEssentials
                 )
-                .padding(horizontal = 20.dp, vertical = 22.dp),
+                .padding(vertical = 22.dp),
             verticalArrangement = Arrangement.spacedBy(20.dp)
         ) {
             // Brand mark & wordmark
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = if (isUnfolded) 12.dp else 18.dp),
+                    .padding(start = 20.dp, end = 20.dp, top = if (isUnfolded) 12.dp else 18.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
@@ -229,6 +227,7 @@ fun StartPageContent(
                 ),
                 modifier = Modifier
                     .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
                     .heightIn(min = 56.dp)
                     .onGloballyPositioned { coords ->
                         if (coords.isAttached) {
@@ -263,86 +262,37 @@ fun StartPageContent(
                 }
             }
 
-            // Spaces switcher pills (normal mode, hidden when unfolded sidebar already shows Spaces)
+            // Full-bleed Editorial Spaces tab strip (hidden in Private mode or when unfolded sidebar shows Spaces)
             val sidebarVisible = isUnfolded && state.activeProfile.showSpacesSidebar
             if (!isPrivate && !sidebarVisible && state.spaces.isNotEmpty()) {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     ReorderModeBanner(
                         visible = isReorderingSpaces,
-                        label = "Drag workspaces to reorder",
-                        onDone = { isReorderingSpaces = false }
+                        label = "Drag Spaces to reorder",
+                        onDone = { isReorderingSpaces = false },
+                        modifier = Modifier.padding(horizontal = 20.dp)
                     )
                     val displayedSpaces = if (isReorderingSpaces) spacesReorder.items.toList() else state.spaces
-                    LazyRow(
-                        userScrollEnabled = !isReorderingSpaces,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        contentPadding = PaddingValues(horizontal = 2.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        items(
-                            items = displayedSpaces,
-                            key = { it.id },
-                            contentType = { "start_space_pill" }
-                        ) { space ->
-                            val selected = space.id == state.activeSpaceId
-                            Surface(
-                                shape = RoundedCornerShape(22.dp),
-                                color = if (selected) {
-                                    MaterialTheme.colorScheme.primaryContainer
-                                } else {
-                                    MaterialTheme.colorScheme.surfaceContainer
-                                },
-                                border = when {
-                                    isReorderingSpaces -> BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
-                                    selected -> BorderStroke(1.2.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.65f))
-                                    else -> null
-                                },
-                                modifier = Modifier
-                                    .then(if (!isReorderingSpaces) Modifier.animateItem() else Modifier)
-                                    .dragReorderItem(
-                                        key = space.id,
-                                        enabled = isReorderingSpaces,
-                                        controller = spacesReorder
-                                    )
-                                    .heightIn(min = 48.dp)
-                                    .clip(RoundedCornerShape(22.dp))
-                                    .then(
-                                        if (!isReorderingSpaces) {
-                                            Modifier.combinedClickable(
-                                                onClick = { onSelectSpace(space.id) },
-                                                onLongClick = { actionSpace = space }
-                                            )
-                                        } else {
-                                            Modifier
-                                        }
-                                    )
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    SpaceIconGlyph(
-                                        iconKey = space.iconKey,
-                                        tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                        size = 16.dp
-                                    )
-                                    Text(
-                                        text = space.name,
-                                        style = MaterialTheme.typography.labelLarge,
-                                        color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
-                                    )
-                                }
-                            }
-                        }
-                    }
+                    EditorialSpacesTabStrip(
+                        spaces = displayedSpaces,
+                        selectedSpaceId = state.activeSpaceId,
+                        onSelectSpace = onSelectSpace,
+                        onLongPressSpace = { actionSpace = it },
+                        horizontalPadding = 20.dp,
+                        iconSize = 16.dp,
+                        isReorderMode = isReorderingSpaces,
+                        reorderController = spacesReorder
+                    )
                 }
             }
 
             // Essentials pinned grid with real web favicons, long-press action menu, and 2D drag-and-drop reorder
             if (!isPrivate) {
                 val displayedEssentials = if (isReorderingEssentials) essentialsReorder.items.toList() else essentials
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 20.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
                     Text(
                         text = "Essentials",
                         style = MaterialTheme.typography.titleMedium,
@@ -434,7 +384,10 @@ fun StartPageContent(
             val recentHistory = state.history.take(4)
 
             if (!isPrivate && (jumpTabs.isNotEmpty() || recentBookmarks.isNotEmpty() || recentHistory.isNotEmpty())) {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 20.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
                     val sectionTitle = when {
                         jumpTabs.isNotEmpty() -> "Open in ${state.activeSpace?.name ?: "Space"}"
                         recentBookmarks.isNotEmpty() -> "Bookmarks"
@@ -662,7 +615,7 @@ fun StartPageContent(
     actionSpace?.let { target ->
         ItemActionBottomSheet(
             title = target.name,
-            subtitle = "Workspace",
+            subtitle = if (!target.containerProfileName.isNullOrBlank()) "Isolated container Space" else "Space",
             leadingIcon = {
                 Surface(
                     shape = RoundedCornerShape(12.dp),
@@ -680,7 +633,7 @@ fun StartPageContent(
             },
             actions = listOf(
                 SheetActionItem(
-                    label = "Rename workspace",
+                    label = "Rename Space",
                     icon = Icons.Rounded.Edit,
                     onClick = { spaceToRename = target }
                 ),
@@ -690,13 +643,13 @@ fun StartPageContent(
                     onClick = { spaceToPickIcon = target }
                 ),
                 SheetActionItem(
-                    label = "Reorder workspaces",
+                    label = "Reorder Spaces",
                     icon = Icons.Rounded.SwapVert,
                     enabled = state.spaces.size > 1,
                     onClick = { isReorderingSpaces = true }
                 ),
                 SheetActionItem(
-                    label = "Delete workspace",
+                    label = "Delete Space",
                     icon = Icons.Rounded.DeleteOutline,
                     isDestructive = true,
                     enabled = state.spaces.size > 1,

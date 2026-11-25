@@ -81,8 +81,8 @@ android {
         applicationId = if (isBeta) "app.overbay.swiftfox.beta" else "app.overbay.swiftfox"
         minSdk = 31
         targetSdk = 35
-        versionCode = 14
-        versionName = if (isBeta) "0.2.9-beta" else "0.2.9"
+        versionCode = 15
+        versionName = if (isBeta) "0.3.0-beta" else "0.3.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

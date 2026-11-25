@@ -2,10 +2,12 @@ package app.overbay.swiftfox.ui.browser
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -19,6 +21,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsBottomHeight
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -32,7 +37,9 @@ import app.overbay.swiftfox.ui.icons.rounded.DesktopWindows
 import androidx.compose.material.icons.rounded.Edit
 import app.overbay.swiftfox.ui.icons.rounded.History
 import app.overbay.swiftfox.ui.icons.rounded.Palette
+import app.overbay.swiftfox.ui.icons.rounded.PushPin
 import androidx.compose.material.icons.rounded.Refresh
+import app.overbay.swiftfox.ui.icons.rounded.StarOutline
 import app.overbay.swiftfox.ui.icons.rounded.SwapVert
 import app.overbay.swiftfox.ui.icons.rounded.Tab
 import androidx.compose.material3.AlertDialog
@@ -44,6 +51,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -53,7 +61,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onPlaced
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -62,6 +69,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import app.overbay.swiftfox.data.db.EssentialEntity
 import app.overbay.swiftfox.data.db.SpaceEntity
+import app.overbay.swiftfox.data.db.ZenPinnedItemEntity
 import app.overbay.swiftfox.data.prefs.AccentPreset
 import app.overbay.swiftfox.data.prefs.DevicePosture
 import app.overbay.swiftfox.data.prefs.SiteMode
@@ -79,6 +87,7 @@ import app.overbay.swiftfox.ui.components.SiteIconBadge
 import app.overbay.swiftfox.ui.components.SpaceIconGlyph
 import app.overbay.swiftfox.ui.components.dragReorderContainer
 import app.overbay.swiftfox.ui.components.dragReorderItem
+import app.overbay.swiftfox.ui.components.horizontalFadingEdges
 import app.overbay.swiftfox.ui.components.rememberDragReorderController
 import app.overbay.swiftfox.ui.tabs.DeleteSpaceDialog
 import app.overbay.swiftfox.ui.tabs.WorkspaceItemCallbacks
@@ -87,6 +96,13 @@ import app.overbay.swiftfox.ui.theme.SwiftfoxBrand
 import app.overbay.swiftfox.ui.theme.SwiftfoxBrandLockup
 import app.overbay.swiftfox.ui.theme.SwiftfoxEmblem
 import app.overbay.swiftfox.ui.theme.SwiftfoxEmblemVariant
+
+private enum class StartPageRowReorderMode {
+    NONE,
+    ESSENTIALS,
+    PINNED_TABS,
+    ZEN_PINNED
+}
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -98,9 +114,11 @@ fun StartPageContent(
     onSelectTab: (String) -> Unit,
     onAddEssential: (String, String) -> Unit,
     onRemoveEssential: (String) -> Unit,
+    onCloseTab: (String) -> Unit = {},
     onFocusOmniboxFromRect: (Rect?) -> Unit = { onFocusOmnibox() },
     onFocusOmniboxWithScope: (Rect?, OmniboxSearchScope) -> Unit = { rect, _ -> onFocusOmniboxFromRect(rect) },
     onOpenSearchSettings: () -> Unit = {},
+    hideSearchCapsuleProvider: () -> Boolean = { false },
     itemCallbacks: WorkspaceItemCallbacks = WorkspaceItemCallbacks(
         onAddEssential = onAddEssential,
         onRemoveEssential = onRemoveEssential
@@ -109,13 +127,21 @@ fun StartPageContent(
     modifier: Modifier = Modifier
 ) {
     var showAddEssentialDialog by remember { mutableStateOf(false) }
-    var isReorderingEssentials by remember { mutableStateOf(false) }
+    var rowReorderMode by remember { mutableStateOf(StartPageRowReorderMode.NONE) }
     var isReorderingSpaces by remember { mutableStateOf(false) }
     val searchCapsuleBounds = remember { BoundsHolder() }
 
     var actionEssential by remember { mutableStateOf<EssentialEntity?>(null) }
     var essentialToEdit by remember { mutableStateOf<EssentialEntity?>(null) }
     var essentialToPickIcon by remember { mutableStateOf<EssentialEntity?>(null) }
+
+    var actionPinnedTab by remember { mutableStateOf<BrowserTabUi?>(null) }
+    var pinnedTabToEdit by remember { mutableStateOf<BrowserTabUi?>(null) }
+    var pinnedTabToPickIcon by remember { mutableStateOf<BrowserTabUi?>(null) }
+
+    var actionZenPinned by remember { mutableStateOf<ZenPinnedItemEntity?>(null) }
+    var zenPinnedToEdit by remember { mutableStateOf<ZenPinnedItemEntity?>(null) }
+    var zenPinnedToPickIcon by remember { mutableStateOf<ZenPinnedItemEntity?>(null) }
 
     var actionSpace by remember { mutableStateOf<SpaceEntity?>(null) }
     var spaceToRename by remember { mutableStateOf<SpaceEntity?>(null) }
@@ -127,7 +153,7 @@ fun StartPageContent(
     val isUnfolded = state.windowState.posture == DevicePosture.UNFOLDED
 
     LaunchedEffect(isPrivate, state.activeSpaceId) {
-        isReorderingEssentials = false
+        rowReorderMode = StartPageRowReorderMode.NONE
         isReorderingSpaces = false
     }
 
@@ -139,6 +165,12 @@ fun StartPageContent(
     ) {
         state.activeSpaceEssentials
     }
+    val localPinnedTabs = remember(state.tabs, state.activeSpaceId, isPrivate) {
+        if (isPrivate) emptyList() else state.visiblePinnedTabs
+    }
+    val zenPinned = remember(state.zenPinnedItems, state.activeSpaceId, isPrivate) {
+        if (isPrivate) emptyList() else state.activeSpaceZenPinned
+    }
     val tabByEssentialId = remember(state.tabs) {
         buildMap {
             for (tab in state.tabs) {
@@ -148,17 +180,44 @@ fun StartPageContent(
             }
         }
     }
+    val tabByZenPinnedId = remember(state.tabs) {
+        buildMap {
+            for (tab in state.tabs) {
+                val zenId = tab.zenPinnedId
+                if (!tab.isPrivate && zenId != null && !containsKey(zenId)) {
+                    put(zenId, tab)
+                }
+            }
+        }
+    }
+    val isReorderingRow = rowReorderMode != StartPageRowReorderMode.NONE
     val essentialsReorder = rememberDragReorderController(
         sourceItems = essentials,
         keyOf = { it.id },
         axis = DragAxis.BOTH,
-        onCommitOrder = itemCallbacks.onReorderEssentials
+        onCommitOrder = itemCallbacks.onReorderEssentials,
+        enabled = rowReorderMode == StartPageRowReorderMode.ESSENTIALS
+    )
+    val pinnedTabsReorder = rememberDragReorderController(
+        sourceItems = localPinnedTabs,
+        keyOf = { it.id },
+        axis = DragAxis.BOTH,
+        onCommitOrder = { ids -> itemCallbacks.onReorderTabs(ids, true) },
+        enabled = rowReorderMode == StartPageRowReorderMode.PINNED_TABS
+    )
+    val zenPinnedReorder = rememberDragReorderController(
+        sourceItems = zenPinned,
+        keyOf = { it.id },
+        axis = DragAxis.BOTH,
+        onCommitOrder = itemCallbacks.onReorderZenPinned,
+        enabled = rowReorderMode == StartPageRowReorderMode.ZEN_PINNED
     )
     val spacesReorder = rememberDragReorderController(
         sourceItems = state.spaces,
         keyOf = { it.id },
         axis = DragAxis.HORIZONTAL,
-        onCommitOrder = itemCallbacks.onReorderSpaces
+        onCommitOrder = itemCallbacks.onReorderSpaces,
+        enabled = isReorderingSpaces
     )
 
     Box(
@@ -171,7 +230,7 @@ fun StartPageContent(
                 .fillMaxWidth()
                 .verticalScroll(
                     state = rememberScrollState(),
-                    enabled = !isReorderingEssentials
+                    enabled = !isReorderingRow
                 )
                 .padding(vertical = 22.dp),
             verticalArrangement = Arrangement.spacedBy(20.dp)
@@ -228,9 +287,9 @@ fun StartPageContent(
                 }
             }
 
-            // Primary Search Capsule (records bounds for smooth Omnibox morph expand + Firefox-style engine picker)
+            // Primary Search Capsule (queries live root bounds at tap time for smooth Omnibox morph expand)
             Surface(
-                onClick = { onFocusOmniboxFromRect(searchCapsuleBounds.rect) },
+                onClick = { onFocusOmniboxFromRect(searchCapsuleBounds.currentBoundsInRoot()) },
                 shape = RoundedCornerShape(28.dp),
                 color = MaterialTheme.colorScheme.surfaceContainerHigh,
                 border = BorderStroke(
@@ -246,9 +305,10 @@ fun StartPageContent(
                     .padding(horizontal = 20.dp)
                     .heightIn(min = 56.dp)
                     .onPlaced { coords ->
-                        if (coords.isAttached) {
-                            searchCapsuleBounds.rect = coords.boundsInRoot()
-                        }
+                        searchCapsuleBounds.coordinates = coords
+                    }
+                    .graphicsLayer {
+                        alpha = if (hideSearchCapsuleProvider()) 0f else 1f
                     }
             ) {
                 Row(
@@ -263,7 +323,7 @@ fun StartPageContent(
                         isPrivate = isPrivate,
                         compact = false,
                         onSelectScope = { scope ->
-                            onFocusOmniboxWithScope(searchCapsuleBounds.rect, scope)
+                            onFocusOmniboxWithScope(searchCapsuleBounds.currentBoundsInRoot(), scope)
                         },
                         onOpenSearchSettings = onOpenSearchSettings
                     )
@@ -302,87 +362,288 @@ fun StartPageContent(
                 }
             }
 
-            // Essentials pinned grid with real web favicons, long-press action menu, and 2D drag-and-drop reorder
+            // Unified horizontally scrollable "Essentials & Pinned" row (Essentials first, then active Space's pins)
             if (!isPrivate) {
-                val displayedEssentials = if (isReorderingEssentials) essentialsReorder.items.toList() else essentials
-                Column(
-                    modifier = Modifier.padding(horizontal = 20.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
+                val displayedEssentials = if (rowReorderMode == StartPageRowReorderMode.ESSENTIALS) {
+                    essentialsReorder.items.toList()
+                } else {
+                    essentials
+                }
+                val displayedLocalPinned = if (rowReorderMode == StartPageRowReorderMode.PINNED_TABS) {
+                    pinnedTabsReorder.items.toList()
+                } else {
+                    localPinnedTabs
+                }
+                val displayedZenPinned = if (rowReorderMode == StartPageRowReorderMode.ZEN_PINNED) {
+                    zenPinnedReorder.items.toList()
+                } else {
+                    zenPinned
+                }
+                val hasPinnedInSpace = displayedLocalPinned.isNotEmpty() || displayedZenPinned.isNotEmpty()
+                val rowListState = rememberLazyListState()
+                val canScrollBackwardState = remember(rowListState) { derivedStateOf { rowListState.canScrollBackward } }
+                val canScrollForwardState = remember(rowListState) { derivedStateOf { rowListState.canScrollForward } }
+
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text(
-                        text = "Essentials",
+                        text = "Essentials & Pinned",
                         style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onBackground
+                        color = MaterialTheme.colorScheme.onBackground,
+                        modifier = Modifier.padding(horizontal = 20.dp)
                     )
 
                     ReorderModeBanner(
-                        visible = isReorderingEssentials,
-                        label = "Drag tiles to reorder",
-                        onDone = { isReorderingEssentials = false }
+                        visible = isReorderingRow,
+                        label = when (rowReorderMode) {
+                            StartPageRowReorderMode.ESSENTIALS -> "Drag essentials to reorder"
+                            StartPageRowReorderMode.PINNED_TABS -> "Drag pinned tabs to reorder"
+                            StartPageRowReorderMode.ZEN_PINNED -> "Drag synced pins to reorder"
+                            StartPageRowReorderMode.NONE -> "Drag tiles to reorder"
+                        },
+                        onDone = { rowReorderMode = StartPageRowReorderMode.NONE },
+                        modifier = Modifier.padding(horizontal = 20.dp)
                     )
 
-                    val totalEssentials = displayedEssentials.size + if (isReorderingEssentials) 0 else 1
-                    val columns = when {
-                        !isUnfolded -> 4
-                        totalEssentials <= 4 -> totalEssentials.coerceAtLeast(1)
-                        totalEssentials <= 8 -> 4
-                        else -> 5
-                    }
-                    val gridEntries: List<EssentialEntity?> = if (isReorderingEssentials) {
-                        displayedEssentials
-                    } else {
-                        displayedEssentials + null
-                    }
-                    val rows = gridEntries.chunked(columns)
-
-                    Column(
-                        modifier = Modifier.dragReorderContainer(
-                            enabled = isReorderingEssentials,
-                            controller = essentialsReorder
-                        ),
-                        verticalArrangement = Arrangement.spacedBy(14.dp)
-                    ) {
-                        rows.forEach { rowItems ->
-                            val rowHasDragging = isReorderingEssentials &&
-                                rowItems.any { it?.id == essentialsReorder.draggingKey }
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .zIndex(if (rowHasDragging) 12f else 0f),
-                                horizontalArrangement = Arrangement.spacedBy(12.dp)
-                            ) {
-                                rowItems.forEach { item ->
-                                    if (item != null) {
-                                        val boundTab = tabByEssentialId[item.id]
-                                        EssentialTile(
-                                            essential = item,
-                                            isLoaded = boundTab != null,
-                                            isReorderMode = isReorderingEssentials,
-                                            onClick = {
-                                                if (!isReorderingEssentials) {
-                                                    itemCallbacks.onActivateEssential(item.id)
-                                                }
-                                            },
-                                            onLongClick = { if (!isReorderingEssentials) actionEssential = item },
+                    if (isReorderingRow) {
+                        val columns = if (isUnfolded) 5 else 4
+                        when (rowReorderMode) {
+                            StartPageRowReorderMode.ESSENTIALS -> {
+                                val rows = displayedEssentials.chunked(columns)
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 20.dp)
+                                        .dragReorderContainer(
+                                            enabled = true,
+                                            controller = essentialsReorder
+                                        ),
+                                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                                ) {
+                                    rows.forEach { rowItems ->
+                                        val rowHasDragging = rowItems.any { it.id == essentialsReorder.draggingKey }
+                                        Row(
                                             modifier = Modifier
-                                                .weight(1f)
-                                                .dragReorderItem(
-                                                    key = item.id,
-                                                    enabled = isReorderingEssentials,
-                                                    controller = essentialsReorder,
-                                                    handlePointerInput = false
+                                                .fillMaxWidth()
+                                                .zIndex(if (rowHasDragging) 12f else 0f),
+                                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                        ) {
+                                            rowItems.forEach { item ->
+                                                val boundTab = tabByEssentialId[item.id]
+                                                WorkspaceLauncherTile(
+                                                    title = item.title,
+                                                    url = item.url,
+                                                    customIcon = item.customIcon,
+                                                    isLoaded = boundTab != null,
+                                                    isReorderMode = true,
+                                                    onClick = {},
+                                                    onLongClick = {},
+                                                    modifier = Modifier
+                                                        .weight(1f)
+                                                        .dragReorderItem(
+                                                            key = item.id,
+                                                            enabled = true,
+                                                            controller = essentialsReorder,
+                                                            handlePointerInput = false
+                                                        )
                                                 )
-                                        )
-                                    } else {
-                                        AddEssentialTile(
-                                            onClick = { showAddEssentialDialog = true },
-                                            modifier = Modifier.weight(1f)
+                                            }
+                                            repeat(columns - rowItems.size) {
+                                                Spacer(Modifier.weight(1f))
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            StartPageRowReorderMode.PINNED_TABS -> {
+                                val rows = displayedLocalPinned.chunked(columns)
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 20.dp)
+                                        .dragReorderContainer(
+                                            enabled = true,
+                                            controller = pinnedTabsReorder
+                                        ),
+                                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                                ) {
+                                    rows.forEach { rowItems ->
+                                        val rowHasDragging = rowItems.any { it.id == pinnedTabsReorder.draggingKey }
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .zIndex(if (rowHasDragging) 12f else 0f),
+                                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                        ) {
+                                            rowItems.forEach { tab ->
+                                                WorkspaceLauncherTile(
+                                                    title = tab.displayTitle,
+                                                    url = tab.url,
+                                                    customIcon = tab.customIcon,
+                                                    isLoaded = !tab.isUnloaded,
+                                                    isReorderMode = true,
+                                                    onClick = {},
+                                                    onLongClick = {},
+                                                    modifier = Modifier
+                                                        .weight(1f)
+                                                        .dragReorderItem(
+                                                            key = tab.id,
+                                                            enabled = true,
+                                                            controller = pinnedTabsReorder,
+                                                            handlePointerInput = false
+                                                        )
+                                                )
+                                            }
+                                            repeat(columns - rowItems.size) {
+                                                Spacer(Modifier.weight(1f))
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            StartPageRowReorderMode.ZEN_PINNED -> {
+                                val rows = displayedZenPinned.chunked(columns)
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 20.dp)
+                                        .dragReorderContainer(
+                                            enabled = true,
+                                            controller = zenPinnedReorder
+                                        ),
+                                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                                ) {
+                                    rows.forEach { rowItems ->
+                                        val rowHasDragging = rowItems.any { it.id == zenPinnedReorder.draggingKey }
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .zIndex(if (rowHasDragging) 12f else 0f),
+                                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                        ) {
+                                            rowItems.forEach { item ->
+                                                val boundTab = tabByZenPinnedId[item.id]
+                                                WorkspaceLauncherTile(
+                                                    title = item.title,
+                                                    url = item.url,
+                                                    customIcon = item.customIcon,
+                                                    isLoaded = boundTab != null,
+                                                    isReorderMode = true,
+                                                    onClick = {},
+                                                    onLongClick = {},
+                                                    modifier = Modifier
+                                                        .weight(1f)
+                                                        .dragReorderItem(
+                                                            key = item.id,
+                                                            enabled = true,
+                                                            controller = zenPinnedReorder,
+                                                            handlePointerInput = false
+                                                        )
+                                                )
+                                            }
+                                            repeat(columns - rowItems.size) {
+                                                Spacer(Modifier.weight(1f))
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            StartPageRowReorderMode.NONE -> Unit
+                        }
+                    } else {
+                        LazyRow(
+                            state = rowListState,
+                            contentPadding = PaddingValues(horizontal = 20.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalAlignment = Alignment.Top,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalFadingEdges(
+                                    showStartFadeProvider = { canScrollBackwardState.value },
+                                    showEndFadeProvider = { canScrollForwardState.value }
+                                )
+                        ) {
+                            items(
+                                items = essentials,
+                                key = { "ess_${it.id}" },
+                                contentType = { "launcher_tile" }
+                            ) { item ->
+                                val boundTab = tabByEssentialId[item.id]
+                                WorkspaceLauncherTile(
+                                    title = item.title,
+                                    url = item.url,
+                                    customIcon = item.customIcon,
+                                    isLoaded = boundTab != null,
+                                    isReorderMode = false,
+                                    onClick = { itemCallbacks.onActivateEssential(item.id) },
+                                    onLongClick = { actionEssential = item },
+                                    modifier = Modifier
+                                        .width(68.dp)
+                                        .animateItem()
+                                )
+                            }
+
+                            if (essentials.isNotEmpty() && hasPinnedInSpace) {
+                                item(key = "essentials_pinned_divider", contentType = "launcher_divider") {
+                                    Box(
+                                        modifier = Modifier
+                                            .padding(top = 4.dp)
+                                            .height(56.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .width(1.dp)
+                                                .height(28.dp)
+                                                .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
                                         )
                                     }
                                 }
-                                repeat(columns - rowItems.size) {
-                                    Spacer(Modifier.weight(1f))
-                                }
+                            }
+
+                            items(
+                                items = localPinnedTabs,
+                                key = { "pin_${it.id}" },
+                                contentType = { "launcher_tile" }
+                            ) { tab ->
+                                WorkspaceLauncherTile(
+                                    title = tab.displayTitle,
+                                    url = tab.url,
+                                    customIcon = tab.customIcon,
+                                    isLoaded = !tab.isUnloaded,
+                                    isReorderMode = false,
+                                    onClick = { itemCallbacks.onActivatePinnedTab(tab.id) },
+                                    onLongClick = { actionPinnedTab = tab },
+                                    modifier = Modifier
+                                        .width(68.dp)
+                                        .animateItem()
+                                )
+                            }
+
+                            items(
+                                items = zenPinned,
+                                key = { "zen_${it.id}" },
+                                contentType = { "launcher_tile" }
+                            ) { item ->
+                                val boundTab = tabByZenPinnedId[item.id]
+                                WorkspaceLauncherTile(
+                                    title = item.title,
+                                    url = item.url,
+                                    customIcon = item.customIcon,
+                                    isLoaded = boundTab != null,
+                                    isReorderMode = false,
+                                    onClick = { itemCallbacks.onActivateZenPinned(item.id) },
+                                    onLongClick = { actionZenPinned = item },
+                                    modifier = Modifier
+                                        .width(68.dp)
+                                        .animateItem()
+                                )
+                            }
+
+                            item(key = "add_essential_tile", contentType = "launcher_add") {
+                                AddEssentialTile(
+                                    onClick = { showAddEssentialDialog = true },
+                                    modifier = Modifier.width(68.dp)
+                                )
                             }
                         }
                     }
@@ -579,7 +840,7 @@ fun StartPageContent(
                     label = "Reorder",
                     icon = Icons.Rounded.SwapVert,
                     enabled = essentials.size > 1,
-                    onClick = { isReorderingEssentials = true }
+                    onClick = { rowReorderMode = StartPageRowReorderMode.ESSENTIALS }
                 )
             )
             add(
@@ -635,6 +896,227 @@ fun StartPageContent(
                 itemCallbacks.onSetEssentialCustomIcon(target.id, spec)
             },
             onDismiss = { essentialToPickIcon = null }
+        )
+    }
+
+    actionPinnedTab?.let { target ->
+        val actions = buildList {
+            if (!target.isUnloaded) {
+                add(
+                    SheetActionItem(
+                        label = "Close tab",
+                        icon = Icons.Rounded.Close,
+                        onClick = { itemCallbacks.onClosePinnedTab(target.id) }
+                    )
+                )
+                if (!target.pinnedUrl.isNullOrBlank() && !target.url.equals(target.pinnedUrl, ignoreCase = true)) {
+                    add(
+                        SheetActionItem(
+                            label = "Reset to pinned URL",
+                            icon = Icons.Rounded.Refresh,
+                            onClick = { itemCallbacks.onResetPinnedTab(target.id) }
+                        )
+                    )
+                }
+            }
+            add(
+                SheetActionItem(
+                    label = "Unpin tab",
+                    icon = Icons.Rounded.PushPin,
+                    onClick = { itemCallbacks.onSetTabPinned(target.id, false) }
+                )
+            )
+            if (!target.isStartPage) {
+                add(
+                    SheetActionItem(
+                        label = "Add to Essentials",
+                        icon = Icons.Rounded.StarOutline,
+                        onClick = { itemCallbacks.onAddTabToEssentials(target.id) }
+                    )
+                )
+            }
+            add(
+                SheetActionItem(
+                    label = "Edit pinned URL & label",
+                    icon = Icons.Rounded.Edit,
+                    onClick = { pinnedTabToEdit = target }
+                )
+            )
+            add(
+                SheetActionItem(
+                    label = "Set custom icon",
+                    icon = Icons.Rounded.Palette,
+                    onClick = { pinnedTabToPickIcon = target }
+                )
+            )
+            add(
+                SheetActionItem(
+                    label = "Reorder pinned tabs",
+                    icon = Icons.Rounded.SwapVert,
+                    enabled = localPinnedTabs.size > 1,
+                    onClick = { rowReorderMode = StartPageRowReorderMode.PINNED_TABS }
+                )
+            )
+            add(
+                SheetActionItem(
+                    label = "Delete pin",
+                    icon = Icons.Rounded.DeleteOutline,
+                    isDestructive = true,
+                    onClick = { onCloseTab(target.id) }
+                )
+            )
+        }
+        val subtitle = buildString {
+            append(target.displayHost.ifBlank { "Start Page" })
+            append(if (target.isUnloaded) " · Unloaded" else " · Open")
+        }
+        ItemActionBottomSheet(
+            title = target.displayTitle,
+            subtitle = subtitle,
+            leadingIcon = {
+                SiteIconBadge(
+                    url = target.url,
+                    fallbackLabel = target.displayHost.ifBlank { target.displayTitle },
+                    customIcon = target.customIcon,
+                    size = 40.dp,
+                    iconSize = 24.dp,
+                    shape = RoundedCornerShape(12.dp),
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    fillImageToContainer = true
+                )
+            },
+            actions = actions,
+            onDismiss = { actionPinnedTab = null }
+        )
+    }
+
+    pinnedTabToEdit?.let { target ->
+        EditTitleAndUrlDialog(
+            dialogTitle = "Edit Pinned Tab",
+            initialTitle = target.displayTitle,
+            initialUrl = if (target.isStartPage) "" else target.url,
+            onDismiss = { pinnedTabToEdit = null },
+            onConfirm = { title, url ->
+                itemCallbacks.onEditTabTitleAndUrl(target.id, title, url)
+                pinnedTabToEdit = null
+            }
+        )
+    }
+
+    pinnedTabToPickIcon?.let { target ->
+        CustomIconPickerSheet(
+            title = "Icon for ${target.displayTitle}",
+            currentIconSpec = target.customIcon,
+            allowResetToFavicon = true,
+            previewUrl = target.url,
+            previewLabel = target.displayHost.ifBlank { target.displayTitle },
+            onSelectIcon = { spec -> itemCallbacks.onSetTabCustomIcon(target.id, spec) },
+            onDismiss = { pinnedTabToPickIcon = null }
+        )
+    }
+
+    actionZenPinned?.let { target ->
+        val boundTab = state.tabForZenPinned(target.id)
+        val actions = buildList {
+            if (boundTab != null) {
+                add(
+                    SheetActionItem(
+                        label = "Close tab",
+                        icon = Icons.Rounded.Close,
+                        onClick = { itemCallbacks.onCloseZenPinnedTab(target.id) }
+                    )
+                )
+                if (!boundTab.url.equals(target.url, ignoreCase = true)) {
+                    add(
+                        SheetActionItem(
+                            label = "Reset to pinned URL",
+                            icon = Icons.Rounded.Refresh,
+                            onClick = { itemCallbacks.onResetZenPinnedTab(target.id) }
+                        )
+                    )
+                }
+            }
+            add(
+                SheetActionItem(
+                    label = "Edit title & URL",
+                    icon = Icons.Rounded.Edit,
+                    onClick = { zenPinnedToEdit = target }
+                )
+            )
+            add(
+                SheetActionItem(
+                    label = "Set custom icon",
+                    icon = Icons.Rounded.Palette,
+                    onClick = { zenPinnedToPickIcon = target }
+                )
+            )
+            add(
+                SheetActionItem(
+                    label = "Add to Essentials",
+                    icon = Icons.Rounded.StarOutline,
+                    onClick = { itemCallbacks.onAddZenPinnedToEssentials(target.id) }
+                )
+            )
+            add(
+                SheetActionItem(
+                    label = "Reorder synced pinned",
+                    icon = Icons.Rounded.SwapVert,
+                    enabled = zenPinned.size > 1,
+                    onClick = { rowReorderMode = StartPageRowReorderMode.ZEN_PINNED }
+                )
+            )
+            add(
+                SheetActionItem(
+                    label = "Delete",
+                    icon = Icons.Rounded.DeleteOutline,
+                    isDestructive = true,
+                    onClick = { itemCallbacks.onDeleteZenPinned(target.id) }
+                )
+            )
+        }
+        val hostLabel = OmniboxEngine.extractHost(target.url).ifBlank { target.url }
+        ItemActionBottomSheet(
+            title = target.title,
+            subtitle = if (boundTab != null) "$hostLabel · Open" else hostLabel,
+            leadingIcon = {
+                SiteIconBadge(
+                    url = target.url,
+                    fallbackLabel = target.title,
+                    customIcon = target.customIcon,
+                    size = 40.dp,
+                    iconSize = 24.dp,
+                    shape = RoundedCornerShape(12.dp),
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    fillImageToContainer = true
+                )
+            },
+            actions = actions,
+            onDismiss = { actionZenPinned = null }
+        )
+    }
+
+    zenPinnedToEdit?.let { target ->
+        EditTitleAndUrlDialog(
+            dialogTitle = "Edit Pinned Item",
+            initialTitle = target.title,
+            initialUrl = target.url,
+            onDismiss = { zenPinnedToEdit = null },
+            onConfirm = { title, url ->
+                itemCallbacks.onUpdateZenPinned(target.id, title, url)
+                zenPinnedToEdit = null
+            }
+        )
+    }
+
+    zenPinnedToPickIcon?.let { target ->
+        CustomIconPickerSheet(
+            title = "Icon for ${target.title}",
+            currentIconSpec = target.customIcon,
+            allowResetToFavicon = true,
+            previewUrl = target.url,
+            previewLabel = target.title,
+            onSelectIcon = { spec -> itemCallbacks.onSetZenPinnedCustomIcon(target.id, spec) },
+            onDismiss = { zenPinnedToPickIcon = null }
         )
     }
 
@@ -732,8 +1214,10 @@ private data class StartJumpItem(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun EssentialTile(
-    essential: EssentialEntity,
+private fun WorkspaceLauncherTile(
+    title: String,
+    url: String,
+    customIcon: String?,
     isLoaded: Boolean,
     isReorderMode: Boolean,
     onClick: () -> Unit,
@@ -776,9 +1260,9 @@ private fun EssentialTile(
         ) {
             Box(contentAlignment = Alignment.Center) {
                 SiteIconBadge(
-                    url = essential.url,
-                    fallbackLabel = essential.title,
-                    customIcon = essential.customIcon,
+                    url = url,
+                    fallbackLabel = title,
+                    customIcon = customIcon,
                     size = 56.dp,
                     iconSize = 30.dp,
                     shape = RoundedCornerShape(18.dp),
@@ -804,12 +1288,13 @@ private fun EssentialTile(
             }
         }
         Text(
-            text = essential.title,
+            text = title,
             style = MaterialTheme.typography.labelSmall,
             color = if (isLoaded) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            textAlign = TextAlign.Center
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth()
         )
     }
 }
@@ -842,7 +1327,9 @@ private fun AddEssentialTile(
             text = "Add",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1
+            maxLines = 1,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth()
         )
     }
 }

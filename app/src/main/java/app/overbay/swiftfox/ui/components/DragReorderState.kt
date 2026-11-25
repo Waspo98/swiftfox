@@ -223,6 +223,11 @@ class DragReorderController<T>(
         }
     }
 
+    fun cancelDrag() {
+        draggingKey = null
+        dragOffset = Offset.Zero
+    }
+
     fun endDrag() {
         val wasDragging = draggingKey != null
         val committedKeys = if (wasDragging) items.map(keyOf) else null
@@ -254,13 +259,14 @@ fun <T> rememberDragReorderController(
             axis = axis,
             onCommitOrder = { latestCommit(it) }
         ).apply {
-            if (enabled) syncFromSource(sourceItems)
+            syncFromSource(sourceItems)
         }
     }
     LaunchedEffect(sourceItems, enabled) {
-        if (enabled) {
-            controller.syncFromSource(sourceItems)
+        if (!enabled) {
+            controller.cancelDrag()
         }
+        controller.syncFromSource(sourceItems)
     }
     return controller
 }

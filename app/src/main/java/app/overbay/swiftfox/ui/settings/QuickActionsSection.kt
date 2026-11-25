@@ -26,6 +26,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import app.overbay.swiftfox.ui.icons.automirrored.MenuBook
+import app.overbay.swiftfox.ui.icons.automirrored.OpenInNew
 import app.overbay.swiftfox.ui.icons.automirrored.SendToMobile
 import app.overbay.swiftfox.ui.icons.rounded.AutoFixHigh
 import app.overbay.swiftfox.ui.icons.rounded.Bookmark
@@ -76,6 +77,8 @@ fun QuickActionsSection(
     onFindInPage: () -> Unit,
     onPinEssential: () -> Unit,
     onSendToZenSpace: () -> Unit,
+    externalAppLabel: String? = null,
+    onOpenInApp: () -> Unit = {},
     activeTabBlockedCount: Int = 0,
     modifier: Modifier = Modifier
 ) {
@@ -269,6 +272,13 @@ fun QuickActionsSection(
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
+                    if (!externalAppLabel.isNullOrBlank()) {
+                        QuickActionPill(
+                            label = if (externalAppLabel.length <= 18) "Open in $externalAppLabel" else "Open in app",
+                            icon = Icons.AutoMirrored.Rounded.OpenInNew,
+                            onClick = onOpenInApp
+                        )
+                    }
                     QuickActionPill(
                         label = "Zap element",
                         icon = Icons.Rounded.AutoFixHigh,

@@ -297,60 +297,25 @@ class SwiftfoxWebViewClient(
             return false
         }
 
-        val context = view.context
-        val pm = context.packageManager
-        val viewIntent = Intent(Intent.ACTION_VIEW, uri).apply {
-            addCategory(Intent.CATEGORY_BROWSABLE)
-        }
-
-        val dedicatedApp = findDedicatedNativeApp(context, pm, viewIntent) ?: return false
-        val appLabel = runCatching {
-            dedicatedApp.loadLabel(pm).toString()
-        }.getOrNull().orEmpty().ifBlank { "External app" }
-
-        val nonBrowserIntent = Intent(Intent.ACTION_VIEW, uri).apply {
-            addCategory(Intent.CATEGORY_BROWSABLE)
-            setPackage(dedicatedApp.activityInfo.packageName)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REQUIRE_NON_BROWSER)
-        }
+        val target = ExternalAppResolver.resolveForHttpUri(view.context, uri) ?: return false
 
         return when (policy) {
             ExternalAppLinkPolicy.NATIVE_APP -> {
-                callbacks.onLaunchExternalIntent(nonBrowserIntent)
+                callbacks.onLaunchExternalIntent(target.launchIntent)
             }
             ExternalAppLinkPolicy.ASK -> {
                 callbacks.onExternalAppPrompt(
                     ExternalAppPrompt(
                         tabId = tabId,
                         url = url,
-                        appLabel = appLabel,
+                        appLabel = target.appLabel,
                         fallbackUrl = url,
-                        launchIntent = nonBrowserIntent
+                        launchIntent = target.launchIntent
                     )
                 )
                 true
             }
             ExternalAppLinkPolicy.ALWAYS_IN_SWIFTFOX -> false
-        }
-    }
-
-    private fun findDedicatedNativeApp(
-        context: Context,
-        pm: PackageManager,
-        intent: Intent
-    ): android.content.pm.ResolveInfo? {
-        val candidates = runCatching {
-            pm.queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY)
-        }.getOrDefault(emptyList())
-        if (candidates.isEmpty()) return null
-
-        val genericBrowserPackages = cachedGenericBrowserPackages(pm)
-
-        return candidates.firstOrNull { info ->
-            val pkg = info.activityInfo?.packageName
-            !pkg.isNullOrBlank() &&
-                pkg != context.packageName &&
-                pkg !in genericBrowserPackages
         }
     }
 
@@ -426,13 +391,16 @@ class SwiftfoxWebViewClient(
             return true
         }
 
+        val schemeLower = uri.scheme?.lowercase(Locale.ROOT)
         if (policy == ExternalAppLinkPolicy.ALWAYS_IN_SWIFTFOX) {
             if (!fallbackUrl.isNullOrBlank()) {
                 loadFallbackUrlRespectingHttpsOnly(view, fallbackUrl)
-            } else {
-                resetPendingMainFrameUrl()
+                return true
             }
-            return true
+            if (!shouldPromptNonHttpUnderAlwaysInSwiftfox(schemeLower, fallbackUrl)) {
+                resetPendingMainFrameUrl()
+                return true
+            }
         }
 
         val resolved = runCatching {
@@ -461,7 +429,8 @@ class SwiftfoxWebViewClient(
                 }
                 true
             }
-            ExternalAppLinkPolicy.ASK -> {
+            ExternalAppLinkPolicy.ASK,
+            ExternalAppLinkPolicy.ALWAYS_IN_SWIFTFOX -> {
                 // Even if package visibility hides resolveActivity on custom schemes,
                 // prompt when resolved OR when intent specifies a package/standard custom scheme.
                 if (resolved == null && parsedIntent.`package`.isNullOrBlank() && uri.scheme.equals("intent", true)) {
@@ -482,10 +451,6 @@ class SwiftfoxWebViewClient(
                         launchIntent = parsedIntent
                     )
                 )
-                true
-            }
-            ExternalAppLinkPolicy.ALWAYS_IN_SWIFTFOX -> {
-                resetPendingMainFrameUrl()
                 true
             }
         }
@@ -693,37 +658,22 @@ class SwiftfoxWebViewClient(
     }
 
     companion object {
-        private const val BROWSER_CACHE_TTL_MS = 60_000L
+        private val SYSTEM_UTILITY_SCHEMES = setOf("tel", "mailto", "sms", "smsto", "geo")
+
+        internal fun shouldPromptNonHttpUnderAlwaysInSwiftfox(
+            scheme: String?,
+            fallbackUrl: String?
+        ): Boolean {
+            if (!fallbackUrl.isNullOrBlank()) return false
+            val normalized = scheme?.trim()?.lowercase(Locale.ROOT) ?: return false
+            return normalized in SYSTEM_UTILITY_SCHEMES
+        }
+
         private val BLOCKED_CORS_HEADERS = mapOf(
             "Access-Control-Allow-Origin" to "*",
             "Cache-Control" to "no-store"
         )
         private val EMPTY_BYTES = ByteArray(0)
-
-        @Volatile
-        private var browserPackagesCache: Set<String>? = null
-
-        @Volatile
-        private var browserPackagesCachedAtMs: Long = 0L
-
-        private fun cachedGenericBrowserPackages(pm: PackageManager): Set<String> {
-            val now = System.currentTimeMillis()
-            val cached = browserPackagesCache
-            if (cached != null && (now - browserPackagesCachedAtMs) < BROWSER_CACHE_TTL_MS) {
-                return cached
-            }
-            val fresh = runCatching {
-                val probe = Intent(Intent.ACTION_VIEW, Uri.parse("https://example.invalid/")).apply {
-                    addCategory(Intent.CATEGORY_BROWSABLE)
-                }
-                pm.queryIntentActivities(probe, PackageManager.MATCH_ALL)
-                    .mapNotNull { it.activityInfo?.packageName }
-                    .toSet()
-            }.getOrDefault(emptySet())
-            browserPackagesCache = fresh
-            browserPackagesCachedAtMs = now
-            return fresh
-        }
 
         // Minimal 1x1 transparent PNG so blocked ad/tracker images never render broken-image boxes
         private val TRANSPARENT_1X1_PNG = byteArrayOf(

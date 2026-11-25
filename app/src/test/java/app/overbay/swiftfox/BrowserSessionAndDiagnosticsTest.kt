@@ -3,7 +3,11 @@ package app.overbay.swiftfox
 import app.overbay.swiftfox.data.prefs.SiteMode
 import app.overbay.swiftfox.engine.BridgeTokenSet
 import app.overbay.swiftfox.engine.BrowserSession
+import app.overbay.swiftfox.engine.ExternalAppResolver
 import app.overbay.swiftfox.engine.NetworkErrorDiagnostics
+import app.overbay.swiftfox.engine.SwiftfoxWebViewClient
+import app.overbay.swiftfox.ui.components.DragAxis
+import app.overbay.swiftfox.ui.components.DragReorderController
 import kotlinx.coroutines.test.runTest
 import okhttp3.OkHttpClient
 import org.junit.Assert.assertEquals
@@ -266,5 +270,82 @@ class BrowserSessionAndDiagnosticsTest {
         start.countDown()
         threads.forEach { it.join(10_000) }
         assertTrue("Concurrent resolveCachedPageHost errors: $errors", errors.isEmpty())
+    }
+
+    @Test
+    fun externalAppResolverFiltersSelfAndBrowsersAndValidatesHttpUrls() {
+        assertTrue(ExternalAppResolver.isHttpSchemeUrl("https://www.youtube.com/watch?v=123"))
+        assertTrue(ExternalAppResolver.isHttpSchemeUrl("  HTTP://example.com/path  "))
+        assertFalse(ExternalAppResolver.isHttpSchemeUrl("mailto:test@example.com"))
+        assertFalse(ExternalAppResolver.isHttpSchemeUrl("tel:+15551234567"))
+        assertFalse(ExternalAppResolver.isHttpSchemeUrl("about:blank"))
+
+        val browsers = setOf("com.android.chrome", "org.mozilla.firefox", "app.overbay.swiftfox")
+        assertEquals(
+            "com.google.android.youtube",
+            ExternalAppResolver.selectDedicatedPackage(
+                candidatePackages = listOf(
+                    "",
+                    "app.overbay.swiftfox.beta",
+                    "com.android.chrome",
+                    "com.google.android.youtube",
+                    "org.mozilla.firefox"
+                ),
+                selfPackage = "app.overbay.swiftfox.beta",
+                genericBrowserPackages = browsers
+            )
+        )
+        assertNull(
+            ExternalAppResolver.selectDedicatedPackage(
+                candidatePackages = listOf("app.overbay.swiftfox.beta", "com.android.chrome"),
+                selfPackage = "app.overbay.swiftfox.beta",
+                genericBrowserPackages = browsers
+            )
+        )
+    }
+
+    @Test
+    fun alwaysInSwiftfoxPromptsOnlyForUnrenderableSystemUtilitySchemesWithoutFallback() {
+        // System utility schemes with no web fallback should prompt instead of silently dying
+        assertTrue(SwiftfoxWebViewClient.shouldPromptNonHttpUnderAlwaysInSwiftfox("tel", null))
+        assertTrue(SwiftfoxWebViewClient.shouldPromptNonHttpUnderAlwaysInSwiftfox("MAILTO", ""))
+        assertTrue(SwiftfoxWebViewClient.shouldPromptNonHttpUnderAlwaysInSwiftfox("sms", null))
+        assertTrue(SwiftfoxWebViewClient.shouldPromptNonHttpUnderAlwaysInSwiftfox("smsto", null))
+        assertTrue(SwiftfoxWebViewClient.shouldPromptNonHttpUnderAlwaysInSwiftfox("geo", null))
+
+        // Anything with a web fallback stays in Swiftfox
+        assertFalse(
+            SwiftfoxWebViewClient.shouldPromptNonHttpUnderAlwaysInSwiftfox(
+                "tel",
+                "https://example.com/contact"
+            )
+        )
+        // App-hijacking intent:// and third-party custom schemes stay blocked under ALWAYS_IN_SWIFTFOX
+        assertFalse(SwiftfoxWebViewClient.shouldPromptNonHttpUnderAlwaysInSwiftfox("intent", null))
+        assertFalse(SwiftfoxWebViewClient.shouldPromptNonHttpUnderAlwaysInSwiftfox("reddit", null))
+        assertFalse(SwiftfoxWebViewClient.shouldPromptNonHttpUnderAlwaysInSwiftfox("market", null))
+        assertFalse(SwiftfoxWebViewClient.shouldPromptNonHttpUnderAlwaysInSwiftfox(null, null))
+    }
+
+    @Test
+    fun dragReorderControllerCancelDragUnblocksSourceSync() {
+        val controller = DragReorderController<String>(
+            keyOf = { it },
+            axis = DragAxis.BOTH,
+            onCommitOrder = {}
+        )
+        controller.syncFromSource(listOf("a", "b", "c"))
+        controller.startDrag("a", haptic = null)
+        assertEquals("a", controller.draggingKey)
+
+        // While dragging, external sync is deferred
+        controller.syncFromSource(listOf("x", "y"))
+        assertEquals(listOf("a", "b", "c"), controller.items.toList())
+
+        // Canceling drag clears draggingKey and lets syncFromSource apply immediately
+        controller.cancelDrag()
+        assertNull(controller.draggingKey)
+        controller.syncFromSource(listOf("x", "y"))
+        assertEquals(listOf("x", "y"), controller.items.toList())
     }
 }

@@ -4,6 +4,7 @@ import app.overbay.swiftfox.data.db.EssentialEntity
 import app.overbay.swiftfox.data.db.SpaceEntity
 import app.overbay.swiftfox.data.db.ZenPinnedItemEntity
 import app.overbay.swiftfox.data.prefs.BrowserSettings
+import app.overbay.swiftfox.data.prefs.ExternalAppLinkPolicy
 import app.overbay.swiftfox.engine.BrowserSession
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
 import app.overbay.swiftfox.ui.browser.BrowserTabUi
@@ -562,5 +563,74 @@ class WorkspaceTabResolverTest {
         assertEquals(50, computeTabCardSwipeExitDurationMs(remainingDistancePx = 220f, velocityX = 6000f, minExitSpeedPxPerSec = 4000f))
         assertEquals(105, computeTabCardSwipeExitDurationMs(remainingDistancePx = 800f, velocityX = 200f, minExitSpeedPxPerSec = 4000f))
         assertTrue(computeTabCardSwipeExitDurationMs(remainingDistancePx = 300f, velocityX = 4000f, minExitSpeedPxPerSec = 4000f) in 50..105)
+    }
+
+    @Test
+    fun tabSwitcherExcludesUnloadedPinnedTabsAndIncludesOpenPinnedAndZenTabs() {
+        val loadedPin = BrowserTabUi(
+            id = "tab_pin_open",
+            spaceId = "space_personal",
+            title = "Open Pin",
+            url = "https://example.com/open-pin",
+            isPinned = true,
+            isUnloaded = false
+        )
+        val unloadedPin = BrowserTabUi(
+            id = "tab_pin_closed",
+            spaceId = "space_personal",
+            title = "Closed Pin",
+            url = "https://example.com/closed-pin",
+            isPinned = true,
+            isUnloaded = true
+        )
+        val openZenItem = ZenPinnedItemEntity(
+            id = "zen_open",
+            spaceId = "space_personal",
+            zenWorkspaceUuid = "ws_1",
+            title = "Zen Open",
+            url = "https://kotlinlang.org"
+        )
+        val closedZenItem = ZenPinnedItemEntity(
+            id = "zen_closed",
+            spaceId = "space_personal",
+            zenWorkspaceUuid = "ws_1",
+            title = "Zen Closed",
+            url = "https://developer.android.com"
+        )
+        val openZenTab = BrowserTabUi(
+            id = "tab_zen_open",
+            spaceId = "space_personal",
+            title = "Zen Open",
+            url = "https://kotlinlang.org",
+            zenPinnedId = openZenItem.id
+        )
+        val regularTab = BrowserTabUi(
+            id = "tab_reg_1",
+            spaceId = "space_personal",
+            title = "Regular",
+            url = "https://example.org"
+        )
+        val state = BrowserUiState(
+            spaces = spaces,
+            activeSpaceId = "space_personal",
+            zenPinnedItems = listOf(openZenItem, closedZenItem),
+            tabs = listOf(loadedPin, unloadedPin, openZenTab, regularTab),
+            activeTabId = regularTab.id
+        )
+
+        // Tab switcher shows ONLY actively open tabs — unloaded local pin and closed Zen pin are omitted
+        assertEquals(listOf(loadedPin, openZenTab, regularTab), state.tabSwitcherTabs)
+        assertEquals(3, state.tabSwitcherCountForSpace("space_personal"))
+        // Visible pinned tabs (used by Start Page & Sidebar) still include both loaded and unloaded pins
+        assertEquals(listOf(loadedPin, unloadedPin), state.visiblePinnedTabs)
+        assertEquals(listOf(openZenItem, closedZenItem), state.activeSpaceZenPinned)
+    }
+
+    @Test
+    fun defaultExternalAppLinkPolicyBlocksExternalAppPopupsByDefault() {
+        assertEquals(
+            ExternalAppLinkPolicy.ALWAYS_IN_SWIFTFOX,
+            BrowserSettings().externalAppLinkPolicy
+        )
     }
 }

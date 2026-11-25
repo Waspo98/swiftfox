@@ -122,3 +122,18 @@
 ##.sponsored-post
 ##[data-ad-slot]
 ##[data-testid="ad-banner"]
+
+! --- Floating reCAPTCHA Badges (hides visual corner badge without breaking verification) ---
+##.grecaptcha-badge
+google.com##.grecaptcha-badge
+fi.google.com##.grecaptcha-badge
+
+! --- Mobile "Open in App" Banners (baseline before AdGuard Mobile App Banners syncs) ---
+##.smartbanner
+##.smartbanner-wrapper
+###smartbanner
+##.smart-app-banner
+reddit.com##xpromo-app-selector
+reddit.com##shreddit-async-loader[bundlename="bottom_bar_xpromo"]
+reddit.com##.XPromoPopup
+reddit.com##.XPromoPill

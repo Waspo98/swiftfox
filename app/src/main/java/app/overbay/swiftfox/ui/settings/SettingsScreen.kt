@@ -57,6 +57,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -76,6 +77,8 @@ import app.overbay.swiftfox.data.prefs.BrowserSettings
 import app.overbay.swiftfox.data.prefs.ExternalAppLinkPolicy
 import app.overbay.swiftfox.data.prefs.ThemeMode
 import app.overbay.swiftfox.data.prefs.WebDarkModePreference
+import app.overbay.swiftfox.engine.ExternalAppResolver
+import app.overbay.swiftfox.engine.ExternalAppTarget
 import app.overbay.swiftfox.features.sync.SyncAccountState
 import app.overbay.swiftfox.ui.browser.BrowserOverlay
 import app.overbay.swiftfox.ui.browser.BrowserUiState
@@ -88,6 +91,8 @@ import app.overbay.swiftfox.ui.theme.SwiftfoxAppIcon
 import app.overbay.swiftfox.ui.theme.SwiftfoxBrand
 import app.overbay.swiftfox.ui.theme.SwiftfoxWordmark
 import app.overbay.swiftfox.ui.theme.rememberReduceMotion
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.text.NumberFormat
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -199,6 +204,21 @@ fun SettingsScreen(
                         // Active page quick actions
                         item(key = "quick_actions", contentType = "settings_section") {
                             val activeBlockedCount by viewModel.activeTabBlockedCount.collectAsStateWithLifecycle()
+                            val activeTabUrl = state.activeTab?.takeUnless { it.isStartPage }?.url
+                            val appContext = context.applicationContext
+                            val externalAppTarget by produceState<ExternalAppTarget?>(
+                                initialValue = null,
+                                key1 = activeTabUrl,
+                                key2 = appContext
+                            ) {
+                                value = if (activeTabUrl.isNullOrBlank()) {
+                                    null
+                                } else {
+                                    withContext(Dispatchers.IO) {
+                                        ExternalAppResolver.resolveForHttpUrl(appContext, activeTabUrl)
+                                    }
+                                }
+                            }
                             QuickActionsSection(
                                 state = state,
                                 activeTabBlockedCount = activeBlockedCount,
@@ -234,7 +254,13 @@ fun SettingsScreen(
                                 onOpenSiteRules = { viewModel.toggleSiteRulesSheet(true) },
                                 onFindInPage = { viewModel.openFindInPage() },
                                 onPinEssential = { viewModel.pinCurrentTabToEssentials() },
-                                onSendToZenSpace = { viewModel.sendActiveTabToZenSpace() }
+                                onSendToZenSpace = { viewModel.sendActiveTabToZenSpace() },
+                                externalAppLabel = externalAppTarget?.appLabel,
+                                onOpenInApp = {
+                                    externalAppTarget?.let { target ->
+                                        viewModel.openActiveTabInExternalApp(target.launchIntent, target.appLabel)
+                                    }
+                                }
                             )
                         }
 

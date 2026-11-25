@@ -147,7 +147,7 @@ class FilterListRepository(
         val existing = dao.getById(id) ?: return@withLock Result.success(null)
         dao.upsert(existing.copy(enabled = enabled, lastError = if (enabled) existing.lastError else null))
         var downloadFailure: Throwable? = null
-        if (enabled && !withContext(Dispatchers.IO) { listFile(existing.id).isFile }) {
+        if (enabled && (existing.lastUpdatedAt == 0L || !withContext(Dispatchers.IO) { listFile(existing.id).isFile })) {
             downloadAndPersistList(existing.copy(enabled = true)).onFailure { err ->
                 downloadFailure = err
             }

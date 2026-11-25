@@ -120,7 +120,7 @@ class PreferencesRepository(private val context: Context) {
                 httpsOnlyMode = prefs[Keys.HTTPS_ONLY] ?: true,
                 externalAppLinkPolicy = parseEnum(
                     prefs[Keys.EXTERNAL_APP_POLICY],
-                    ExternalAppLinkPolicy.ASK
+                    ExternalAppLinkPolicy.ALWAYS_IN_SWIFTFOX
                 ),
                 pullToRefreshEnabled = prefs[Keys.PULL_TO_REFRESH] ?: true,
                 swipeUrlBarSwitchTabs = prefs[Keys.SWIPE_URL_BAR_TABS] ?: true,

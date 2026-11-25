@@ -209,27 +209,30 @@ data class BrowserUiState(
         get() = loadedEssentialsForSpace(activeSpaceId)
 
     /**
-     * Tabs rendered as visual preview cards in the Tab Switcher: includes loaded Essentials
-     * alongside the active Space's pinned and regular tabs so open Essentials look like any other tab.
+     * Tabs rendered as visual preview cards in the Tab Switcher: strictly actively open/loaded
+     * tabs in the current view (loaded Essentials, loaded local pinned tabs, loaded Zen pinned
+     * tabs, and open regular tabs), excluding unloaded pinned tabs.
      */
     val tabSwitcherTabs: List<BrowserTabUi>
-        get() = if (isPrivateView) {
-            tabs.filter { it.isPrivate }
-        } else {
-            loadedActiveEssentials + visibleTabs
-        }
+        get() = loadedNavigableTabs
 
     /**
-     * Count badge shown on each Space pill inside the Tab Switcher, including loaded Essentials
-     * scoped to that Space so the pill count matches the open cards rendered for that Space.
+     * Count badge shown on each Space pill inside the Tab Switcher, matching the exact set of
+     * actively open tab cards rendered for that Space.
      */
     fun tabSwitcherCountForSpace(spaceId: String): Int {
         val loadedEssCount = essentialsForSpace(spaceId)
             .mapNotNull { ess -> tabForEssential(ess.id)?.id }
             .distinct()
             .size
-        val spaceLoadedCount = tabs.count {
-            !it.isPrivate && !it.isUnloaded && !it.isEssentialTab && it.spaceId == spaceId
+        val spaceZenIds = zenPinnedItems
+            .asSequence()
+            .filter { it.spaceId == spaceId }
+            .mapTo(HashSet()) { it.id }
+        val spaceLoadedCount = tabs.count { tab ->
+            !tab.isPrivate && !tab.isUnloaded && !tab.isEssentialTab && (
+                if (tab.zenPinnedId != null) tab.zenPinnedId in spaceZenIds else tab.spaceId == spaceId
+            )
         }
         return loadedEssCount + spaceLoadedCount
     }

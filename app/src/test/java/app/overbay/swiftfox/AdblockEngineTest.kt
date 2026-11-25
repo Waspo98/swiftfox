@@ -1,7 +1,10 @@
 package app.overbay.swiftfox
 
+import app.overbay.swiftfox.data.db.FilterListEntity
 import app.overbay.swiftfox.features.adblock.AdblockEngine
+import app.overbay.swiftfox.features.adblock.BuiltInFilterLists
 import app.overbay.swiftfox.features.adblock.FallbackKotlinAdblockMatcher
+import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -394,5 +397,125 @@ class AdblockEngineTest {
                 requestType = "script"
             )
         )
+    }
+
+    @Test
+    fun builtInFilterListsReconcilesStaleAnnoyancesUrlAndSeedsNewDefaultLists() {
+        val annoyancesDef = BuiltInFilterLists.defaults.first { it.id == BuiltInFilterLists.ID_UBO_ANNOYANCES }
+        assertEquals(
+            "https://ublockorigin.github.io/uAssetsCDN/filters/annoyances.min.txt",
+            annoyancesDef.url
+        )
+        val appBannersDef = BuiltInFilterLists.defaults.first { it.id == BuiltInFilterLists.ID_ADGUARD_MOBILE_APP_BANNERS }
+        assertTrue(appBannersDef.enabled)
+        val bpcDef = BuiltInFilterLists.defaults.first { it.id == BuiltInFilterLists.ID_BYPASS_PAYWALLS_CLEAN }
+        assertFalse(bpcDef.enabled)
+
+        // Legacy install with broken 404 annoyances-others.min.txt URL and user having enabled it
+        val legacyLists = listOf(
+            FilterListEntity(
+                id = BuiltInFilterLists.ID_EASYLIST,
+                name = "EasyList",
+                url = "https://easylist.to/easylist/easylist.txt",
+                enabled = true,
+                isBuiltIn = true,
+                ruleCount = 50000,
+                lastUpdatedAt = 1700000000L
+            ),
+            FilterListEntity(
+                id = BuiltInFilterLists.ID_EASYPRIVACY,
+                name = "EasyPrivacy",
+                url = "https://easylist.to/easylist/easyprivacy.txt",
+                enabled = true,
+                isBuiltIn = true
+            ),
+            FilterListEntity(
+                id = BuiltInFilterLists.ID_UBO_FILTERS,
+                name = "uBlock Origin Filters",
+                url = "https://ublockorigin.github.io/uAssetsCDN/filters/filters.min.txt",
+                enabled = true,
+                isBuiltIn = true
+            ),
+            FilterListEntity(
+                id = BuiltInFilterLists.ID_UBO_BADWARE,
+                name = "uBlock Badware Risks",
+                url = "https://ublockorigin.github.io/uAssetsCDN/filters/badware.min.txt",
+                enabled = true,
+                isBuiltIn = true
+            ),
+            FilterListEntity(
+                id = BuiltInFilterLists.ID_UBO_ANNOYANCES,
+                name = "uBlock Annoyances",
+                url = "https://ublockorigin.github.io/uAssetsCDN/filters/annoyances-others.min.txt",
+                enabled = true,
+                isBuiltIn = true,
+                etag = "\"stale\"",
+                lastUpdatedAt = 1234L,
+                lastError = "HTTP 404"
+            )
+        )
+
+        val upserts = BuiltInFilterLists.computeReconciliationUpserts(legacyLists)
+        val byId = upserts.associateBy { it.id }
+
+        // Fixes broken uBlock Annoyances URL while keeping user's enabled=true and clearing 404 error
+        val fixedAnnoyances = byId[BuiltInFilterLists.ID_UBO_ANNOYANCES]
+        assertTrue(fixedAnnoyances != null)
+        assertEquals(annoyancesDef.url, fixedAnnoyances!!.url)
+        assertTrue(fixedAnnoyances.enabled)
+        assertEquals(null, fixedAnnoyances.lastError)
+        assertEquals(null, fixedAnnoyances.etag)
+        assertEquals(0L, fixedAnnoyances.lastUpdatedAt)
+
+        // Adds AdGuard Mobile App Banners enabled by default, and Bypass Paywalls Clean opt-in (disabled by default)
+        assertEquals(true, byId[BuiltInFilterLists.ID_ADGUARD_MOBILE_APP_BANNERS]?.enabled)
+        assertEquals(false, byId[BuiltInFilterLists.ID_BYPASS_PAYWALLS_CLEAN]?.enabled)
+
+        // Once reconciled, user toggles (enabling BPC or disabling App Banners) must NOT be reverted
+        val afterUserToggles = (legacyLists.filterNot { it.id in byId } + upserts).map {
+            when (it.id) {
+                BuiltInFilterLists.ID_BYPASS_PAYWALLS_CLEAN -> it.copy(enabled = true)
+                BuiltInFilterLists.ID_ADGUARD_MOBILE_APP_BANNERS -> it.copy(enabled = false)
+                else -> it
+            }
+        }
+        assertTrue(BuiltInFilterLists.computeReconciliationUpserts(afterUserToggles).isEmpty())
+
+        // Does not duplicate if user already manually added the same Bypass Paywalls URL as a custom list
+        val withCustomBpc = legacyLists + FilterListEntity(
+            id = "fl_custom_bpc",
+            name = "My BPC",
+            url = bpcDef.url,
+            enabled = true,
+            isBuiltIn = false
+        )
+        val upsertsWithCustom = BuiltInFilterLists.computeReconciliationUpserts(withCustomBpc)
+        assertFalse(upsertsWithCustom.any { it.id == BuiltInFilterLists.ID_BYPASS_PAYWALLS_CLEAN })
+    }
+
+    @Test
+    fun starterFiltersHideRecaptchaBadgeOnGoogleFiAndCommonMobileAppBanners() {
+        val assetFile = listOf(
+            File("src/main/assets/adblock/starter_filters.txt"),
+            File("app/src/main/assets/adblock/starter_filters.txt")
+        ).first { it.isFile }
+        val matcher = FallbackKotlinAdblockMatcher(assetFile.readText())
+
+        // Domain-specific rule fires at document-start for fi.google.com
+        val fiCosmetic = matcher.cosmeticResources("https://fi.google.com/account")
+        assertTrue(fiCosmetic.css.contains(".grecaptcha-badge{display:none!important}"))
+
+        // Generic rule also hides .grecaptcha-badge on any other site
+        val genericCss = matcher.hiddenClassIdCss(
+            classes = listOf("grecaptcha-badge", "smartbanner"),
+            ids = emptyList(),
+            exceptions = emptySet()
+        )
+        assertTrue(genericCss.contains(".grecaptcha-badge{display:none!important}"))
+        assertTrue(genericCss.contains(".smartbanner{display:none!important}"))
+
+        // Reddit mobile xpromo app-banner rule fires on reddit.com
+        val redditCosmetic = matcher.cosmeticResources("https://www.reddit.com/r/android/")
+        assertTrue(redditCosmetic.css.contains("xpromo-app-selector{display:none!important}"))
     }
 }

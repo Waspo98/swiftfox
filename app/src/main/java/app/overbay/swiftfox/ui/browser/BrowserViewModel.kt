@@ -4840,6 +4840,14 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         _uiState.update { it.copy(contextMenuHit = null) }
     }
 
+    fun openActiveTabInExternalApp(intent: Intent, appLabel: String) {
+        setOverlay(BrowserOverlay.NONE)
+        val launched = onLaunchExternalIntentBridge?.invoke(intent) ?: false
+        if (!launched) {
+            showSnackbar("Could not open in $appLabel")
+        }
+    }
+
     fun resolveExternalAppPrompt(openNative: Boolean) {
         val prompt = _uiState.value.externalAppPrompt ?: return
         _uiState.update { it.copy(externalAppPrompt = null) }

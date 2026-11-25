@@ -193,7 +193,7 @@ data class BrowserSettings(
     val customSearchUrlTemplate: String = "https://www.google.com/search?q=%s",
     val searchSuggestionsEnabled: Boolean = true,
     val httpsOnlyMode: Boolean = true,
-    val externalAppLinkPolicy: ExternalAppLinkPolicy = ExternalAppLinkPolicy.ASK,
+    val externalAppLinkPolicy: ExternalAppLinkPolicy = ExternalAppLinkPolicy.ALWAYS_IN_SWIFTFOX,
     val pullToRefreshEnabled: Boolean = true,
     val swipeUrlBarSwitchTabs: Boolean = true,
     val hideToolbarsOnScroll: Boolean = true,

@@ -27,12 +27,9 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
@@ -95,7 +92,6 @@ import app.overbay.swiftfox.data.db.EssentialEntity
 import app.overbay.swiftfox.data.db.SpaceEntity
 import app.overbay.swiftfox.data.db.ZenPinnedItemEntity
 import app.overbay.swiftfox.data.prefs.SiteMode
-import app.overbay.swiftfox.features.omnibox.OmniboxEngine
 import app.overbay.swiftfox.ui.browser.BrowserTabUi
 import app.overbay.swiftfox.ui.browser.BrowserUiState
 import app.overbay.swiftfox.ui.browser.TabThumbnailsSnapshot
@@ -151,7 +147,6 @@ fun SpacesTabSwitcher(
     var tabToEdit by remember { mutableStateOf<BrowserTabUi?>(null) }
     var tabToPickIcon by remember { mutableStateOf<BrowserTabUi?>(null) }
 
-    var actionZenPinned by remember { mutableStateOf<ZenPinnedItemEntity?>(null) }
     var zenPinnedToEdit by remember { mutableStateOf<ZenPinnedItemEntity?>(null) }
     var zenPinnedToPickIcon by remember { mutableStateOf<ZenPinnedItemEntity?>(null) }
 
@@ -170,27 +165,16 @@ fun SpacesTabSwitcher(
     val spaceTabCounts = remember(
         state.tabs,
         state.essentials,
+        state.zenPinnedItems,
         state.spaces,
         state.settings.syncZenSeparateEssentials
     ) {
         state.spaces.associate { space -> space.id to state.tabSwitcherCountForSpace(space.id) }
     }
-    val zenPinned = remember(state.zenPinnedItems, state.activeSpaceId, state.isPrivateView) {
-        state.activeSpaceZenPinned
-    }
-    val tabByZenPinnedId = remember(state.tabs) {
-        buildMap {
-            for (tab in state.tabs) {
-                val zenId = tab.zenPinnedId
-                if (!tab.isPrivate && zenId != null && !containsKey(zenId)) {
-                    put(zenId, tab)
-                }
-            }
-        }
-    }
     val tabs = remember(
         state.tabs,
         state.essentials,
+        state.zenPinnedItems,
         state.spaces,
         state.activeSpaceId,
         state.isPrivateView,
@@ -372,39 +356,7 @@ fun SpacesTabSwitcher(
                 onCreateSpaceClick = { showCreateSpaceDialog = true }
             )
 
-            // Zen Browser synced pinned items for active Space with web favicons
-            if (!state.isPrivateView && zenPinned.isNotEmpty()) {
-                Spacer(Modifier.height(10.dp))
-                LazyRow(
-                    contentPadding = PaddingValues(horizontal = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    items(
-                        items = zenPinned,
-                        key = { it.id },
-                        contentType = { "zen_pinned_pill" }
-                    ) { item ->
-                        val boundTab = tabByZenPinnedId[item.id]
-                        CompactZenPinnedPill(
-                            item = item,
-                            isLoaded = boundTab != null,
-                            isActive = boundTab != null && boundTab.id == state.activeTabId,
-                            isPlayingMedia = boundTab?.isPlayingMedia == true,
-                            onClick = {
-                                if (boundTab != null) {
-                                    onSelectTab(boundTab.id)
-                                } else {
-                                    itemCallbacks.onActivateZenPinned(item.id)
-                                }
-                            },
-                            onLongClick = { actionZenPinned = item }
-                        )
-                    }
-                }
-            }
-
-            // Visual tab card grid (open Essentials render right alongside regular tabs as standard cards)
+            // Visual tab card grid (only actively open tabs in the current Space)
             if (tabs.isNotEmpty() || canCloseAll) {
                 Spacer(Modifier.height(10.dp))
                 WorkspaceTabsHeaderRow(
@@ -465,21 +417,19 @@ fun SpacesTabSwitcher(
                         key = { it.id },
                         contentType = { "tab_card" }
                     ) { tab ->
-                        val isLoaded = !tab.isUnloaded
                         val isPinnedTab = tab.isPinned && !tab.isPrivate
-                        val canSwipeDismiss = !isPinnedTab || isLoaded
                         val closeOrUnloadTab = {
                             val essId = tab.essentialId
+                            val zenId = tab.zenPinnedId
                             when {
                                 essId != null -> itemCallbacks.onCloseEssentialTab(essId)
+                                zenId != null -> itemCallbacks.onCloseZenPinnedTab(zenId)
                                 isPinnedTab -> itemCallbacks.onClosePinnedTab(tab.id)
                                 else -> onCloseTab(tab.id)
                             }
                         }
                         SwipeToDismissTabCard(
                             tabId = tab.id,
-                            enabled = canSwipeDismiss,
-                            staysInGridAfterDismiss = isPinnedTab,
                             onDismiss = closeOrUnloadTab,
                             modifier = Modifier.animateItem(
                                 fadeInSpec = tween(durationMillis = 120),
@@ -492,9 +442,8 @@ fun SpacesTabSwitcher(
                         ) { isCardDismissing ->
                             TabPreviewCard(
                                 tab = tab,
-                                isActive = isLoaded && tab.id == state.activeTabId,
-                                isLoaded = isLoaded,
-                                thumbnail = if (isLoaded) thumbnails.bitmaps[tab.id] else null,
+                                isActive = tab.id == state.activeTabId,
+                                thumbnail = thumbnails.bitmaps[tab.id],
                                 onSelect = {
                                     if (!isCardDismissing) {
                                         onSelectTab(tab.id)
@@ -640,94 +589,133 @@ fun SpacesTabSwitcher(
     actionTab?.let { target ->
         val isPrivate = target.isPrivate
         val boundEssential = target.essentialId?.let { id -> state.essentials.firstOrNull { it.id == id } }
+        val boundZenPinned = target.zenPinnedId?.let { id -> state.zenPinnedItems.firstOrNull { it.id == id } }
         val actions = buildList {
             if (!isPrivate) {
-                if (boundEssential != null) {
-                    if (!target.url.equals(boundEssential.url, ignoreCase = true)) {
-                        add(
-                            SheetActionItem(
-                                label = "Reset to pinned URL",
-                                icon = Icons.Rounded.Refresh,
-                                onClick = { itemCallbacks.onResetEssentialTab(boundEssential.id) }
-                            )
-                        )
-                    }
-                    add(
-                        SheetActionItem(
-                            label = "Edit title & URL",
-                            icon = Icons.Rounded.Edit,
-                            onClick = { essentialToEdit = boundEssential }
-                        )
-                    )
-                    add(
-                        SheetActionItem(
-                            label = "Set custom icon",
-                            icon = Icons.Rounded.Palette,
-                            onClick = { essentialToPickIcon = boundEssential }
-                        )
-                    )
-                } else {
-                    if (target.isPinned && !target.isUnloaded) {
-                        add(
-                            SheetActionItem(
-                                label = "Close tab",
-                                icon = Icons.Rounded.Close,
-                                onClick = { itemCallbacks.onClosePinnedTab(target.id) }
-                            )
-                        )
-                        if (!target.pinnedUrl.isNullOrBlank() && !target.url.equals(target.pinnedUrl, ignoreCase = true)) {
+                when {
+                    boundEssential != null -> {
+                        if (!target.url.equals(boundEssential.url, ignoreCase = true)) {
                             add(
                                 SheetActionItem(
                                     label = "Reset to pinned URL",
                                     icon = Icons.Rounded.Refresh,
-                                    onClick = { itemCallbacks.onResetPinnedTab(target.id) }
+                                    onClick = { itemCallbacks.onResetEssentialTab(boundEssential.id) }
                                 )
                             )
                         }
-                    }
-                    add(
-                        SheetActionItem(
-                            label = if (target.isPinned) "Unpin tab" else "Pin tab",
-                            icon = Icons.Rounded.PushPin,
-                            onClick = { itemCallbacks.onSetTabPinned(target.id, !target.isPinned) }
+                        add(
+                            SheetActionItem(
+                                label = "Edit title & URL",
+                                icon = Icons.Rounded.Edit,
+                                onClick = { essentialToEdit = boundEssential }
+                            )
                         )
-                    )
-                    if (!target.isStartPage) {
+                        add(
+                            SheetActionItem(
+                                label = "Set custom icon",
+                                icon = Icons.Rounded.Palette,
+                                onClick = { essentialToPickIcon = boundEssential }
+                            )
+                        )
+                    }
+                    boundZenPinned != null -> {
+                        if (!target.url.equals(boundZenPinned.url, ignoreCase = true)) {
+                            add(
+                                SheetActionItem(
+                                    label = "Reset to pinned URL",
+                                    icon = Icons.Rounded.Refresh,
+                                    onClick = { itemCallbacks.onResetZenPinnedTab(boundZenPinned.id) }
+                                )
+                            )
+                        }
+                        add(
+                            SheetActionItem(
+                                label = "Edit title & URL",
+                                icon = Icons.Rounded.Edit,
+                                onClick = { zenPinnedToEdit = boundZenPinned }
+                            )
+                        )
+                        add(
+                            SheetActionItem(
+                                label = "Set custom icon",
+                                icon = Icons.Rounded.Palette,
+                                onClick = { zenPinnedToPickIcon = boundZenPinned }
+                            )
+                        )
                         add(
                             SheetActionItem(
                                 label = "Add to Essentials",
                                 icon = Icons.Rounded.StarOutline,
-                                onClick = { itemCallbacks.onAddTabToEssentials(target.id) }
+                                onClick = { itemCallbacks.onAddZenPinnedToEssentials(boundZenPinned.id) }
                             )
                         )
                     }
-                    add(
-                        SheetActionItem(
-                            label = if (target.isPinned) "Edit pinned URL & label" else "Edit tab URL & label",
-                            icon = Icons.Rounded.Edit,
-                            onClick = { tabToEdit = target }
+                    else -> {
+                        if (target.isPinned) {
+                            add(
+                                SheetActionItem(
+                                    label = "Close tab",
+                                    icon = Icons.Rounded.Close,
+                                    onClick = { itemCallbacks.onClosePinnedTab(target.id) }
+                                )
+                            )
+                            if (!target.pinnedUrl.isNullOrBlank() && !target.url.equals(target.pinnedUrl, ignoreCase = true)) {
+                                add(
+                                    SheetActionItem(
+                                        label = "Reset to pinned URL",
+                                        icon = Icons.Rounded.Refresh,
+                                        onClick = { itemCallbacks.onResetPinnedTab(target.id) }
+                                    )
+                                )
+                            }
+                        }
+                        add(
+                            SheetActionItem(
+                                label = if (target.isPinned) "Unpin tab" else "Pin tab",
+                                icon = Icons.Rounded.PushPin,
+                                onClick = { itemCallbacks.onSetTabPinned(target.id, !target.isPinned) }
+                            )
                         )
-                    )
-                    add(
-                        SheetActionItem(
-                            label = "Set custom icon",
-                            icon = Icons.Rounded.Palette,
-                            onClick = { tabToPickIcon = target }
+                        if (!target.isStartPage) {
+                            add(
+                                SheetActionItem(
+                                    label = "Add to Essentials",
+                                    icon = Icons.Rounded.StarOutline,
+                                    onClick = { itemCallbacks.onAddTabToEssentials(target.id) }
+                                )
+                            )
+                        }
+                        add(
+                            SheetActionItem(
+                                label = if (target.isPinned) "Edit pinned URL & label" else "Edit tab URL & label",
+                                icon = Icons.Rounded.Edit,
+                                onClick = { tabToEdit = target }
+                            )
                         )
-                    )
+                        add(
+                            SheetActionItem(
+                                label = "Set custom icon",
+                                icon = Icons.Rounded.Palette,
+                                onClick = { tabToPickIcon = target }
+                            )
+                        )
+                    }
                 }
             }
             add(
                 SheetActionItem(
-                    label = if (target.isPinned) "Delete pin" else "Close tab",
+                    label = if (target.isPinned && boundEssential == null && boundZenPinned == null) {
+                        "Delete pin"
+                    } else {
+                        "Close tab"
+                    },
                     icon = Icons.Rounded.DeleteOutline,
                     isDestructive = true,
                     onClick = {
-                        val essId = target.essentialId
-                        if (essId != null) {
-                            itemCallbacks.onCloseEssentialTab(essId)
-                        } else {
-                            onCloseTab(target.id)
+                        when {
+                            boundEssential != null -> itemCallbacks.onCloseEssentialTab(boundEssential.id)
+                            boundZenPinned != null -> itemCallbacks.onCloseZenPinnedTab(boundZenPinned.id)
+                            else -> onCloseTab(target.id)
                         }
                     }
                 )
@@ -735,8 +723,8 @@ fun SpacesTabSwitcher(
         }
         val subtitle = buildString {
             append(target.displayHost.ifBlank { "Start Page" })
-            if (target.isPinned && !isPrivate) {
-                append(if (target.isUnloaded) " · Unloaded" else " · Open")
+            if ((target.isPinned || boundZenPinned != null) && !isPrivate) {
+                append(" · Pinned")
             }
         }
         ItemActionBottomSheet(
@@ -782,78 +770,6 @@ fun SpacesTabSwitcher(
             previewLabel = target.displayHost.ifBlank { target.displayTitle },
             onSelectIcon = { spec -> itemCallbacks.onSetTabCustomIcon(target.id, spec) },
             onDismiss = { tabToPickIcon = null }
-        )
-    }
-
-    actionZenPinned?.let { target ->
-        val boundTab = state.tabForZenPinned(target.id)
-        val actions = buildList {
-            if (boundTab != null) {
-                add(
-                    SheetActionItem(
-                        label = "Close tab",
-                        icon = Icons.Rounded.Close,
-                        onClick = { itemCallbacks.onCloseZenPinnedTab(target.id) }
-                    )
-                )
-                if (!boundTab.url.equals(target.url, ignoreCase = true)) {
-                    add(
-                        SheetActionItem(
-                            label = "Reset to pinned URL",
-                            icon = Icons.Rounded.Refresh,
-                            onClick = { itemCallbacks.onResetZenPinnedTab(target.id) }
-                        )
-                    )
-                }
-            }
-            add(
-                SheetActionItem(
-                    label = "Edit title & URL",
-                    icon = Icons.Rounded.Edit,
-                    onClick = { zenPinnedToEdit = target }
-                )
-            )
-            add(
-                SheetActionItem(
-                    label = "Set custom icon",
-                    icon = Icons.Rounded.Palette,
-                    onClick = { zenPinnedToPickIcon = target }
-                )
-            )
-            add(
-                SheetActionItem(
-                    label = "Add to Essentials",
-                    icon = Icons.Rounded.StarOutline,
-                    onClick = { itemCallbacks.onAddZenPinnedToEssentials(target.id) }
-                )
-            )
-            add(
-                SheetActionItem(
-                    label = "Delete",
-                    icon = Icons.Rounded.DeleteOutline,
-                    isDestructive = true,
-                    onClick = { itemCallbacks.onDeleteZenPinned(target.id) }
-                )
-            )
-        }
-        val hostLabel = OmniboxEngine.extractHost(target.url).ifBlank { target.url }
-        ItemActionBottomSheet(
-            title = target.title,
-            subtitle = if (boundTab != null) "$hostLabel · Open" else hostLabel,
-            leadingIcon = {
-                SiteIconBadge(
-                    url = target.url,
-                    fallbackLabel = target.title,
-                    customIcon = target.customIcon,
-                    size = 40.dp,
-                    iconSize = 24.dp,
-                    shape = RoundedCornerShape(12.dp),
-                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    fillImageToContainer = true
-                )
-            },
-            actions = actions,
-            onDismiss = { actionZenPinned = null }
         )
     }
 
@@ -918,86 +834,6 @@ internal fun DeleteSpaceDialog(
     )
 }
 
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun CompactZenPinnedPill(
-    item: ZenPinnedItemEntity,
-    isLoaded: Boolean,
-    isActive: Boolean,
-    isPlayingMedia: Boolean,
-    onClick: () -> Unit,
-    onLongClick: () -> Unit
-) {
-    val containerColor = when {
-        isActive -> MaterialTheme.colorScheme.primaryContainer
-        isLoaded -> MaterialTheme.colorScheme.surfaceContainerHigh
-        else -> MaterialTheme.colorScheme.surfaceContainerLow
-    }
-    val contentColor = when {
-        isActive -> MaterialTheme.colorScheme.onPrimaryContainer
-        isLoaded -> MaterialTheme.colorScheme.onSurface
-        else -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f)
-    }
-    val border = when {
-        isActive -> BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
-        isLoaded -> BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.45f))
-        else -> BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
-    }
-
-    Surface(
-        shape = RoundedCornerShape(16.dp),
-        color = containerColor,
-        border = border,
-        modifier = Modifier
-            .heightIn(min = 48.dp)
-            .clip(RoundedCornerShape(16.dp))
-            .combinedClickable(
-                onClick = onClick,
-                onLongClick = onLongClick
-            )
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            SiteIconBadge(
-                url = item.url,
-                fallbackLabel = item.title,
-                customIcon = item.customIcon,
-                size = 20.dp,
-                iconSize = 16.dp,
-                shape = RoundedCornerShape(6.dp),
-                fillImageToContainer = true,
-                modifier = Modifier.graphicsLayer { alpha = if (isLoaded || isActive) 1f else 0.68f }
-            )
-            Text(
-                text = if (!item.folderName.isNullOrBlank()) "${item.folderName} · ${item.title}" else item.title,
-                style = MaterialTheme.typography.labelMedium,
-                color = contentColor,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            if (isPlayingMedia) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Rounded.VolumeUp,
-                    contentDescription = "Playing media",
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(14.dp)
-                )
-            }
-            if (isLoaded) {
-                Box(
-                    modifier = Modifier
-                        .size(if (isActive) 8.dp else 7.dp)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.primary)
-                )
-            }
-        }
-    }
-}
-
 internal fun resolveTabCardSwipeDismissDirection(
     offsetX: Float,
     velocityX: Float,
@@ -1035,8 +871,6 @@ internal fun computeTabCardSwipeExitDurationMs(
 @Composable
 private fun SwipeToDismissTabCard(
     tabId: String,
-    enabled: Boolean,
-    staysInGridAfterDismiss: Boolean,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
     content: @Composable (isDismissing: Boolean) -> Unit
@@ -1056,25 +890,12 @@ private fun SwipeToDismissTabCard(
 
     val currentOnDismiss by rememberUpdatedState(onDismiss)
     val currentReduceMotion by rememberUpdatedState(reduceMotion)
-    val currentStaysInGrid by rememberUpdatedState(staysInGridAfterDismiss)
-
-    LaunchedEffect(tabId, enabled) {
-        if (!enabled && !isDismissing) {
-            isDragging = false
-            useDragOffset = false
-            dragOffsetPx = 0f
-            if (offsetX.value != 0f) {
-                offsetX.snapTo(0f)
-            }
-        }
-    }
 
     Box(
         modifier = modifier
             .zIndex(if (isDragging || isDismissing || useDragOffset) 1f else 0f)
             .onSizeChanged { cardWidthPx = it.width }
-            .pointerInput(tabId, enabled, minFlingVelocityPx, minExitSpeedPx) {
-                if (!enabled) return@pointerInput
+            .pointerInput(tabId, minFlingVelocityPx, minExitSpeedPx) {
                 val velocityTracker = VelocityTracker()
                 var currentDragOffset = 0f
                 var crossedThreshold = false
@@ -1161,25 +982,8 @@ private fun SwipeToDismissTabCard(
                                             )
                                         }
                                         invokeDismissOnce()
-                                        if (currentStaysInGrid) {
-                                            if (currentReduceMotion) {
-                                                offsetX.snapTo(0f)
-                                            } else {
-                                                offsetX.animateTo(
-                                                    targetValue = 0f,
-                                                    animationSpec = spring(
-                                                        dampingRatio = Spring.DampingRatioNoBouncy,
-                                                        stiffness = 700f
-                                                    )
-                                                )
-                                            }
-                                            isDismissing = false
-                                        }
                                     } finally {
                                         invokeDismissOnce()
-                                        if (currentStaysInGrid) {
-                                            isDismissing = false
-                                        }
                                     }
                                 }
                             } else {
@@ -1252,7 +1056,6 @@ private fun SwipeToDismissTabCard(
 private fun TabPreviewCard(
     tab: BrowserTabUi,
     isActive: Boolean,
-    isLoaded: Boolean = true,
     thumbnail: android.graphics.Bitmap?,
     onSelect: () -> Unit,
     onLongPress: () -> Unit,
@@ -1260,23 +1063,17 @@ private fun TabPreviewCard(
     modifier: Modifier = Modifier
 ) {
     val foxColors = LocalSwiftfoxColors.current
+    val isPinnedCard = !tab.isPrivate && (tab.isPinned || tab.zenPinnedId != null)
     val borderColor = when {
         isActive && tab.isPrivate -> foxColors.privateAccent
         isActive -> MaterialTheme.colorScheme.primary
-        tab.isPinned && isLoaded -> MaterialTheme.colorScheme.primary.copy(alpha = 0.48f)
-        tab.isPinned -> MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.32f)
+        isPinnedCard -> MaterialTheme.colorScheme.primary.copy(alpha = 0.48f)
         else -> MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
     }
-    val cardColor = if (tab.isPinned && !isLoaded) {
-        MaterialTheme.colorScheme.surfaceContainerLow
-    } else {
-        MaterialTheme.colorScheme.surfaceContainer
-    }
-    val contentAlpha = if (tab.isPinned && !isLoaded) 0.7f else 1f
 
     Surface(
         shape = RoundedCornerShape(20.dp),
-        color = cardColor,
+        color = MaterialTheme.colorScheme.surfaceContainer,
         border = BorderStroke(if (isActive) 2.dp else 1.dp, borderColor),
         modifier = modifier
             .clip(RoundedCornerShape(20.dp))
@@ -1285,14 +1082,14 @@ private fun TabPreviewCard(
                 onLongClick = onLongPress
             )
     ) {
-        Column(modifier = Modifier.graphicsLayer { alpha = contentAlpha }) {
+        Column {
             // Card header with real favicon/custom icon
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(
                         start = 10.dp,
-                        end = if (tab.isPinned) 12.dp else 2.dp,
+                        end = 2.dp,
                         top = 6.dp,
                         bottom = 4.dp
                     ),
@@ -1318,12 +1115,25 @@ private fun TabPreviewCard(
                     )
                 }
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = tab.displayTitle,
-                        style = MaterialTheme.typography.titleSmall,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        if (isPinnedCard) {
+                            Icon(
+                                imageVector = Icons.Rounded.PushPin,
+                                contentDescription = "Pinned tab",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(12.dp)
+                            )
+                        }
+                        Text(
+                            text = tab.displayTitle,
+                            style = MaterialTheme.typography.titleSmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                     Text(
                         text = tab.displayHost.ifBlank { "Start Page" },
                         style = MaterialTheme.typography.labelSmall,
@@ -1332,37 +1142,15 @@ private fun TabPreviewCard(
                         overflow = TextOverflow.Ellipsis
                     )
                 }
-                if (tab.isPinned && !tab.isPrivate) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(5.dp)
-                    ) {
-                        if (isLoaded) {
-                            Box(
-                                modifier = Modifier
-                                    .size(if (isActive) 8.dp else 7.dp)
-                                    .clip(CircleShape)
-                                    .background(MaterialTheme.colorScheme.primary)
-                            )
-                        }
-                        Icon(
-                            imageVector = Icons.Rounded.PushPin,
-                            contentDescription = if (isLoaded) "Loaded pinned tab" else "Unloaded pinned tab",
-                            tint = if (isLoaded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f),
-                            modifier = Modifier.size(16.dp)
-                        )
-                    }
-                } else {
-                    IconButton(
-                        onClick = onClose,
-                        modifier = Modifier.size(48.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Close,
-                            contentDescription = "Close ${tab.displayTitle}",
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
+                IconButton(
+                    onClick = onClose,
+                    modifier = Modifier.size(48.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Close,
+                        contentDescription = "Close ${tab.displayTitle}",
+                        modifier = Modifier.size(18.dp)
+                    )
                 }
             }
 
@@ -1385,40 +1173,28 @@ private fun TabPreviewCard(
                         modifier = Modifier.fillMaxSize()
                     )
                 } else {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        if (tab.isStartPage && tab.customIcon == null) {
-                            SwiftfoxEmblem(
-                                size = 34.dp,
-                                variant = if (tab.isPrivate) SwiftfoxEmblemVariant.PURPLE else SwiftfoxEmblemVariant.ORANGE
-                            )
-                        } else {
-                            SiteIconBadge(
-                                url = tab.url,
-                                fallbackLabel = tab.displayHost.ifBlank { tab.displayTitle },
-                                customIcon = if (tab.isPrivate) null else tab.customIcon,
-                                privateTabId = if (tab.isPrivate) tab.id else null,
-                                size = 44.dp,
-                                iconSize = 28.dp,
-                                shape = RoundedCornerShape(14.dp),
-                                containerColor = MaterialTheme.colorScheme.primaryContainer,
-                                monogramFontSize = 18.sp,
-                                fillImageToContainer = true
-                            )
-                        }
-                        if (tab.isPinned && !isLoaded) {
-                            Text(
-                                text = "Tap to load",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
+                    if (tab.isStartPage && tab.customIcon == null) {
+                        SwiftfoxEmblem(
+                            size = 34.dp,
+                            variant = if (tab.isPrivate) SwiftfoxEmblemVariant.PURPLE else SwiftfoxEmblemVariant.ORANGE
+                        )
+                    } else {
+                        SiteIconBadge(
+                            url = tab.url,
+                            fallbackLabel = tab.displayHost.ifBlank { tab.displayTitle },
+                            customIcon = if (tab.isPrivate) null else tab.customIcon,
+                            privateTabId = if (tab.isPrivate) tab.id else null,
+                            size = 44.dp,
+                            iconSize = 28.dp,
+                            shape = RoundedCornerShape(14.dp),
+                            containerColor = MaterialTheme.colorScheme.primaryContainer,
+                            monogramFontSize = 18.sp,
+                            fillImageToContainer = true
+                        )
                     }
                 }
 
-                if (isLoaded && (tab.resolvedSiteMode == SiteMode.DESKTOP || tab.isPlayingMedia)) {
+                if (tab.resolvedSiteMode == SiteMode.DESKTOP || tab.isPlayingMedia) {
                     Surface(
                         shape = RoundedCornerShape(10.dp),
                         color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.88f),

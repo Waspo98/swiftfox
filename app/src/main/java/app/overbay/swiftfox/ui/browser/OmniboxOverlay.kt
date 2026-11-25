@@ -7,13 +7,17 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -28,7 +32,6 @@ import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import app.overbay.swiftfox.ui.icons.rounded.Bolt
 import app.overbay.swiftfox.ui.icons.rounded.Bookmark
 import androidx.compose.material.icons.rounded.Close
@@ -51,6 +54,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
@@ -63,15 +67,20 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onPlaced
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import app.overbay.swiftfox.data.prefs.SearchEngineId
 import app.overbay.swiftfox.features.omnibox.InlineUrlAutocomplete
@@ -84,14 +93,41 @@ import app.overbay.swiftfox.ui.components.SiteIconBadge
 import app.overbay.swiftfox.ui.theme.LocalSwiftfoxColors
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.yield
+import kotlin.math.roundToInt
 
-internal class BoundsHolder(var rect: Rect? = null)
+enum class OmniboxAnchor {
+    NONE,
+    START_PAGE,
+    TOP_BAR,
+    BOTTOM_BAR,
+    SIDE_RAIL_BADGE,
+    SIDE_RAIL_BUTTON
+}
+
+/**
+ * Holds the latest attached [LayoutCoordinates] for a search-bar anchor so callers can query
+ * exact, up-to-date root bounds on demand at tap time without calculating rects on every scroll frame.
+ */
+internal class BoundsHolder(
+    var coordinates: LayoutCoordinates? = null
+) {
+    fun currentBoundsInRoot(): Rect? {
+        val coords = coordinates?.takeIf { it.isAttached } ?: return null
+        val rect = coords.boundsInRoot()
+        return rect.takeIf { it.width > 0f && it.height > 0f }
+    }
+}
+
+private class RootOriginHolder {
+    var origin by mutableStateOf(Offset.Zero)
+}
 
 @Composable
 fun OmniboxOverlay(
     isVisible: Boolean = true,
     expandProgressProvider: () -> Float = { 1f },
     sourceRect: Rect? = null,
+    isFadeOnlyExit: Boolean = false,
     query: String,
     defaultSearchEngine: SearchEngineId,
     customSearchUrlTemplate: String = "",
@@ -103,16 +139,16 @@ fun OmniboxOverlay(
     onSelectSearchScope: (OmniboxSearchScope?) -> Unit = {},
     onOpenSearchSettings: () -> Unit = {},
     onSubmit: (String) -> Unit,
-    onSelectSuggestion: (OmniboxSuggestion) -> Unit,
-    onDismiss: () -> Unit
+    onSelectSuggestion: (OmniboxSuggestion) -> Unit
 ) {
     val focusRequester = remember { FocusRequester() }
     val focusManager = LocalFocusManager.current
     val density = LocalDensity.current
+    val layoutDirection = LocalLayoutDirection.current
     val foxColors = LocalSwiftfoxColors.current
     val quickBangs = remember { OmniboxEngine.bangs.take(7) }
     val quickTlds = remember { OmniboxEngine.quickTldShortcuts }
-    val targetPillBounds = remember { BoundsHolder() }
+    val overlayOrigin = remember { RootOriginHolder() }
 
     // TextFieldState owns the IME buffer synchronously so fast typing bursts never race with
     // parent recompositions or drop characters; select-all on initial open or rapid reopen.
@@ -179,6 +215,9 @@ fun OmniboxOverlay(
                 textFieldState.setTextAndPlaceCursorAtEnd("")
                 lastSyncedExternalQuery = ""
             }
+            // Let frame 0 of the bounds morph commit before triggering IME binder IPC so the opening
+            // motion stays 120Hz silky-smooth while the keyboard still rises instantaneously.
+            withFrameNanos { }
             focusRequester.requestFocus()
         } else {
             clearPrefilledUrlOnScopeSelect = false
@@ -245,214 +284,196 @@ fun OmniboxOverlay(
         }
     }
 
-    val primaryColor = MaterialTheme.colorScheme.primary
-    val bodySlideMaxPx = with(density) { 26.dp.toPx() }
-    val fallbackSlideMaxPx = with(density) { 18.dp.toPx() }
+    val focusRingColor = if (isPrivate) foxColors.privateAccent else MaterialTheme.colorScheme.primary
+    val pillContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+    val bodySlideMaxPx = with(density) { 22.dp.toPx() }
+    val fallbackSlideMaxPx = with(density) { 16.dp.toPx() }
     val pillCornerPx = with(density) { 28.dp.toPx() }
     val oneDpPx = with(density) { 1.dp.toPx() }
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        // Animated full-screen backdrop surface (read progress in graphicsLayer only for 120Hz zero-recomposition)
+    val statusBarTopPx = WindowInsets.statusBars.getTop(density)
+    val leftInsetPx = maxOf(
+        WindowInsets.displayCutout.getLeft(density, layoutDirection),
+        WindowInsets.navigationBars.getLeft(density, layoutDirection)
+    )
+    val rightInsetPx = maxOf(
+        WindowInsets.displayCutout.getRight(density, layoutDirection),
+        WindowInsets.navigationBars.getRight(density, layoutDirection)
+    )
+    val horizontalMarginPx = with(density) { 16.dp.roundToPx() }
+    val topMarginPx = with(density) { 10.dp.roundToPx() }
+    val targetPillHeightPx = with(density) { 52.dp.roundToPx() }
+    val minPillWidthPx = with(density) { 48.dp.roundToPx() }
+    val minPillHeightPx = with(density) { 44.dp.roundToPx() }
+    val narrowSourceThresholdPx = with(density) { 160.dp.toPx() }
+    val hasValidMorphSource = sourceRect != null && sourceRect.width > 0f && sourceRect.height > 0f && !isFadeOnlyExit
+    val isNarrowMorphSource = hasValidMorphSource && sourceRect.width < narrowSourceThresholdPx
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .onPlaced { coords ->
+                if (coords.isAttached) {
+                    overlayOrigin.origin = coords.positionInRoot()
+                }
+            }
+            .graphicsLayer {
+                if (isFadeOnlyExit) {
+                    alpha = expandProgressProvider().coerceIn(0f, 1f)
+                }
+            }
+    ) {
+        // Animated full-screen backdrop surface (Draw phase only — zero recomposition)
         Surface(
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer {
-                    val p = expandProgressProvider().coerceIn(0f, 1f)
-                    alpha = (p * 1.35f).coerceIn(0f, 1f)
+                    if (!isFadeOnlyExit) {
+                        val p = expandProgressProvider().coerceIn(0f, 1f)
+                        alpha = (p * 1.45f).coerceIn(0f, 1f)
+                    }
                 },
             color = MaterialTheme.colorScheme.background
         ) {}
 
+        // Quick Bangs + Suggestions glide cleanly below the resting pill slot without being re-measured during morph
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
                 .navigationBarsPadding()
                 .imePadding()
+                .padding(top = 72.dp)
+                .graphicsLayer {
+                    if (!isFadeOnlyExit) {
+                        val p = expandProgressProvider().coerceIn(0f, 1f)
+                        val bodyProgress = ((p - 0.14f) / 0.86f).coerceIn(0f, 1f)
+                        alpha = bodyProgress
+                        translationY = bodySlideMaxPx * (1f - bodyProgress)
+                    }
+                }
         ) {
-            // Focused omnibox pill morphing directly from tapped search bar bounds into Fox Amber focus ring
+            // Active one-time scope reset chip, Quick TLD shortcuts, or Quick Bangs
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(
-                    onClick = onDismiss,
-                    modifier = Modifier
-                        .size(48.dp)
-                        .graphicsLayer {
-                            val p = expandProgressProvider().coerceIn(0f, 1f)
-                            val backAlpha = ((p - 0.18f) / 0.82f).coerceIn(0f, 1f)
-                            alpha = backAlpha
-                            translationX = -14f * (1f - backAlpha)
-                        }
-                ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
-                        contentDescription = "Close search"
-                    )
-                }
-
-                Surface(
-                    shape = RoundedCornerShape(28.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    modifier = Modifier
-                        .weight(1f)
-                        .heightIn(min = 52.dp)
-                        .onPlaced { coords ->
-                            if (coords.isAttached) {
-                                val r = coords.boundsInRoot()
-                                if (r.width > 0f && r.height > 0f) {
-                                    targetPillBounds.rect = r
-                                }
-                            }
-                        }
-                        .graphicsLayer {
-                            val p = expandProgressProvider().coerceIn(0f, 1f)
-                            val src = sourceRect
-                            val dst = targetPillBounds.rect
-                            if (src != null && dst != null && dst.width > 0f && dst.height > 0f) {
-                                val inv = 1f - p
-                                translationX = (src.center.x - dst.center.x) * inv
-                                translationY = (src.center.y - dst.center.y) * inv
-                                val sx = (src.width / dst.width).coerceIn(0.45f, 1.25f)
-                                val sy = (src.height / dst.height).coerceIn(0.75f, 1.35f)
-                                scaleX = sx + (1f - sx) * p
-                                scaleY = sy + (1f - sy) * p
+                if (activeSearchScope != null) {
+                    Surface(
+                        onClick = {
+                            onSelectSearchScope(null)
+                            focusRequestNonce++
+                        },
+                        shape = RoundedCornerShape(16.dp),
+                        color = if (isPrivate) foxColors.privateContainer else MaterialTheme.colorScheme.primaryContainer,
+                        border = BorderStroke(
+                            1.dp,
+                            if (isPrivate) {
+                                foxColors.privateAccent.copy(alpha = 0.5f)
                             } else {
-                                translationY = -fallbackSlideMaxPx * (1f - p)
-                                val s = 0.94f + 0.06f * p
-                                scaleX = s
-                                scaleY = s
-                                alpha = (p * 1.4f).coerceIn(0f, 1f)
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
                             }
-                        }
-                        .drawWithContent {
-                            drawContent()
-                            val p = expandProgressProvider().coerceIn(0f, 1f)
-                            val strokePx = oneDpPx * (1f + p)
-                            val half = strokePx / 2f
-                            drawRoundRect(
-                                color = primaryColor.copy(alpha = 0.45f + 0.55f * p),
-                                topLeft = Offset(half, half),
-                                size = Size(
-                                    width = (size.width - strokePx).coerceAtLeast(0f),
-                                    height = (size.height - strokePx).coerceAtLeast(0f)
-                                ),
-                                cornerRadius = CornerRadius(pillCornerPx, pillCornerPx),
-                                style = Stroke(width = strokePx)
+                        ),
+                        modifier = Modifier.heightIn(min = 48.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(start = 14.dp, end = 10.dp, top = 12.dp, bottom = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = "Searching in ${activeSearchScope.displayLabel(customSearchUrlTemplate)}",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = if (isPrivate) foxColors.onPrivateContainer else MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                            Icon(
+                                imageVector = Icons.Rounded.Close,
+                                contentDescription = "Clear search engine filter",
+                                tint = if (isPrivate) foxColors.privateAccent else MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(16.dp)
                             )
                         }
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(start = 6.dp, end = 6.dp, top = 4.dp, bottom = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        if (activeBang != null) {
-                            Surface(
-                                shape = RoundedCornerShape(14.dp),
-                                color = MaterialTheme.colorScheme.primaryContainer,
-                                modifier = Modifier.padding(start = 6.dp)
+                    }
+                } else if (showQuickTldChips) {
+                    quickTlds.forEach { shortcut ->
+                        val isPrimaryCom = shortcut == ".com"
+                        Surface(
+                            onClick = {
+                                val applied = OmniboxEngine.applyTldShortcut(currentText, shortcut)
+                                    ?: return@Surface
+                                onSubmit(applied)
+                            },
+                            shape = RoundedCornerShape(16.dp),
+                            color = if (isPrimaryCom) {
+                                MaterialTheme.colorScheme.primaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.surfaceContainer
+                            },
+                            border = BorderStroke(
+                                1.dp,
+                                if (isPrimaryCom) {
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
+                                } else {
+                                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                                }
+                            ),
+                            modifier = Modifier
+                                .widthIn(min = 52.dp)
+                                .heightIn(min = 48.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                                contentAlignment = Alignment.Center
                             ) {
                                 Text(
-                                    text = activeBang.bang.name,
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                    text = shortcut,
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = if (isPrimaryCom) {
+                                        MaterialTheme.colorScheme.onPrimaryContainer
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurface
+                                    }
                                 )
                             }
-                        } else {
-                            SearchScopeSelectorAnchor(
-                                defaultEngine = defaultSearchEngine,
-                                customSearchUrlTemplate = customSearchUrlTemplate,
-                                activeScope = activeSearchScope,
-                                isPrivate = isPrivate,
-                                compact = true,
-                                onMenuOpened = {
-                                    clearPrefilledUrlOnScopeSelect =
-                                        isAllSelected && OmniboxEngine.looksLikeUrl(currentText)
-                                },
-                                onSelectScope = { scope ->
-                                    val shouldClear = clearPrefilledUrlOnScopeSelect ||
-                                        (isAllSelected && OmniboxEngine.looksLikeUrl(currentText))
-                                    clearPrefilledUrlOnScopeSelect = false
-                                    if (shouldClear) {
-                                        autocompleteGate.onCleared()
-                                        gateVersion++
-                                        textFieldState.setTextAndPlaceCursorAtEnd("")
-                                        lastSyncedExternalQuery = ""
-                                        onQueryChange("")
-                                    }
-                                    onSelectSearchScope(scope)
-                                    focusRequestNonce++
-                                },
-                                onOpenSearchSettings = onOpenSearchSettings
-                            )
                         }
-
-                        BasicTextField(
-                            state = textFieldState,
-                            lineLimits = TextFieldLineLimits.SingleLine,
-                            inputTransformation = backspaceDismissTransformation,
-                            outputTransformation = autocompleteTransformation,
-                            textStyle = MaterialTheme.typography.bodyLarge.copy(
-                                color = MaterialTheme.colorScheme.onSurface
-                            ),
-                            cursorBrush = SolidColor(if (isPrivate) foxColors.privateAccent else MaterialTheme.colorScheme.primary),
-                            keyboardOptions = KeyboardOptions(
-                                keyboardType = if (activeSearchScope != null) KeyboardType.Text else KeyboardType.Uri,
-                                imeAction = if (activeSearchScope != null) ImeAction.Search else ImeAction.Go
-                            ),
-                            onKeyboardAction = {
-                                val completion = activeAutocomplete
-                                val text = textFieldState.text.toString()
-                                if (activeSearchScope?.isLocalFilter == true) {
-                                    onSubmit(text)
-                                } else if (completion != null) {
-                                    onSubmit(completion.targetUrl)
-                                } else if (text.isNotBlank()) {
-                                    onSubmit(text)
-                                }
+                    }
+                } else {
+                    quickBangs.forEach { bang ->
+                        Surface(
+                            onClick = {
+                                val bangPrefix = "${bang.triggers.first()} "
+                                autocompleteGate.onExternalQuerySynced(bangPrefix)
+                                gateVersion++
+                                textFieldState.setTextAndPlaceCursorAtEnd(bangPrefix)
+                                lastSyncedExternalQuery = bangPrefix
+                                onQueryChange(bangPrefix)
                             },
-                            decorator = { inner ->
-                                if (currentText.isEmpty()) {
-                                    val placeholderText = activeSearchScope?.placeholder(customSearchUrlTemplate)
-                                        ?: "Search ${defaultSearchEngine.displayName(customSearchUrlTemplate)} or enter address"
-                                    Text(
-                                        text = placeholderText,
-                                        style = MaterialTheme.typography.bodyLarge,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
-                                inner()
-                            },
-                            modifier = Modifier
-                                .weight(1f)
-                                .focusRequester(focusRequester)
-                        )
-
-                        if (currentText.isNotEmpty()) {
-                            IconButton(
-                                onClick = {
-                                    autocompleteGate.onCleared()
-                                    gateVersion++
-                                    textFieldState.setTextAndPlaceCursorAtEnd("")
-                                    lastSyncedExternalQuery = ""
-                                    onQueryChange("")
-                                },
-                                modifier = Modifier.size(48.dp)
+                            shape = RoundedCornerShape(16.dp),
+                            color = MaterialTheme.colorScheme.surfaceContainer,
+                            border = BorderStroke(
+                                1.dp,
+                                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                            ),
+                            modifier = Modifier.heightIn(min = 48.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
-                                Icon(
-                                    imageVector = Icons.Rounded.Close,
-                                    contentDescription = "Clear text",
-                                    modifier = Modifier.size(20.dp)
+                                Text(
+                                    text = bang.triggers.first(),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Text(
+                                    text = bang.name,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
                         }
@@ -460,182 +481,234 @@ fun OmniboxOverlay(
                 }
             }
 
-            // Quick Bangs + Suggestions glide cleanly into place underneath the expanding search bar
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .graphicsLayer {
-                        val p = expandProgressProvider().coerceIn(0f, 1f)
-                        val bodyProgress = ((p - 0.14f) / 0.86f).coerceIn(0f, 1f)
-                        alpha = bodyProgress
-                        translationY = bodySlideMaxPx * (1f - bodyProgress)
-                    }
-            ) {
-                // Active one-time scope reset chip, Quick TLD shortcuts, or Quick Bangs
-                Row(
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+
+            // Ranked suggestions with web favicons (or helpful empty state for local scope filters)
+            if (activeSearchScope != null && activeSearchScope.isLocalFilter && suggestions.isEmpty()) {
+                Box(
                     modifier = Modifier
+                        .weight(1f)
                         .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState())
-                        .padding(horizontal = 16.dp, vertical = 6.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                        .padding(horizontal = 24.dp, vertical = 32.dp),
+                    contentAlignment = Alignment.TopCenter
                 ) {
-                    if (activeSearchScope != null) {
-                        Surface(
-                            onClick = {
-                                onSelectSearchScope(null)
-                                focusRequestNonce++
-                            },
-                            shape = RoundedCornerShape(16.dp),
-                            color = if (isPrivate) foxColors.privateContainer else MaterialTheme.colorScheme.primaryContainer,
-                            border = BorderStroke(
-                                1.dp,
-                                if (isPrivate) {
-                                    foxColors.privateAccent.copy(alpha = 0.5f)
-                                } else {
-                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
-                                }
-                            ),
-                            modifier = Modifier.heightIn(min = 48.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(start = 14.dp, end = 10.dp, top = 12.dp, bottom = 12.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                Text(
-                                    text = "Searching in ${activeSearchScope.displayLabel(customSearchUrlTemplate)}",
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = if (isPrivate) foxColors.onPrivateContainer else MaterialTheme.colorScheme.onPrimaryContainer
-                                )
-                                Icon(
-                                    imageVector = Icons.Rounded.Close,
-                                    contentDescription = "Clear search engine filter",
-                                    tint = if (isPrivate) foxColors.privateAccent else MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                            }
-                        }
-                    } else if (showQuickTldChips) {
-                        quickTlds.forEach { shortcut ->
-                            val isPrimaryCom = shortcut == ".com"
-                            Surface(
-                                onClick = {
-                                    val applied = OmniboxEngine.applyTldShortcut(currentText, shortcut)
-                                        ?: return@Surface
-                                    onSubmit(applied)
-                                },
-                                shape = RoundedCornerShape(16.dp),
-                                color = if (isPrimaryCom) {
-                                    MaterialTheme.colorScheme.primaryContainer
-                                } else {
-                                    MaterialTheme.colorScheme.surfaceContainer
-                                },
-                                border = BorderStroke(
-                                    1.dp,
-                                    if (isPrimaryCom) {
-                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
-                                    } else {
-                                        MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
-                                    }
-                                ),
-                                modifier = Modifier
-                                    .widthIn(min = 52.dp)
-                                    .heightIn(min = 48.dp)
-                            ) {
-                                Box(
-                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(
-                                        text = shortcut,
-                                        style = MaterialTheme.typography.labelLarge,
-                                        color = if (isPrimaryCom) {
-                                            MaterialTheme.colorScheme.onPrimaryContainer
-                                        } else {
-                                            MaterialTheme.colorScheme.onSurface
-                                        }
-                                    )
-                                }
-                            }
-                        }
-                    } else {
-                        quickBangs.forEach { bang ->
-                            Surface(
-                                onClick = {
-                                    val bangPrefix = "${bang.triggers.first()} "
-                                    autocompleteGate.onExternalQuerySynced(bangPrefix)
-                                    gateVersion++
-                                    textFieldState.setTextAndPlaceCursorAtEnd(bangPrefix)
-                                    lastSyncedExternalQuery = bangPrefix
-                                    onQueryChange(bangPrefix)
-                                },
-                                shape = RoundedCornerShape(16.dp),
-                                color = MaterialTheme.colorScheme.surfaceContainer,
-                                border = BorderStroke(
-                                    1.dp,
-                                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
-                                ),
-                                modifier = Modifier.heightIn(min = 48.dp)
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    Text(
-                                        text = bang.triggers.first(),
-                                        style = MaterialTheme.typography.labelMedium,
-                                        color = MaterialTheme.colorScheme.primary
-                                    )
-                                    Text(
-                                        text = bang.name,
-                                        style = MaterialTheme.typography.labelMedium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            }
-                        }
+                    Text(
+                        text = if (currentText.isBlank()) {
+                            "No ${activeSearchScope.shortLabel.lowercase()} to show"
+                        } else {
+                            "No matching ${activeSearchScope.shortLabel.lowercase()} found"
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(vertical = 8.dp)
+                ) {
+                    items(
+                        items = suggestions,
+                        key = { it.id },
+                        contentType = { it.kind }
+                    ) { suggestion ->
+                        SuggestionRow(
+                            suggestion = suggestion,
+                            onClick = { onSelectSuggestion(suggestion) }
+                        )
                     }
                 }
+            }
+        }
 
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+        // Focused omnibox pill morphing via true Layout-phase bounds interpolation (zero scaleX/scaleY distortion,
+        // crisp constant 28dp rounded corners, exact frame-0 alignment, and zero recomposition per frame)
+        Surface(
+            shape = RoundedCornerShape(28.dp),
+            color = pillContainerColor,
+            modifier = Modifier
+                .layout { measurable, constraints ->
+                    val p = if (isFadeOnlyExit) 1f else expandProgressProvider().coerceIn(0f, 1f)
+                    val dstLeft = (leftInsetPx + horizontalMarginPx).toFloat()
+                    val dstTop = (statusBarTopPx + topMarginPx).toFloat()
+                    val dstWidth = (constraints.maxWidth - leftInsetPx - rightInsetPx - horizontalMarginPx * 2)
+                        .coerceAtLeast(minPillWidthPx)
+                        .toFloat()
+                    val dstHeight = targetPillHeightPx.toFloat()
 
-                // Ranked suggestions with web favicons (or helpful empty state for local scope filters)
-                if (activeSearchScope != null && activeSearchScope.isLocalFilter && suggestions.isEmpty()) {
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxWidth()
-                            .padding(horizontal = 24.dp, vertical = 32.dp),
-                        contentAlignment = Alignment.TopCenter
+                    val src = sourceRect
+                    val curLeft: Float
+                    val curTop: Float
+                    val curWidth: Int
+                    val curHeight: Int
+                    if (src != null && src.width > 0f && src.height > 0f && !isFadeOnlyExit) {
+                        val origin = overlayOrigin.origin
+                        val localLeft = src.left - origin.x
+                        val localTop = src.top - origin.y
+                        curLeft = localLeft + (dstLeft - localLeft) * p
+                        curTop = localTop + (dstTop - localTop) * p
+                        curWidth = (src.width + (dstWidth - src.width) * p)
+                            .roundToInt()
+                            .coerceIn(minPillWidthPx, constraints.maxWidth.coerceAtLeast(minPillWidthPx))
+                        curHeight = (src.height + (dstHeight - src.height) * p)
+                            .roundToInt()
+                            .coerceIn(minPillHeightPx, constraints.maxHeight.coerceAtLeast(minPillHeightPx))
+                    } else {
+                        curLeft = dstLeft
+                        curTop = dstTop - if (isFadeOnlyExit) 0f else fallbackSlideMaxPx * (1f - p)
+                        curWidth = dstWidth.roundToInt().coerceIn(minPillWidthPx, constraints.maxWidth.coerceAtLeast(minPillWidthPx))
+                        curHeight = dstHeight.roundToInt().coerceIn(minPillHeightPx, constraints.maxHeight.coerceAtLeast(minPillHeightPx))
+                    }
+
+                    val placeable = measurable.measure(Constraints.fixed(curWidth, curHeight))
+                    layout(constraints.maxWidth, constraints.maxHeight) {
+                        // Use physical screen coordinates (place, not placeRelative) to match boundsInRoot() in LTR & RTL
+                        placeable.place(curLeft.roundToInt(), curTop.roundToInt())
+                    }
+                }
+                .graphicsLayer {
+                    if (!hasValidMorphSource && !isFadeOnlyExit) {
+                        val p = expandProgressProvider().coerceIn(0f, 1f)
+                        alpha = (p * 1.45f).coerceIn(0f, 1f)
+                    }
+                }
+                .drawWithContent {
+                    drawContent()
+                    val p = if (isFadeOnlyExit) 1f else expandProgressProvider().coerceIn(0f, 1f)
+                    val strokePx = oneDpPx * (1f + p)
+                    val half = strokePx / 2f
+                    val maxRadius = (minOf(size.width, size.height) * 0.5f).coerceAtLeast(0f)
+                    val radius = pillCornerPx.coerceAtMost(maxRadius)
+                    drawRoundRect(
+                        color = focusRingColor.copy(alpha = 0.42f + 0.58f * p),
+                        topLeft = Offset(half, half),
+                        size = Size(
+                            width = (size.width - strokePx).coerceAtLeast(0f),
+                            height = (size.height - strokePx).coerceAtLeast(0f)
+                        ),
+                        cornerRadius = CornerRadius(radius, radius),
+                        style = Stroke(width = strokePx)
+                    )
+                }
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(start = 6.dp, end = 6.dp, top = 4.dp, bottom = 4.dp)
+                    .graphicsLayer {
+                        if (hasValidMorphSource && !isFadeOnlyExit) {
+                            val p = expandProgressProvider().coerceIn(0f, 1f)
+                            alpha = if (isNarrowMorphSource) {
+                                ((p - 0.18f) / 0.52f).coerceIn(0f, 1f)
+                            } else {
+                                (0.45f + 0.55f * p).coerceIn(0f, 1f)
+                            }
+                        }
+                    },
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (activeBang != null) {
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        modifier = Modifier.padding(start = 6.dp)
                     ) {
                         Text(
-                            text = if (currentText.isBlank()) {
-                                "No ${activeSearchScope.shortLabel.lowercase()} to show"
-                            } else {
-                                "No matching ${activeSearchScope.shortLabel.lowercase()} found"
-                            },
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            text = activeBang.bang.name,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                         )
                     }
                 } else {
-                    LazyColumn(
-                        modifier = Modifier.weight(1f),
-                        contentPadding = PaddingValues(vertical = 8.dp)
-                    ) {
-                        items(
-                            items = suggestions,
-                            key = { it.id },
-                            contentType = { it.kind }
-                        ) { suggestion ->
-                            SuggestionRow(
-                                suggestion = suggestion,
-                                onClick = { onSelectSuggestion(suggestion) }
+                    SearchScopeSelectorAnchor(
+                        defaultEngine = defaultSearchEngine,
+                        customSearchUrlTemplate = customSearchUrlTemplate,
+                        activeScope = activeSearchScope,
+                        isPrivate = isPrivate,
+                        compact = true,
+                        onMenuOpened = {
+                            clearPrefilledUrlOnScopeSelect =
+                                isAllSelected && OmniboxEngine.looksLikeUrl(currentText)
+                        },
+                        onSelectScope = { scope ->
+                            val shouldClear = clearPrefilledUrlOnScopeSelect ||
+                                (isAllSelected && OmniboxEngine.looksLikeUrl(currentText))
+                            clearPrefilledUrlOnScopeSelect = false
+                            if (shouldClear) {
+                                autocompleteGate.onCleared()
+                                gateVersion++
+                                textFieldState.setTextAndPlaceCursorAtEnd("")
+                                lastSyncedExternalQuery = ""
+                                onQueryChange("")
+                            }
+                            onSelectSearchScope(scope)
+                            focusRequestNonce++
+                        },
+                        onOpenSearchSettings = onOpenSearchSettings
+                    )
+                }
+
+                BasicTextField(
+                    state = textFieldState,
+                    lineLimits = TextFieldLineLimits.SingleLine,
+                    inputTransformation = backspaceDismissTransformation,
+                    outputTransformation = autocompleteTransformation,
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(
+                        color = MaterialTheme.colorScheme.onSurface
+                    ),
+                    cursorBrush = SolidColor(if (isPrivate) foxColors.privateAccent else MaterialTheme.colorScheme.primary),
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = if (activeSearchScope != null) KeyboardType.Text else KeyboardType.Uri,
+                        imeAction = if (activeSearchScope != null) ImeAction.Search else ImeAction.Go
+                    ),
+                    onKeyboardAction = {
+                        val completion = activeAutocomplete
+                        val text = textFieldState.text.toString()
+                        if (activeSearchScope?.isLocalFilter == true) {
+                            onSubmit(text)
+                        } else if (completion != null) {
+                            onSubmit(completion.targetUrl)
+                        } else if (text.isNotBlank()) {
+                            onSubmit(text)
+                        }
+                    },
+                    decorator = { inner ->
+                        if (currentText.isEmpty()) {
+                            val placeholderText = activeSearchScope?.placeholder(customSearchUrlTemplate)
+                                ?: "Search ${defaultSearchEngine.displayName(customSearchUrlTemplate)} or enter address"
+                            Text(
+                                text = placeholderText,
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
+                        inner()
+                    },
+                    modifier = Modifier
+                        .weight(1f)
+                        .focusRequester(focusRequester)
+                )
+
+                if (currentText.isNotEmpty()) {
+                    IconButton(
+                        onClick = {
+                            autocompleteGate.onCleared()
+                            gateVersion++
+                            textFieldState.setTextAndPlaceCursorAtEnd("")
+                            lastSyncedExternalQuery = ""
+                            onQueryChange("")
+                        },
+                        modifier = Modifier.size(48.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Close,
+                            contentDescription = "Clear text",
+                            modifier = Modifier.size(20.dp)
+                        )
                     }
                 }
             }

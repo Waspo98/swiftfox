@@ -7,6 +7,7 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.room.withTransaction
 import androidx.sqlite.db.SupportSQLiteDatabase
+import app.overbay.swiftfox.features.adblock.BuiltInFilterLists
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -48,6 +49,13 @@ abstract class SwiftfoxDatabase : RoomDatabase() {
 
     suspend fun seedDefaultsIfEmpty(seedInitialContent: Boolean = true) = seedMutex.withLock {
         if (!seedInitialContent && spaceDao().count() > 0) {
+            val existingLists = filterListDao().getAll()
+            if (existingLists.isNotEmpty()) {
+                val upserts = BuiltInFilterLists.computeReconciliationUpserts(existingLists)
+                if (upserts.isNotEmpty()) {
+                    filterListDao().upsertAll(upserts)
+                }
+            }
             return@withLock
         }
         withTransaction {
@@ -126,46 +134,16 @@ abstract class SwiftfoxDatabase : RoomDatabase() {
                     )
                 )
             }
-            if (seedInitialContent && filterListDao().count() == 0) {
-                filterListDao().upsertAll(
-                    listOf(
-                        FilterListEntity(
-                            id = "fl_easylist",
-                            name = "EasyList",
-                            url = "https://easylist.to/easylist/easylist.txt",
-                            enabled = true,
-                            isBuiltIn = true
-                        ),
-                        FilterListEntity(
-                            id = "fl_easyprivacy",
-                            name = "EasyPrivacy",
-                            url = "https://easylist.to/easylist/easyprivacy.txt",
-                            enabled = true,
-                            isBuiltIn = true
-                        ),
-                        FilterListEntity(
-                            id = "fl_ubo_filters",
-                            name = "uBlock Origin Filters",
-                            url = "https://ublockorigin.github.io/uAssetsCDN/filters/filters.min.txt",
-                            enabled = true,
-                            isBuiltIn = true
-                        ),
-                        FilterListEntity(
-                            id = "fl_ubo_badware",
-                            name = "uBlock Badware Risks",
-                            url = "https://ublockorigin.github.io/uAssetsCDN/filters/badware.min.txt",
-                            enabled = true,
-                            isBuiltIn = true
-                        ),
-                        FilterListEntity(
-                            id = "fl_ubo_annoyances",
-                            name = "uBlock Annoyances",
-                            url = "https://ublockorigin.github.io/uAssetsCDN/filters/annoyances-others.min.txt",
-                            enabled = false,
-                            isBuiltIn = true
-                        )
-                    )
-                )
+            val existingLists = filterListDao().getAll()
+            if (existingLists.isEmpty()) {
+                if (seedInitialContent) {
+                    filterListDao().upsertAll(BuiltInFilterLists.defaults)
+                }
+            } else {
+                val upserts = BuiltInFilterLists.computeReconciliationUpserts(existingLists)
+                if (upserts.isNotEmpty()) {
+                    filterListDao().upsertAll(upserts)
+                }
             }
         }
     }

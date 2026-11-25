@@ -52,8 +52,15 @@ class Sync15SpacesClient(
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
     private val userAgent = "Swiftfox/${BuildConfig.VERSION_NAME} (Android)"
 
+    private data class AuthCacheKey(
+        val kid: String,
+        val fxaAccessToken: String,
+        val syncKeyBase64: String,
+        val tokenServerUrl: String
+    )
+
     private data class CachedAuthContext(
-        val cacheKey: String,
+        val cacheKey: AuthCacheKey,
         val createdAtNano: Long,
         val session: TokenServerSession,
         val keyRing: CollectionKeyRing?
@@ -99,31 +106,44 @@ class Sync15SpacesClient(
             headers.entries.firstOrNull { it.key.equals(name, ignoreCase = true) }?.value
     }
 
-    private suspend fun getOrFetchSessionAndKeys(
-        kid: String,
-        fxaAccessToken: String,
-        syncKeyBase64: String,
-        tokenServerUrl: String
+    private suspend fun getOrFetchSession(
+        cacheKey: AuthCacheKey
     ): Pair<TokenServerSession, CollectionKeyRing?> {
         val nowNano = System.nanoTime()
-        val key = "$kid|${fxaAccessToken.hashCode()}|${syncKeyBase64.hashCode()}|$tokenServerUrl"
         synchronized(authCacheLock) {
             val hit = cachedAuth
-            if (hit != null && hit.cacheKey == key && (nowNano - hit.createdAtNano) in 0L until AUTH_CACHE_TTL_NANOS) {
+            if (hit != null && hit.cacheKey == cacheKey && (nowNano - hit.createdAtNano) in 0L until AUTH_CACHE_TTL_NANOS) {
                 return hit.session to hit.keyRing
             }
         }
-        val session = exchangeTokenServerCreds(kid, fxaAccessToken, tokenServerUrl)
-        val keyRing = fetchCollectionKeys(session, SyncCrypto.fromKSyncBase64(syncKeyBase64))
+        val session = exchangeTokenServerCreds(cacheKey.kid, cacheKey.fxaAccessToken, cacheKey.tokenServerUrl)
         synchronized(authCacheLock) {
             cachedAuth = CachedAuthContext(
-                cacheKey = key,
+                cacheKey = cacheKey,
                 createdAtNano = System.nanoTime(),
                 session = session,
-                keyRing = keyRing
+                keyRing = null
             )
         }
-        return session to keyRing
+        return session to null
+    }
+
+    private suspend fun getOrFetchCollectionKeyRing(
+        cacheKey: AuthCacheKey,
+        session: TokenServerSession,
+        cachedKeyRing: CollectionKeyRing?
+    ): CollectionKeyRing? {
+        if (cachedKeyRing != null) return cachedKeyRing
+        val fetched = fetchCollectionKeys(session, SyncCrypto.fromKSyncBase64(cacheKey.syncKeyBase64))
+        if (fetched != null) {
+            synchronized(authCacheLock) {
+                val cur = cachedAuth
+                if (cur != null && cur.cacheKey == cacheKey && cur.session === session) {
+                    cachedAuth = cur.copy(keyRing = fetched)
+                }
+            }
+        }
+        return fetched
     }
 
     suspend fun fetchZenSnapshot(
@@ -132,12 +152,14 @@ class Sync15SpacesClient(
         syncKeyBase64: String,
         tokenServerUrl: String
     ): ZenFetchResult = withContext(Dispatchers.IO) {
-        val (session, cachedKeyRing) = getOrFetchSessionAndKeys(kid, fxaAccessToken, syncKeyBase64, tokenServerUrl)
+        val cacheKey = AuthCacheKey(kid, fxaAccessToken, syncKeyBase64, tokenServerUrl)
+        val (session, cachedKeyRing) = getOrFetchSession(cacheKey)
         val collections = fetchInfoCollections(session)
         if (!collections.containsKey(ZenSpacesCodec.SPACES_COLLECTION)) {
             return@withContext ZenFetchResult.CollectionAbsent
         }
-        val keyRing = cachedKeyRing ?: return@withContext ZenFetchResult.CollectionAbsent
+        val keyRing = getOrFetchCollectionKeyRing(cacheKey, session, cachedKeyRing)
+            ?: return@withContext ZenFetchResult.CollectionAbsent
 
         val prefsState = if (collections.containsKey(ZenSpacesCodec.PREFS_COLLECTION)) {
             val (prefsRecords, _) = fetchCollectionWithLastModified(
@@ -196,8 +218,9 @@ class Sync15SpacesClient(
                     cleanUrl.startsWith("https://", ignoreCase = true)
             ) { "Only http:// and https:// URLs can be sent to Zen Space" }
 
-            val (session, cachedKeyRing) = getOrFetchSessionAndKeys(kid, fxaAccessToken, syncKeyBase64, tokenServerUrl)
-            val keyRing = cachedKeyRing
+            val cacheKey = AuthCacheKey(kid, fxaAccessToken, syncKeyBase64, tokenServerUrl)
+            val (session, cachedKeyRing) = getOrFetchSession(cacheKey)
+            val keyRing = getOrFetchCollectionKeyRing(cacheKey, session, cachedKeyRing)
                 ?: throw IOException("Sync encryption keys are not initialized on this account")
             val keys = keyRing.keysFor(ZenSpacesCodec.SPACES_COLLECTION)
 

@@ -234,4 +234,37 @@ class BrowserSessionAndDiagnosticsTest {
         )
         assertFalse(blankReload)
     }
+
+    @Test
+    fun webViewClientResolveCachedPageHostRemainsAtomicUnderConcurrentAccess() {
+        val client = app.overbay.swiftfox.engine.SwiftfoxWebViewClient(
+            tabId = "tab-race",
+            callbacks = app.overbay.swiftfox.engine.NoOpSessionHostCallbacks
+        )
+        val urlsAndExpected = listOf(
+            "https://www.github.com/Waspo98/swiftfox" to "github.com",
+            "https://news.ycombinator.com/item?id=1" to "news.ycombinator.com",
+            "https://docs.overbay.app/guide" to "docs.overbay.app",
+            "http://192.168.1.20:8080/status" to "192.168.1.20"
+        )
+        val errors = java.util.concurrent.CopyOnWriteArrayList<Throwable>()
+        val start = java.util.concurrent.CountDownLatch(1)
+        val threads = (0 until 6).map { tid ->
+            Thread {
+                try {
+                    start.await()
+                    repeat(200) { i ->
+                        val (url, expected) = urlsAndExpected[(tid + i) % urlsAndExpected.size]
+                        assertEquals(expected, client.resolveCachedPageHost(url))
+                    }
+                } catch (t: Throwable) {
+                    errors += t
+                }
+            }
+        }
+        threads.forEach { it.start() }
+        start.countDown()
+        threads.forEach { it.join(10_000) }
+        assertTrue("Concurrent resolveCachedPageHost errors: $errors", errors.isEmpty())
+    }
 }

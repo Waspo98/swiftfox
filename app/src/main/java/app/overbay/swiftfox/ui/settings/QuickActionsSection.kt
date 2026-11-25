@@ -76,7 +76,7 @@ fun QuickActionsSection(
     onFindInPage: () -> Unit,
     onPinEssential: () -> Unit,
     onSendToZenSpace: () -> Unit,
-    activeTabBlockedCount: Int = state.activeTab?.blockedCount ?: 0,
+    activeTabBlockedCount: Int = 0,
     modifier: Modifier = Modifier
 ) {
     val activeTab = state.activeTab

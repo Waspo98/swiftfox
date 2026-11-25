@@ -38,24 +38,10 @@ object NativeAdblockBridge {
     external fun nativeCreateFromFiles(starterText: String, filePaths: Array<String>): Long
 
     @JvmStatic
-    external fun nativeDeserialize(data: ByteArray): Long
-
-    @JvmStatic
     external fun nativeDeserializeFromFile(path: String): Long
 
     @JvmStatic
-    external fun nativeSerialize(handle: Long): ByteArray?
-
-    @JvmStatic
     external fun nativeSerializeToFile(handle: Long, path: String): Boolean
-
-    @JvmStatic
-    external fun nativeCheckNetworkRequest(
-        handle: Long,
-        url: String,
-        sourceUrl: String,
-        requestType: String
-    ): Boolean
 
     @JvmStatic
     external fun nativeCheckNetworkRequestCode(

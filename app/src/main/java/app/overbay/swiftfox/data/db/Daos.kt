@@ -111,23 +111,6 @@ interface BookmarkDao {
     )
     suspend fun search(query: String, limit: Int = 6): List<BookmarkEntity>
 
-    @Query(
-        """
-        SELECT * FROM bookmarks
-        WHERE url LIKE 'https://' || :escapedPrefix || '%' ESCAPE '\'
-           OR url LIKE 'https://www.' || :escapedPrefix || '%' ESCAPE '\'
-           OR url LIKE 'http://' || :escapedPrefix || '%' ESCAPE '\'
-           OR url LIKE 'http://www.' || :escapedPrefix || '%' ESCAPE '\'
-           OR url LIKE 'https://m.' || :escapedPrefix || '%' ESCAPE '\'
-           OR url LIKE 'https://mobile.' || :escapedPrefix || '%' ESCAPE '\'
-           OR url LIKE 'http://m.' || :escapedPrefix || '%' ESCAPE '\'
-           OR url LIKE 'http://mobile.' || :escapedPrefix || '%' ESCAPE '\'
-        ORDER BY updatedAt DESC, createdAt DESC
-        LIMIT :limit
-        """
-    )
-    suspend fun searchByUrlPrefix(escapedPrefix: String, limit: Int = 12): List<BookmarkEntity>
-
     /**
      * Index-backed B-tree range scan (`index_bookmarks_url`) for lowercase normalized host prefixes.
      */
@@ -182,23 +165,6 @@ interface HistoryDao {
         "SELECT * FROM history WHERE title LIKE '%' || :query || '%' OR url LIKE '%' || :query || '%' ORDER BY visitCount DESC, lastVisitedAt DESC LIMIT :limit"
     )
     suspend fun search(query: String, limit: Int = 8): List<HistoryEntity>
-
-    @Query(
-        """
-        SELECT * FROM history
-        WHERE url LIKE 'https://' || :escapedPrefix || '%' ESCAPE '\'
-           OR url LIKE 'https://www.' || :escapedPrefix || '%' ESCAPE '\'
-           OR url LIKE 'http://' || :escapedPrefix || '%' ESCAPE '\'
-           OR url LIKE 'http://www.' || :escapedPrefix || '%' ESCAPE '\'
-           OR url LIKE 'https://m.' || :escapedPrefix || '%' ESCAPE '\'
-           OR url LIKE 'https://mobile.' || :escapedPrefix || '%' ESCAPE '\'
-           OR url LIKE 'http://m.' || :escapedPrefix || '%' ESCAPE '\'
-           OR url LIKE 'http://mobile.' || :escapedPrefix || '%' ESCAPE '\'
-        ORDER BY visitCount DESC, lastVisitedAt DESC
-        LIMIT :limit
-        """
-    )
-    suspend fun searchByUrlPrefix(escapedPrefix: String, limit: Int = 20): List<HistoryEntity>
 
     /**
      * Index-backed B-tree range scan (`PRIMARY KEY(url)`) for lowercase normalized host prefixes.
@@ -360,9 +326,6 @@ interface ZappedRuleDao {
 
 @Dao
 interface UserscriptDao {
-    @Query("SELECT * FROM userscripts ORDER BY installedAt DESC")
-    fun observeAll(): Flow<List<UserscriptEntity>>
-
     @Query(
         """
         SELECT id, name, namespace, version, description, sourceUrl,

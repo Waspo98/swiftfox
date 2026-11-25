@@ -13,8 +13,7 @@ object ReaderHtmlParser {
     private const val MAX_HTML_CHARS = 2_000_000
     private const val MAX_DOM_DEPTH = 64
 
-    @Volatile
-    private var activeParseBaseUri: URI? = null
+    private val activeParseBaseUri = ThreadLocal<URI?>()
 
     private sealed interface HtmlToken {
         data class Text(val raw: String, val decodeEntities: Boolean = true) : HtmlToken
@@ -248,8 +247,12 @@ object ReaderHtmlParser {
         val parsedBaseUri = baseUrl?.trim()?.takeIf {
             it.startsWith("http://", ignoreCase = true) || it.startsWith("https://", ignoreCase = true)
         }?.let { runCatching { URI(it) }.getOrNull() }
-        val prevBase = activeParseBaseUri
-        activeParseBaseUri = parsedBaseUri
+        val prevBase = activeParseBaseUri.get()
+        if (parsedBaseUri != null) {
+            activeParseBaseUri.set(parsedBaseUri)
+        } else {
+            activeParseBaseUri.remove()
+        }
         try {
             val tokens = tokenize(bounded)
             val root = buildTree(tokens)
@@ -279,11 +282,15 @@ object ReaderHtmlParser {
 
             return blocks
         } finally {
-            activeParseBaseUri = prevBase
+            if (prevBase != null) {
+                activeParseBaseUri.set(prevBase)
+            } else {
+                activeParseBaseUri.remove()
+            }
         }
     }
 
-    internal fun sanitizeHttpUrl(raw: String?, baseUri: URI? = activeParseBaseUri): String? {
+    internal fun sanitizeHttpUrl(raw: String?, baseUri: URI? = activeParseBaseUri.get()): String? {
         if (raw.isNullOrBlank()) return null
         val trimmed = raw.trim()
         if (trimmed.any { it.code < 0x20 || it.code == 0x7F }) return null

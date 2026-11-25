@@ -131,7 +131,6 @@ object WorkspaceTabResolver {
             canGoForward = false,
             isPlayingMedia = false,
             isPlayingVideo = false,
-            blockedCount = 0,
             isReaderAvailable = false,
             darkReaderSkippedNative = false,
             loadError = null

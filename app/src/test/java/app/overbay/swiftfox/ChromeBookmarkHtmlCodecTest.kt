@@ -140,4 +140,20 @@ class ChromeBookmarkHtmlCodecTest {
         val parsedLarge = ChromeBookmarkHtmlCodec.parse(exported)
         assertEquals(1500, parsedLarge.size)
     }
+
+    @Test
+    fun canonicalizesSchemeAndHostCaseWhilePreservingPathAndQueryCase() {
+        val html = """
+            <!DOCTYPE NETSCAPE-Bookmark-file-1>
+            <DL><p>
+                <DT><A HREF="HTTPS://GitHub.COM/Waspo98/Swiftfox?Tab=Code#Top">Swiftfox Repo</A>
+                <DT><A HREF="HTTP://Example.ORG:8080/MixedCase/Path">Local Doc</A>
+            </DL>
+        """.trimIndent()
+
+        val parsed = ChromeBookmarkHtmlCodec.parse(html)
+        assertEquals(2, parsed.size)
+        assertEquals("https://github.com/Waspo98/Swiftfox?Tab=Code#Top", parsed[0].url)
+        assertEquals("http://example.org:8080/MixedCase/Path", parsed[1].url)
+    }
 }

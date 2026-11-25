@@ -76,10 +76,7 @@ class SwiftfoxWebViewClient(
     private val mediaHookKey: String = "__sfMedia_" + BrowserSession.generateHexToken().take(12)
 
     @Volatile
-    private var cachedPageUrlForHost: String = ""
-
-    @Volatile
-    private var cachedPageHost: String = ""
+    private var cachedPageUrlAndHost: Pair<String, String> = "" to ""
 
     private val upgradedFromHttpByUrl: MutableMap<String, String> = Collections.synchronizedMap(
         object : LinkedHashMap<String, String>(32, 0.75f, true) {
@@ -180,13 +177,13 @@ class SwiftfoxWebViewClient(
         return handleNonHttpUri(view, uri, url)
     }
 
-    private fun resolveCachedPageHost(pageUrl: String): String {
-        if (pageUrl == cachedPageUrlForHost) {
-            return cachedPageHost
+    internal fun resolveCachedPageHost(pageUrl: String): String {
+        val cached = cachedPageUrlAndHost
+        if (pageUrl == cached.first) {
+            return cached.second
         }
         val computed = OmniboxEngine.extractHost(pageUrl)
-        cachedPageUrlForHost = pageUrl
-        cachedPageHost = computed
+        cachedPageUrlAndHost = pageUrl to computed
         return computed
     }
 

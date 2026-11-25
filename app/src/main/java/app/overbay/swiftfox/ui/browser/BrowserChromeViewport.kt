@@ -218,8 +218,17 @@ internal class ToolbarCollapseBridge(
     private var pendingFlingRunnable: Runnable? = null
     private var pendingFlingHost: FrameCallbackScheduler? = null
     private var pendingFlingIsSnap: Boolean = false
-    private var snapshotFlushQueuedOnFrame: Boolean = false
+    internal var snapshotFlushQueuedOnFrame: Boolean = false
+        private set
+    private var snapshotFlushHost: FrameCallbackScheduler? = null
     private val resetSnapshotFlushGuard = Runnable {
+        snapshotFlushQueuedOnFrame = false
+        snapshotFlushHost = null
+    }
+
+    private fun resetSnapshotFlushGuardState() {
+        snapshotFlushHost?.cancelFrameCallback(resetSnapshotFlushGuard)
+        snapshotFlushHost = null
         snapshotFlushQueuedOnFrame = false
     }
 
@@ -241,6 +250,9 @@ internal class ToolbarCollapseBridge(
 
     fun detachContainer(webContainer: WebViewContainer?) {
         if (webContainer == null) return
+        if (snapshotFlushHost === webContainer) {
+            resetSnapshotFlushGuardState()
+        }
         if (pendingFlingHost === webContainer) {
             cancelFlingWork()
         }
@@ -251,6 +263,7 @@ internal class ToolbarCollapseBridge(
     }
 
     fun cancelFlingWork() {
+        resetSnapshotFlushGuardState()
         flingSettleJob?.cancel()
         flingSettleJob = null
         flingSettleHost?.cancelDelayedSettler(flingSettleRunnable)
@@ -415,15 +428,25 @@ internal class ToolbarCollapseBridge(
         if (changed) {
             // Flush Compose layer observers synchronously (coalesced to at most once per VSync frame
             // when driven by a live WebViewContainer) so topBar/bottomBar RenderNodes update cleanly.
-            val container = activeWebContainer
-            if (container == null) {
-                Snapshot.sendApplyNotifications()
-            } else if (!snapshotFlushQueuedOnFrame) {
-                snapshotFlushQueuedOnFrame = true
-                Snapshot.sendApplyNotifications()
-                container.postOnNextFrame(resetSnapshotFlushGuard)
-            }
+            flushSnapshotForHost(activeWebContainer)
         }
+    }
+
+    internal fun flushSnapshotForHost(host: FrameCallbackScheduler?): Boolean {
+        if (host == null) {
+            resetSnapshotFlushGuardState()
+            Snapshot.sendApplyNotifications()
+            return true
+        }
+        if (!snapshotFlushQueuedOnFrame || snapshotFlushHost !== host) {
+            resetSnapshotFlushGuardState()
+            snapshotFlushQueuedOnFrame = true
+            snapshotFlushHost = host
+            Snapshot.sendApplyNotifications()
+            host.postOnNextFrame(resetSnapshotFlushGuard)
+            return true
+        }
+        return false
     }
 }
 

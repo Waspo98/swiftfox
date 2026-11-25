@@ -793,7 +793,13 @@ private fun ColumnScope.ArcExpandedSidebarContent(
     val activeSpace = state.activeSpace
 
     // Drag-and-drop reorder controllers per section (active only in Reorder Mode)
-    val essentials = remember(state.essentials, state.activeSpaceId, state.isPrivateView) {
+    val essentials = remember(
+        state.essentials,
+        state.spaces,
+        state.activeSpaceId,
+        state.isPrivateView,
+        state.settings.syncZenSeparateEssentials
+    ) {
         state.activeSpaceEssentials
     }
     val localPinnedTabs = remember(state.tabs, state.activeSpaceId, state.isPrivateView) {
@@ -1837,7 +1843,13 @@ private fun ColumnScope.ArcCollapsedSidebarRail(
 
     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
 
-    val railEssentials = remember(state.essentials, state.activeSpaceId, state.isPrivateView) {
+    val railEssentials = remember(
+        state.essentials,
+        state.spaces,
+        state.activeSpaceId,
+        state.isPrivateView,
+        state.settings.syncZenSeparateEssentials
+    ) {
         state.activeSpaceEssentials
     }
     val railZenPinned = remember(state.zenPinnedItems, state.activeSpaceId, state.isPrivateView) {

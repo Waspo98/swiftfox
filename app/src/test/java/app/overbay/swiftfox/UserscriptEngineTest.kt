@@ -817,8 +817,6 @@ class UserscriptEngineTest {
     private class FakeUserscriptDao : UserscriptDao {
         private val items = MutableStateFlow<List<UserscriptEntity>>(emptyList())
 
-        override fun observeAll(): Flow<List<UserscriptEntity>> = items
-
         override fun observeSummaries(): Flow<List<UserscriptSummary>> = items.map { list ->
             list.map { s ->
                 UserscriptSummary(

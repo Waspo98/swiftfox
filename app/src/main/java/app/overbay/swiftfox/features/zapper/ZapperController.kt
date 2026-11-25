@@ -17,10 +17,6 @@ class ZapperController(private val context: Context? = null) {
         }.getOrDefault("")
     }
 
-    fun warmUpAssets() {
-        zapperScript
-    }
-
     private val jsonParser = Json {
         ignoreUnknownKeys = true
         isLenient = true

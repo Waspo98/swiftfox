@@ -83,7 +83,6 @@ data class BrowserTabUi(
     val resolvedSiteMode: SiteMode = SiteMode.MOBILE,
     val isPlayingMedia: Boolean = false,
     val isPlayingVideo: Boolean = false,
-    val blockedCount: Int = 0,
     val isReaderAvailable: Boolean = false,
     val darkReaderSkippedNative: Boolean = false,
     val loadError: MainFrameLoadError? = null,
@@ -303,10 +302,11 @@ data class BrowserUiState(
         get() {
             val url = activeTab?.url ?: return false
             if (url == OmniboxEngine.NEW_TAB_URL) return false
+            val canonical = OmniboxEngine.canonicalizeUrlSchemeAndHost(url)
             return if (bookmarkedUrls.isNotEmpty() || bookmarks.isEmpty()) {
-                url in bookmarkedUrls
+                url in bookmarkedUrls || (canonical != url && canonical in bookmarkedUrls)
             } else {
-                bookmarks.any { it.url == url }
+                bookmarks.any { it.url == url || it.url == canonical }
             }
         }
 

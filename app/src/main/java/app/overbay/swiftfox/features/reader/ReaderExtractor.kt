@@ -53,12 +53,6 @@ class ReaderExtractor(private val context: Context?) {
         }
     }
 
-    fun warmUpAssets() {
-        readabilityJs
-        bridgeJs
-        extractBootstrapFactory
-    }
-
     private fun readAsset(assetPath: String): String {
         val appContext = context?.applicationContext ?: context ?: return ""
         return runCatching {

@@ -167,7 +167,12 @@ fun SpacesTabSwitcher(
         onCommitOrder = itemCallbacks.onReorderSpaces,
         enabled = isReorderingSpaces
     )
-    val spaceTabCounts = remember(state.tabs, state.essentials, state.spaces) {
+    val spaceTabCounts = remember(
+        state.tabs,
+        state.essentials,
+        state.spaces,
+        state.settings.syncZenSeparateEssentials
+    ) {
         state.spaces.associate { space -> space.id to state.tabSwitcherCountForSpace(space.id) }
     }
     val zenPinned = remember(state.zenPinnedItems, state.activeSpaceId, state.isPrivateView) {
@@ -183,10 +188,26 @@ fun SpacesTabSwitcher(
             }
         }
     }
-    val tabs = remember(state.tabs, state.essentials, state.activeSpaceId, state.isPrivateView) {
+    val tabs = remember(
+        state.tabs,
+        state.essentials,
+        state.spaces,
+        state.activeSpaceId,
+        state.isPrivateView,
+        state.settings.syncZenSeparateEssentials
+    ) {
         state.tabSwitcherTabs
     }
-    val canCloseAll = remember(isReorderingSpaces, state.tabs, state.essentials, state.activeSpaceId, state.isPrivateView) {
+    val canCloseAll = remember(
+        isReorderingSpaces,
+        state.tabs,
+        state.essentials,
+        state.spaces,
+        state.zenPinnedItems,
+        state.activeSpaceId,
+        state.isPrivateView,
+        state.settings.syncZenSeparateEssentials
+    ) {
         !isReorderingSpaces && WorkspaceTabResolver.hasAnythingToCloseAll(state)
     }
 

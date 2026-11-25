@@ -140,7 +140,8 @@ class DownloadCoordinator(
         contentDisposition: String?,
         mimeType: String?,
         profileName: String = BrowserSession.DEFAULT_PROFILE_NAME,
-        isPrivate: Boolean = false
+        isPrivate: Boolean = false,
+        onIsolatedResult: ((Result<DownloadRecordEntity>) -> Unit)? = null
     ): Result<DownloadRecordEntity> {
         return try {
             val parsedCheck = url.toHttpUrlOrNull()
@@ -194,6 +195,7 @@ class DownloadCoordinator(
                         if (!isPrivate) {
                             downloadRecordDao.upsert(completed)
                         }
+                        onIsolatedResult?.invoke(Result.success(completed))
                     } catch (ce: CancellationException) {
                         throw ce
                     } catch (err: Throwable) {
@@ -203,6 +205,7 @@ class DownloadCoordinator(
                                 downloadRecordDao.upsert(initialEntity.copy(status = "Failed"))
                             }
                         }
+                        onIsolatedResult?.invoke(Result.failure(err))
                     }
                 }
                 return Result.success(initialEntity)

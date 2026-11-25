@@ -222,13 +222,6 @@ object OmniboxEngine {
             .build()
     }
 
-    fun configureHttpClient(baseClient: OkHttpClient) {
-        configuredClient = baseClient.newBuilder()
-            .connectTimeout(3, TimeUnit.SECONDS)
-            .readTimeout(3, TimeUnit.SECONDS)
-            .build()
-    }
-
     fun configureHttpClientProvider(provider: () -> OkHttpClient) {
         configuredClientProvider = provider
     }
@@ -236,16 +229,14 @@ object OmniboxEngine {
     private val httpClient: OkHttpClient
         get() {
             configuredClient?.let { return it }
-            val provider = configuredClientProvider
-            if (provider != null) {
-                val built = provider().newBuilder()
+            val provider = configuredClientProvider ?: return fallbackHttpClient
+            return synchronized(this) {
+                configuredClient ?: provider().newBuilder()
                     .connectTimeout(3, TimeUnit.SECONDS)
                     .readTimeout(3, TimeUnit.SECONDS)
                     .build()
-                configuredClient = built
-                return built
+                    .also { configuredClient = it }
             }
-            return fallbackHttpClient
         }
 
     fun detectBang(input: String): ResolvedBang? {
@@ -490,25 +481,87 @@ object OmniboxEngine {
         }
     }
 
-    /** Escapes SQLite LIKE metacharacters (`\`, `%`, `_`) for use with `ESCAPE '\'`. */
-    fun escapeSqlLikePrefix(rawPrefix: String): String {
-        if (rawPrefix.isEmpty()) return ""
-        val sb = StringBuilder(rawPrefix.length + 4)
-        for (ch in rawPrefix) {
-            when (ch) {
-                '\\', '%', '_' -> {
-                    sb.append('\\')
-                    sb.append(ch)
-                }
-                else -> sb.append(ch)
+    /**
+     * Lowercases the `http`/`https` scheme and host portion of [url] while preserving userinfo,
+     * port, path, query, and fragment case verbatim so SQLite B-tree prefix range scans and
+     * bookmark URL lookups match regardless of import/sync casing.
+     */
+    fun canonicalizeUrlSchemeAndHost(url: String): String {
+        val trimmed = url.trim()
+        val schemeSep = trimmed.indexOf("://")
+        if (schemeSep <= 0) return trimmed
+        val scheme = trimmed.substring(0, schemeSep)
+        val lowerScheme = when {
+            scheme.equals("https", ignoreCase = true) -> "https"
+            scheme.equals("http", ignoreCase = true) -> "http"
+            else -> return trimmed
+        }
+        val authStart = schemeSep + 3
+        if (authStart >= trimmed.length) return trimmed
+        var authEnd = trimmed.length
+        for (i in authStart until trimmed.length) {
+            val c = trimmed[i]
+            if (c == '/' || c == '?' || c == '#' || c == '\\') {
+                authEnd = i
+                break
             }
         }
-        return sb.toString()
+        if (authEnd <= authStart) return trimmed
+        var hostStart = authStart
+        for (i in authEnd - 1 downTo authStart) {
+            if (trimmed[i] == '@') {
+                hostStart = i + 1
+                break
+            }
+        }
+        if (hostStart >= authEnd) return trimmed
+        val hostEnd = if (trimmed[hostStart] == '[') {
+            val closeBracket = trimmed.indexOf(']', hostStart + 1)
+            if (closeBracket <= hostStart + 1 || closeBracket >= authEnd) return trimmed
+            closeBracket + 1
+        } else {
+            var colonIdx = -1
+            for (i in hostStart until authEnd) {
+                if (trimmed[i] == ':') {
+                    colonIdx = i
+                    break
+                }
+            }
+            if (colonIdx >= 0) colonIdx else authEnd
+        }
+        if (hostEnd <= hostStart) return trimmed
+
+        var needsChange = scheme != lowerScheme
+        if (!needsChange) {
+            for (i in hostStart until hostEnd) {
+                if (trimmed[i] in 'A'..'Z') {
+                    needsChange = true
+                    break
+                }
+            }
+        }
+        if (!needsChange) return trimmed
+
+        return buildString(trimmed.length) {
+            append(lowerScheme)
+            append("://")
+            if (hostStart > authStart) {
+                append(trimmed, authStart, hostStart)
+            }
+            for (i in hostStart until hostEnd) {
+                val c = trimmed[i]
+                append(if (c in 'A'..'Z') (c.code + 32).toChar() else c)
+            }
+            if (hostEnd < trimmed.length) {
+                append(trimmed, hostEnd, trimmed.length)
+            }
+        }
     }
 
     /**
      * Extracts a clean lowercase host/URL prefix from omnibox input suitable for dedicated
-     * Room `LIKE` prefix queries so article title matches never crowd out domain completions.
+     * Room index-backed B-tree range prefix queries so article title matches never crowd out
+     * domain completions.
      */
     fun extractRawHostPrefixForDbQuery(rawQuery: String): String? {
         val trimmed = rawQuery.trim()
@@ -529,11 +582,6 @@ object OmniboxEngine {
         }
         if (normalized.isEmpty()) return null
         return normalized
-    }
-
-    fun extractHostPrefixForDbQuery(rawQuery: String): String? {
-        val normalized = extractRawHostPrefixForDbQuery(rawQuery) ?: return null
-        return escapeSqlLikePrefix(normalized)
     }
 
     /**

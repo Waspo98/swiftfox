@@ -1339,13 +1339,15 @@ class MozillaSyncCoordinator(
                     continue
                 }
                 seenGuids += r.guid
+                val normalizedUrl = OmniboxEngine.canonicalizeUrlSchemeAndHost(r.url)
                 val matchedExisting = bySyncGuid[r.guid]?.takeIf { claimedLocalIds.add(it.id) }
+                    ?: unsyncedByUrl[normalizedUrl]?.firstOrNull { claimedLocalIds.add(it.id) }
                     ?: unsyncedByUrl[r.url]?.firstOrNull { claimedLocalIds.add(it.id) }
 
                 upserts += if (matchedExisting != null) {
                     matchedExisting.copy(
                         title = r.title,
-                        url = r.url,
+                        url = normalizedUrl,
                         folder = r.folder,
                         syncGuid = r.guid,
                         parentGuid = r.parentGuid,
@@ -1355,7 +1357,7 @@ class MozillaSyncCoordinator(
                     BookmarkEntity(
                         id = "fx_${r.guid}",
                         title = r.title,
-                        url = r.url,
+                        url = normalizedUrl,
                         folder = r.folder,
                         createdAt = if (r.dateAdded > 0L) r.dateAdded else now,
                         syncGuid = r.guid,
@@ -1383,12 +1385,15 @@ class MozillaSyncCoordinator(
     private suspend fun pullPlacesHistoryIntoRoom(): Int {
         val store = historyStorage ?: return 0
         val visits = store.getVisitsPaginated(offset = 0L, count = 400L, excludeTypes = emptyList())
-        val httpVisits = visits.filter { it.url.startsWith("http://") || it.url.startsWith("https://") }
+        val httpVisits = visits.filter {
+            it.url.startsWith("http://", ignoreCase = true) || it.url.startsWith("https://", ignoreCase = true)
+        }
         if (httpVisits.isEmpty()) return 0
 
         val visitCountsInWindow = HashMap<String, Int>(httpVisits.size)
         for (v in httpVisits) {
-            visitCountsInWindow[v.url] = (visitCountsInWindow[v.url] ?: 0) + 1
+            val normalizedUrl = OmniboxEngine.canonicalizeUrlSchemeAndHost(v.url)
+            visitCountsInWindow[normalizedUrl] = (visitCountsInWindow[normalizedUrl] ?: 0) + 1
         }
 
         val distinctUrls = visitCountsInWindow.keys.toList()
@@ -1400,14 +1405,15 @@ class MozillaSyncCoordinator(
 
         val deduped = linkedMapOf<String, HistoryEntity>()
         for (v in httpVisits) {
-            val prev = deduped[v.url] ?: existing[v.url]
+            val normalizedUrl = OmniboxEngine.canonicalizeUrlSchemeAndHost(v.url)
+            val prev = deduped[normalizedUrl] ?: existing[normalizedUrl]
             val resolvedTitle = v.title?.takeIf { it.isNotBlank() }
                 ?: prev?.title
-                ?: OmniboxEngine.extractHost(v.url)
+                ?: OmniboxEngine.extractHost(normalizedUrl)
             val visitTime = maxOf(v.visitTime, prev?.lastVisitedAt ?: 0L)
-            val remoteWindowCount = visitCountsInWindow[v.url] ?: 1
-            deduped[v.url] = HistoryEntity(
-                url = v.url,
+            val remoteWindowCount = visitCountsInWindow[normalizedUrl] ?: 1
+            deduped[normalizedUrl] = HistoryEntity(
+                url = normalizedUrl,
                 title = resolvedTitle,
                 visitCount = maxOf(remoteWindowCount, prev?.visitCount ?: 0).coerceAtLeast(1),
                 lastVisitedAt = visitTime

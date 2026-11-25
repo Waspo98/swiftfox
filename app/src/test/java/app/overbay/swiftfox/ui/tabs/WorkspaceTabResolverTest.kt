@@ -273,7 +273,6 @@ class WorkspaceTabResolverTest {
             canGoForward = true,
             isPlayingMedia = true,
             isPlayingVideo = true,
-            blockedCount = 14,
             isReaderAvailable = true,
             darkReaderSkippedNative = true,
             loadError = MainFrameLoadError(
@@ -293,7 +292,6 @@ class WorkspaceTabResolverTest {
         assertFalse(unloaded.canGoForward)
         assertFalse(unloaded.isPlayingMedia)
         assertFalse(unloaded.isPlayingVideo)
-        assertEquals(0, unloaded.blockedCount)
         assertFalse(unloaded.isReaderAvailable)
         assertFalse(unloaded.darkReaderSkippedNative)
         assertNull(unloaded.loadError)

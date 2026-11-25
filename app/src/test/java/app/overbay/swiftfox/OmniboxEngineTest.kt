@@ -529,16 +529,30 @@ class OmniboxEngineTest {
     }
 
     @Test
-    fun hostPrefixExtractionEscapesSqlLikeWildcards() {
-        assertEquals("the\\_verge\\%1", OmniboxEngine.extractHostPrefixForDbQuery("https://www.the_verge%1"))
+    fun hostPrefixExtractionAndUrlCanonicalizationNormalizeSchemeAndHostOnly() {
         assertEquals("the_verge%1", OmniboxEngine.extractRawHostPrefixForDbQuery("https://www.the_verge%1"))
         assertEquals("the_verge%1/path", OmniboxEngine.extractRawHostPrefixForDbQuery("https://www.the_verge%1/path"))
-        assertEquals("youtube", OmniboxEngine.extractHostPrefixForDbQuery("m.youtube"))
         assertEquals("youtube", OmniboxEngine.extractRawHostPrefixForDbQuery("m.youtube"))
-        assertEquals("theverge", OmniboxEngine.extractHostPrefixForDbQuery("theverge"))
-        assertNull(OmniboxEngine.extractHostPrefixForDbQuery("!g theverge"))
+        assertEquals("theverge", OmniboxEngine.extractRawHostPrefixForDbQuery("theverge"))
         assertNull(OmniboxEngine.extractRawHostPrefixForDbQuery("!g theverge"))
-        assertNull(OmniboxEngine.extractHostPrefixForDbQuery("the verge"))
+        assertNull(OmniboxEngine.extractRawHostPrefixForDbQuery("the verge"))
+
+        assertEquals(
+            "https://github.com/Waspo98/Swiftfox?Tab=Code#Top",
+            OmniboxEngine.canonicalizeUrlSchemeAndHost("HTTPS://GitHub.COM/Waspo98/Swiftfox?Tab=Code#Top")
+        )
+        assertEquals(
+            "https://User:Pass@example.com:8443/CasePath",
+            OmniboxEngine.canonicalizeUrlSchemeAndHost("https://User:Pass@Example.COM:8443/CasePath")
+        )
+        assertEquals(
+            "http://[::1]:8080/Dashboard",
+            OmniboxEngine.canonicalizeUrlSchemeAndHost("HTTP://[::1]:8080/Dashboard")
+        )
+        assertEquals(
+            "about:blank",
+            OmniboxEngine.canonicalizeUrlSchemeAndHost("about:blank")
+        )
     }
 
     @Test

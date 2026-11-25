@@ -33,7 +33,7 @@
 flowchart TD
     UI["Jetpack Compose UI (Material 3 · Foldable Adaptive Shell)"]
     WM["Jetpack WindowManager (Folded vs. Unfolded Profiles)"]
-    VM["Browser State & Tab/Space Manager (ViewModels + Room DB v5)"]
+    VM["Browser State & Tab/Space Manager (ViewModels + Room DB v6)"]
 
     subgraph Engine["Engine Layer (Android WebView + androidx.webkit)"]
         WV["Multi-Tab WebView Pool (ProfileStore Isolation)"]
@@ -61,7 +61,7 @@ flowchart TD
 1. **Engine Abstraction Boundary:** Wrap `WebView` interactions inside `engine/` (`BrowserSession`, `TabSessionPool`, `ScriptInjector`) so Compose UI never couples directly to raw Android `WebView` internals.
 2. **Configuration-Change Survival (Critical for Foldables):** Declare `android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|density|keyboard|keyboardHidden|uiMode"` on `MainActivity` so folding/unfolding **never destroys live `WebView` instances** or drops page/video state. Let Compose react to `WindowInfoTracker` / `LocalConfiguration` smoothly in place.
 3. **Single-Process Multi-Tab Pool with Smart Suspension:** Keep up to 8 recently visited `WebView` tabs warm in `TabSessionPool`; hibernate older background tabs via `WebView.saveState(Bundle)` + screenshot thumbnail so heavy tab counts stay lightweight on RAM.
-4. **Decoupled Local-First Storage:** Room DB v5 (`exportSchema = true`, `app/schemas/`) holds Spaces, Essentials, Tabs, Bookmarks, History, Site Overrides, Downloads, Filter Lists, Zapped Rules, Userscripts, Userscript Storage, Synced Remote Tabs, and Zen Pinned Items. Mozilla Sync reconciles asynchronously without blocking browser startup.
+4. **Decoupled Local-First Storage:** Room DB v6 (`exportSchema = true`, `app/schemas/`) holds Spaces, Essentials, Tabs, Bookmarks, History, Site Overrides, Downloads, Filter Lists, Zapped Rules, Userscripts, Userscript Storage, Synced Remote Tabs, and Zen Pinned Items. Mozilla Sync reconciles asynchronously without blocking browser startup.
 
 ---
 
@@ -70,7 +70,7 @@ flowchart TD
 ```text
 Swiftfox/
 ├── app/
-│   ├── schemas/                              # Exported Room schema JSONs (v3-v5)
+│   ├── schemas/                              # Exported Room schema JSONs (v3-v6)
 │   ├── src/
 │   │   ├── main/
 │   │   │   ├── java/app/overbay/swiftfox/
@@ -97,7 +97,7 @@ Swiftfox/
 │   │   │   │   │   ├── userscripts/              # .user.js parser, @match matcher, GM_* OkHttp/storage bridge
 │   │   │   │   │   └── zapper/                   # Element Zapper state controller & selector logic
 │   │   │   │   ├── data/
-│   │   │   │   │   ├── db/                       # Room v5 entities, DAOs, MIGRATION_1_2..MIGRATION_4_5
+│   │   │   │   │   ├── db/                       # Room v6 entities, DAOs, MIGRATION_1_2..MIGRATION_5_6
 │   │   │   │   │   └── prefs/                    # DataStore preferences & posture profiles
 │   │   │   │   └── ui/
 │   │   │   │       ├── browser/                  # BrowserScreen, BrowserChromeViewport, BrowserViewModel, OmniboxOverlay, StartPage, WebPullToRefresh, ScrollCollapse & TabStripTransition

@@ -455,4 +455,38 @@ class ReaderHtmlParserTest {
             images.map { it.url }
         )
     }
+
+    @Test
+    fun concurrentParsesIsolateBaseUrlsAcrossThreads() {
+        val threadCount = 8
+        val iterationsPerThread = 25
+        val errors = java.util.concurrent.CopyOnWriteArrayList<Throwable>()
+        val startLatch = java.util.concurrent.CountDownLatch(1)
+        val threads = (0 until threadCount).map { idx ->
+            Thread {
+                try {
+                    startLatch.await()
+                    val origin = "https://site$idx.example.com"
+                    val html = """
+                        <p>Visit <a href="/articles/post-$idx">Post $idx</a></p>
+                        <figure><img src="/img/hero-$idx.png" alt="Hero $idx" /></figure>
+                    """.trimIndent()
+                    repeat(iterationsPerThread) {
+                        val blocks = ReaderHtmlParser.parse(html, baseUrl = "$origin/news/index.html")
+                        val p = blocks.filterIsInstance<ReaderBlock.Paragraph>().single()
+                        val href = p.runs.firstNotNullOf { it.linkUrl }
+                        val img = blocks.filterIsInstance<ReaderBlock.Image>().single().url
+                        assertEquals("$origin/articles/post-$idx", href)
+                        assertEquals("$origin/img/hero-$idx.png", img)
+                    }
+                } catch (t: Throwable) {
+                    errors += t
+                }
+            }
+        }
+        threads.forEach { it.start() }
+        startLatch.countDown()
+        threads.forEach { it.join(10_000) }
+        assertTrue("Unexpected thread errors: $errors", errors.isEmpty())
+    }
 }

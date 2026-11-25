@@ -1,6 +1,7 @@
 package app.overbay.swiftfox.features.sync
 
 import app.overbay.swiftfox.data.db.BookmarkEntity
+import app.overbay.swiftfox.features.omnibox.OmniboxEngine
 import java.util.Locale
 
 data class ImportedBookmark(
@@ -87,8 +88,9 @@ object ChromeBookmarkHtmlCodec {
 
                     val hrefMatch = hrefAttrRegex.find(attrs) ?: continue
                     val rawHref = hrefMatch.groupValues.drop(1).firstOrNull { it.isNotEmpty() }.orEmpty()
-                    val url = unescapeHtml(rawHref).trim()
-                    if (!isSupportedUrl(url)) continue
+                    val decodedHref = unescapeHtml(rawHref).trim()
+                    if (!isSupportedUrl(decodedHref)) continue
+                    val url = OmniboxEngine.canonicalizeUrlSchemeAndHost(decodedHref)
 
                     val addDateRaw = addDateAttrRegex.find(attrs)
                         ?.groupValues

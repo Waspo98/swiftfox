@@ -1113,6 +1113,45 @@ class ToolbarScrollCollapseControllerTest {
     }
 
     @Test
+    fun flushSnapshotForHostCoalescesPerFrameAndClearsOnCancelOrHostSwap() {
+        val bridge = ToolbarCollapseBridge(
+            controller = ToolbarScrollCollapseController(topRevealThresholdPx = 20),
+            sideRailTravelPx = 150f,
+            minExtraOverflowPx = 120,
+            minScrollableFloorPx = 400
+        )
+        val hostA = FakeFrameScheduler()
+        val hostB = FakeFrameScheduler()
+
+        // First flush on hostA queues a single VSync reset callback; second on same frame coalesces
+        assertTrue(bridge.flushSnapshotForHost(hostA))
+        assertTrue(bridge.snapshotFlushQueuedOnFrame)
+        assertEquals(1, hostA.posted.size)
+        assertFalse(bridge.flushSnapshotForHost(hostA))
+        assertEquals(1, hostA.posted.size)
+
+        // Running the scheduled frame callback clears the latch so the next frame flushes again
+        hostA.runPendingFrames()
+        assertFalse(bridge.snapshotFlushQueuedOnFrame)
+        assertTrue(bridge.flushSnapshotForHost(hostA))
+        assertEquals(1, hostA.posted.size)
+
+        // Swapping to hostB while hostA's reset callback is still pending cancels hostA's callback
+        // and immediately flushes on hostB (never permanently latching if hostA is detached)
+        assertTrue(bridge.flushSnapshotForHost(hostB))
+        assertEquals(1, hostA.cancelled.size)
+        assertTrue(hostA.posted.isEmpty())
+        assertEquals(1, hostB.posted.size)
+        assertTrue(bridge.snapshotFlushQueuedOnFrame)
+
+        // cancelFlingWork() (invoked on attachActiveContainer/detachContainer) cancels hostB and clears latch
+        bridge.cancelFlingWork()
+        assertFalse(bridge.snapshotFlushQueuedOnFrame)
+        assertEquals(1, hostB.cancelled.size)
+        assertTrue(hostB.posted.isEmpty())
+    }
+
+    @Test
     fun touchScrollGateScriptAttachesWindowBubbleListenersAndChecksBodyAndRootOverscroll() {
         val script = ScriptInjector.buildTouchScrollGateScript()
         assertTrue(script.contains("if (window !== window.top) return;"))

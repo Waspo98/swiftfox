@@ -56,9 +56,6 @@ class AdblockEngine private constructor(
     @Volatile
     private var activeCacheFingerprint: String? = null
 
-    val hasActiveMatcher: Boolean
-        get() = activeMatcher != null
-
     private val _status = MutableStateFlow(initialStatus)
     val status: StateFlow<AdblockEngineStatus> = _status.asStateFlow()
 
@@ -220,26 +217,6 @@ class AdblockEngine private constructor(
         if (host.isBlank() || OmniboxEngine.isLocalHostOrLan(host)) return CosmeticPayload()
 
         return matcher.cosmeticResources(url)
-    }
-
-    fun genericCosmeticCss(
-        url: String,
-        classes: List<String>,
-        ids: List<String>,
-        exceptions: Set<String>,
-        globalEnabled: Boolean,
-        cosmeticEnabled: Boolean,
-        siteDisabled: Boolean
-    ): String {
-        if (!globalEnabled || !cosmeticEnabled || siteDisabled) return ""
-        val matcher = activeMatcher ?: return ""
-        if (!isHttpOrHttps(url)) return ""
-        if (classes.isEmpty() && ids.isEmpty()) return ""
-
-        val host = OmniboxEngine.extractHost(url).trim('[', ']')
-        if (host.isBlank() || OmniboxEngine.isLocalHostOrLan(host)) return ""
-
-        return matcher.hiddenClassIdCss(classes, ids, exceptions)
     }
 
     fun genericCosmeticCssFromJson(

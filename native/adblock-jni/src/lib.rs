@@ -4,6 +4,7 @@ use std::fs;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 use std::ptr;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use adblock::lists::{FilterSet, ParseOptions};
 use adblock::request::Request;
@@ -11,10 +12,12 @@ use adblock::resources::{MimeType, PermissionMask, Resource, ResourceType};
 use adblock::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine as _;
-use jni::objects::{JByteArray, JClass, JObjectArray, JString};
-use jni::sys::{jboolean, jbyteArray, jint, jlong, jstring, JNI_FALSE, JNI_TRUE};
+use jni::objects::{JClass, JObjectArray, JString};
+use jni::sys::{jboolean, jint, jlong, jstring, JNI_FALSE, JNI_TRUE};
 use jni::JNIEnv;
 use serde::Serialize;
+
+static TMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 const _: fn() = || {
     fn assert_send_sync<T: Send + Sync>() {}
@@ -237,6 +240,7 @@ fn default_scriptlet_resources() -> Vec<Resource> {
             &["nosiif.js", "prevent-setInterval.js", "ubo-nosiif.js", "nosiif"],
             r#"function noSetIntervalIf(needle, delayArg) {
     var orig = window.setInterval;
+    var origTimeout = window.setTimeout;
     var nStr = needle ? String(needle) : '';
     var dNum = (delayArg !== undefined && delayArg !== '') ? parseInt(delayArg, 10) : NaN;
     window.setInterval = function(cb, delay) {
@@ -244,7 +248,7 @@ fn default_scriptlet_resources() -> Vec<Resource> {
         try { s = typeof cb === 'function' ? Function.prototype.toString.call(cb) : String(cb); } catch (_) {}
         var nMatch = !nStr || s.indexOf(nStr) !== -1;
         var dMatch = isNaN(dNum) || delay === dNum;
-        if (nMatch && dMatch) return orig.call(window, function() {}, delay);
+        if (nMatch && dMatch) return origTimeout.call(window, function() {}, 1);
         return orig.apply(this, arguments);
     };
 }"#,
@@ -477,33 +481,6 @@ pub extern "system" fn Java_app_overbay_swiftfox_features_adblock_NativeAdblockB
 }
 
 #[no_mangle]
-pub extern "system" fn Java_app_overbay_swiftfox_features_adblock_NativeAdblockBridge_nativeDeserialize(
-    env: JNIEnv,
-    _class: JClass,
-    data: JByteArray,
-) -> jlong {
-    catch_unwind(AssertUnwindSafe(|| {
-        let bytes = match env.convert_byte_array(&data) {
-            Ok(b) => b,
-            Err(_) => return 0,
-        };
-        if bytes.is_empty() {
-            return 0;
-        }
-        let mut engine = Engine::new(true);
-        match engine.deserialize(&bytes) {
-            Ok(()) => {
-                drop(bytes);
-                attach_default_resources(&mut engine);
-                Box::into_raw(Box::new(engine)) as jlong
-            }
-            Err(_) => 0,
-        }
-    }))
-    .unwrap_or(0)
-}
-
-#[no_mangle]
 pub extern "system" fn Java_app_overbay_swiftfox_features_adblock_NativeAdblockBridge_nativeDeserializeFromFile(
     mut env: JNIEnv,
     _class: JClass,
@@ -532,29 +509,6 @@ pub extern "system" fn Java_app_overbay_swiftfox_features_adblock_NativeAdblockB
 }
 
 #[no_mangle]
-pub extern "system" fn Java_app_overbay_swiftfox_features_adblock_NativeAdblockBridge_nativeSerialize(
-    env: JNIEnv,
-    _class: JClass,
-    handle: jlong,
-) -> jbyteArray {
-    if handle == 0 {
-        return ptr::null_mut();
-    }
-    catch_unwind(AssertUnwindSafe(|| {
-        let engine = unsafe { &*(handle as *const Engine) };
-        let bytes = match engine.serialize() {
-            Ok(b) => b,
-            Err(_) => return ptr::null_mut(),
-        };
-        match env.byte_array_from_slice(&bytes) {
-            Ok(arr) => arr.into_raw(),
-            Err(_) => ptr::null_mut(),
-        }
-    }))
-    .unwrap_or(ptr::null_mut())
-}
-
-#[no_mangle]
 pub extern "system" fn Java_app_overbay_swiftfox_features_adblock_NativeAdblockBridge_nativeSerializeToFile(
     mut env: JNIEnv,
     _class: JClass,
@@ -575,7 +529,8 @@ pub extern "system" fn Java_app_overbay_swiftfox_features_adblock_NativeAdblockB
             _ => return JNI_FALSE,
         };
         let target = Path::new(&target_path);
-        let tmp_path = format!("{}.tmp", target_path);
+        let seq = TMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let tmp_path = format!("{}.{}.{}.tmp", target_path, std::process::id(), seq);
         if fs::write(&tmp_path, &bytes).is_err() {
             let _ = fs::remove_file(&tmp_path);
             return JNI_FALSE;
@@ -588,50 +543,6 @@ pub extern "system" fn Java_app_overbay_swiftfox_features_adblock_NativeAdblockB
             return JNI_FALSE;
         }
         JNI_TRUE
-    }))
-    .unwrap_or(JNI_FALSE)
-}
-
-#[no_mangle]
-pub extern "system" fn Java_app_overbay_swiftfox_features_adblock_NativeAdblockBridge_nativeCheckNetworkRequest(
-    mut env: JNIEnv,
-    _class: JClass,
-    handle: jlong,
-    url: JString,
-    source_url: JString,
-    request_type: JString,
-) -> jboolean {
-    if handle == 0 {
-        return JNI_FALSE;
-    }
-    catch_unwind(AssertUnwindSafe(|| {
-        let url_jstr = match env.get_string(&url) {
-            Ok(s) => s,
-            Err(_) => return JNI_FALSE,
-        };
-        let source_jstr = match env.get_string(&source_url) {
-            Ok(s) => s,
-            Err(_) => return JNI_FALSE,
-        };
-        let req_type_jstr = match env.get_string(&request_type) {
-            Ok(s) => s,
-            Err(_) => return JNI_FALSE,
-        };
-        let url_cow: Cow<str> = (&url_jstr).into();
-        let source_cow: Cow<str> = (&source_jstr).into();
-        let req_type_cow: Cow<str> = (&req_type_jstr).into();
-
-        let request = match Request::new(&url_cow, &source_cow, &req_type_cow) {
-            Ok(r) => r,
-            Err(_) => return JNI_FALSE,
-        };
-
-        let engine = unsafe { &*(handle as *const Engine) };
-        if engine.check_network_request(&request).matched {
-            JNI_TRUE
-        } else {
-            JNI_FALSE
-        }
     }))
     .unwrap_or(JNI_FALSE)
 }

@@ -326,7 +326,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     canGoForward = canGoForward,
                     isPlayingMedia = if (isSameUrl) tab.isPlayingMedia else false,
                     isPlayingVideo = if (isSameUrl) tab.isPlayingVideo else false,
-                    blockedCount = 0,
                     isReaderAvailable = false,
                     darkReaderSkippedNative = false,
                     loadError = null
@@ -943,15 +942,17 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     contentDisposition = contentDisposition,
                     mimeType = mimeType,
                     profileName = profileName,
-                    isPrivate = isPrivate
+                    isPrivate = isPrivate,
+                    onIsolatedResult = { isolated ->
+                        isolated.onSuccess { done ->
+                            showSnackbar("Saved ${done.fileName} to Downloads")
+                        }.onFailure { err ->
+                            showSnackbar("Download failed: ${err.message ?: "unknown error"}")
+                        }
+                    }
                 )
                 result.onSuccess { rec ->
-                    val label = if (isPrivate) {
-                        "Saved ${rec.fileName} to Downloads"
-                    } else {
-                        "Downloading ${rec.fileName}"
-                    }
-                    showSnackbar(label)
+                    showSnackbar("Downloading ${rec.fileName}")
                 }.onFailure { err ->
                     showSnackbar("Download failed: ${err.message ?: "unknown error"}")
                 }
@@ -2847,7 +2848,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 progress = initialProgress,
                 isPlayingMedia = false,
                 isPlayingVideo = false,
-                blockedCount = 0,
                 isReaderAvailable = false,
                 darkReaderSkippedNative = false
             )
@@ -3682,7 +3682,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 progress = initialProgress,
                 isPlayingMedia = false,
                 isPlayingVideo = false,
-                blockedCount = 0,
                 isReaderAvailable = false,
                 darkReaderSkippedNative = false,
                 loadError = null
@@ -4576,7 +4575,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     suspend fun loadUserscriptCode(id: String): String? = withContext(Dispatchers.IO) {
-        db.userscriptDao().getById(id)?.code
+        app.userscriptRepository.getScriptById(id)?.code
     }
 
     fun deleteUserscript(id: String) {
@@ -4700,10 +4699,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun toggleBookmarkForActiveTab() {
         val active = _uiState.value.activeTab ?: return
         if (active.isStartPage) return
+        val canonicalUrl = OmniboxEngine.canonicalizeUrlSchemeAndHost(active.url)
         viewModelScope.launch {
-            val existingAll = db.bookmarkDao().findAllByUrl(active.url)
+            val existingAll = (db.bookmarkDao().findAllByUrl(canonicalUrl) +
+                if (canonicalUrl != active.url) db.bookmarkDao().findAllByUrl(active.url) else emptyList())
+                .distinctBy { it.id }
             if (existingAll.isNotEmpty()) {
-                db.bookmarkDao().deleteByUrl(active.url)
+                db.bookmarkDao().deleteByIds(existingAll.map { it.id })
                 existingAll.forEach { entity ->
                     app.mozillaSyncCoordinator.mirrorBookmarkDeleted(entity)
                 }
@@ -4712,7 +4714,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 val entity = BookmarkEntity(
                     id = UUID.randomUUID().toString(),
                     title = active.title.ifBlank { active.displayHost },
-                    url = active.url
+                    url = canonicalUrl
                 )
                 db.bookmarkDao().upsert(entity)
                 app.mozillaSyncCoordinator.mirrorBookmarkAdded(entity)
@@ -5613,40 +5615,55 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun recordHistory(url: String, title: String) {
-        if (url == OmniboxEngine.NEW_TAB_URL || (!url.startsWith("http://") && !url.startsWith("https://"))) {
+        if (url == OmniboxEngine.NEW_TAB_URL ||
+            (!url.startsWith("http://", ignoreCase = true) && !url.startsWith("https://", ignoreCase = true))
+        ) {
             return
         }
+        val canonicalUrl = OmniboxEngine.canonicalizeUrlSchemeAndHost(url)
         viewModelScope.launch {
-            val existing = db.historyDao().findByUrl(url)
+            val existing = db.historyDao().findByUrl(canonicalUrl)
+                ?: if (canonicalUrl != url) db.historyDao().findByUrl(url) else null
             val resolvedTitle = title
                 .trim()
                 .takeUnless { it.isEmpty() || it.equals("New Tab", ignoreCase = true) }
-                ?: OmniboxEngine.extractHost(url).ifBlank { url }
+                ?: OmniboxEngine.extractHost(canonicalUrl).ifBlank { canonicalUrl }
+            if (existing != null && existing.url != canonicalUrl) {
+                db.historyDao().deleteByUrl(existing.url)
+            }
             db.historyDao().upsert(
                 HistoryEntity(
-                    url = url,
+                    url = canonicalUrl,
                     title = resolvedTitle,
                     visitCount = (existing?.visitCount ?: 0) + 1,
                     lastVisitedAt = System.currentTimeMillis()
                 )
             )
-            app.mozillaSyncCoordinator.mirrorHistoryVisit(url, resolvedTitle)
+            app.mozillaSyncCoordinator.mirrorHistoryVisit(canonicalUrl, resolvedTitle)
         }
     }
 
     private fun maybeUpdateRecordedHistoryTitle(tabId: String, url: String, title: String) {
         val clean = title.trim()
         if (clean.isEmpty()) return
-        if (url == OmniboxEngine.NEW_TAB_URL || (!url.startsWith("http://") && !url.startsWith("https://"))) {
+        if (url == OmniboxEngine.NEW_TAB_URL ||
+            (!url.startsWith("http://", ignoreCase = true) && !url.startsWith("https://", ignoreCase = true))
+        ) {
             return
         }
         if (lastRecordedHistoryTitleByTab[tabId] == clean) return
         lastRecordedHistoryTitleByTab[tabId] = clean
+        val canonicalUrl = OmniboxEngine.canonicalizeUrlSchemeAndHost(url)
         viewModelScope.launch {
-            val existing = db.historyDao().findByUrl(url) ?: return@launch
-            if (existing.title != clean) {
-                db.historyDao().upsert(existing.copy(title = clean))
-                app.mozillaSyncCoordinator.mirrorHistoryTitleUpdated(url, clean)
+            val existing = db.historyDao().findByUrl(canonicalUrl)
+                ?: (if (canonicalUrl != url) db.historyDao().findByUrl(url) else null)
+                ?: return@launch
+            if (existing.title != clean || existing.url != canonicalUrl) {
+                if (existing.url != canonicalUrl) {
+                    db.historyDao().deleteByUrl(existing.url)
+                }
+                db.historyDao().upsert(existing.copy(url = canonicalUrl, title = clean))
+                app.mozillaSyncCoordinator.mirrorHistoryTitleUpdated(canonicalUrl, clean)
             }
         }
     }

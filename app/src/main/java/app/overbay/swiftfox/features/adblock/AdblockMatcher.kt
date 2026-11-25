@@ -52,7 +52,6 @@ interface AdblockMatcher {
         return hiddenClassIdCss(classes, ids, exceptions)
     }
 
-    fun serialize(): ByteArray?
     fun serializeToFile(path: String): Boolean = false
     fun close()
 }
@@ -128,12 +127,6 @@ class NativeAdblockMatcher(
             ).orEmpty()
         }
     }
-
-    override fun serialize(): ByteArray? =
-        lock.read {
-            if (handle == 0L || !NativeAdblockBridge.isLoaded) return null
-            NativeAdblockBridge.nativeSerialize(handle)
-        }
 
     override fun serializeToFile(path: String): Boolean =
         lock.read {
@@ -531,8 +524,6 @@ class FallbackKotlinAdblockMatcher(rulesText: String) : AdblockMatcher {
         if (included.isEmpty()) return true
         return included.any { host == it || host.endsWith(".$it") }
     }
-
-    override fun serialize(): ByteArray? = null
 
     override fun close() = Unit
 

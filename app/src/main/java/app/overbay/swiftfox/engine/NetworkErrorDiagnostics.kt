@@ -1,13 +1,15 @@
 package app.overbay.swiftfox.engine
 
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.coroutineContext
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.net.InetAddress
-import java.net.URI
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 
@@ -36,10 +38,6 @@ object NetworkErrorDiagnostics {
         val fromHttpUrl = trimmed.toHttpUrlOrNull()?.host
         if (!fromHttpUrl.isNullOrBlank()) {
             return fromHttpUrl.trim().removePrefix("[").removeSuffix("]").lowercase(Locale.ROOT)
-        }
-        val fromUri = runCatching { URI(trimmed).host }.getOrNull()
-        if (!fromUri.isNullOrBlank()) {
-            return fromUri.trim().removePrefix("[").removeSuffix("]").lowercase(Locale.ROOT)
         }
         val authority = rawAuthorityRegex.find(trimmed)?.groupValues?.getOrNull(1) ?: return ""
         val hostPort = authority.substringAfterLast('@').trim()
@@ -146,8 +144,9 @@ object NetworkErrorDiagnostics {
                 description.contains("ERR_CONNECTION_CLOSED", ignoreCase = true))
 
         val probeSummary = if (shouldProbe) {
-            runCatching {
+            try {
                 val probeClient = baseClient.newBuilder()
+                    .callTimeout(4, TimeUnit.SECONDS)
                     .connectTimeout(4, TimeUnit.SECONDS)
                     .readTimeout(4, TimeUnit.SECONDS)
                     .followRedirects(false)
@@ -156,10 +155,18 @@ object NetworkErrorDiagnostics {
                     .url(probeUrl)
                     .head()
                     .build()
-                probeClient.newCall(req).execute().use { resp ->
-                    "HTTP ${resp.code} (reachable outside WebView)"
+                val call = probeClient.newCall(req)
+                val cancelHandle = coroutineContext[Job]?.invokeOnCompletion { call.cancel() }
+                try {
+                    call.execute().use { resp ->
+                        "HTTP ${resp.code} (reachable outside WebView)"
+                    }
+                } finally {
+                    cancelHandle?.dispose()
                 }
-            }.getOrElse { err ->
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (err: Throwable) {
                 err.javaClass.simpleName + (err.message?.take(64)?.let { ": $it" } ?: "")
             }
         } else {

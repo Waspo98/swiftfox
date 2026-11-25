@@ -132,12 +132,25 @@ object ScriptInjector {
         """.trimIndent()
     }
 
-    fun buildCosmeticScriptletScript(injectedScript: String): String {
+    fun buildCosmeticScriptletScript(
+        injectedScript: String,
+        guardKey: String = "__swiftfoxCosmeticScriptRan"
+    ): String {
         if (injectedScript.isBlank()) return ""
+        val guardLit = json.encodeToString(guardKey)
         return """
             (function() {
-                if (window.__swiftfoxCosmeticScriptRan) return;
-                window.__swiftfoxCosmeticScriptRan = true;
+                if (Object.prototype.hasOwnProperty.call(window, $guardLit)) return;
+                try {
+                    Object.defineProperty(window, $guardLit, {
+                        value: true,
+                        writable: false,
+                        configurable: false,
+                        enumerable: false
+                    });
+                } catch (_d) {
+                    window[$guardLit] = true;
+                }
                 try {
                     $injectedScript
                 } catch (_e) {}
@@ -147,6 +160,7 @@ object ScriptInjector {
 
     fun buildGenericCosmeticScanScript(bridgeToken: String): String {
         val tokenLit = json.encodeToString(bridgeToken)
+        val schedKeyLit = json.encodeToString("__sfCosmScan_${bridgeToken.take(12)}")
         return """
             (function() {
                 if (window !== window.top) return;
@@ -154,16 +168,19 @@ object ScriptInjector {
                 var token = $tokenLit;
                 var ch = window.SwiftfoxNativeChannel;
                 if (!token || !ch || typeof ch.postMessage !== 'function') return;
+                var postMsg = ch.postMessage.bind(ch);
                 var seenClasses = Object.create(null);
                 var seenIds = Object.create(null);
                 var maxTokens = 1500;
                 var classCount = 0;
                 var idCount = 0;
                 function scanAndReport() {
+                    if (idCount >= maxTokens && classCount >= maxTokens) return;
                     var newClasses = [];
                     var newIds = [];
                     var els = document.querySelectorAll('[class],[id]');
                     for (var i = 0; i < els.length; i++) {
+                        if (idCount >= maxTokens && classCount >= maxTokens) break;
                         var el = els[i];
                         var id = el.id;
                         if (id && id.length <= 128 && !seenIds[id] && idCount < maxTokens) {
@@ -172,20 +189,21 @@ object ScriptInjector {
                             newIds.push(id);
                         }
                         var cl = el.classList;
-                        if (cl && cl.length > 0) {
+                        if (cl && cl.length > 0 && classCount < maxTokens) {
                             for (var j = 0; j < cl.length; j++) {
                                 var cls = cl[j];
                                 if (cls && cls.length <= 128 && !seenClasses[cls] && classCount < maxTokens) {
                                     seenClasses[cls] = true;
                                     classCount++;
                                     newClasses.push(cls);
+                                    if (classCount >= maxTokens) break;
                                 }
                             }
                         }
                     }
                     if (newClasses.length > 0 || newIds.length > 0) {
                         try {
-                            ch.postMessage(JSON.stringify({
+                            postMsg(JSON.stringify({
                                 channel: 'cosmetic',
                                 token: token,
                                 classesJson: JSON.stringify(newClasses),
@@ -195,8 +213,17 @@ object ScriptInjector {
                     }
                 }
                 scanAndReport();
-                if (!window.__swiftfoxCosmeticScanScheduled) {
-                    window.__swiftfoxCosmeticScanScheduled = true;
+                if (!Object.prototype.hasOwnProperty.call(window, $schedKeyLit)) {
+                    try {
+                        Object.defineProperty(window, $schedKeyLit, {
+                            value: true,
+                            writable: false,
+                            configurable: false,
+                            enumerable: false
+                        });
+                    } catch (_d) {
+                        window[$schedKeyLit] = true;
+                    }
                     setTimeout(scanAndReport, 1200);
                 }
             })();
@@ -392,12 +419,26 @@ object ScriptInjector {
 
             var touching = false;
             var blockedSentForTouch = false;
-
-            function postChannel(payload) {
+            var boundPostMessage = (function() {
                 try {
                     var ch = window.SwiftfoxNativeChannel;
                     if (ch && typeof ch.postMessage === 'function') {
-                        ch.postMessage(JSON.stringify(payload));
+                        return ch.postMessage.bind(ch);
+                    }
+                } catch (_e) {}
+                return null;
+            })();
+
+            function postChannel(payload) {
+                try {
+                    if (!boundPostMessage) {
+                        var ch = window.SwiftfoxNativeChannel;
+                        if (ch && typeof ch.postMessage === 'function') {
+                            boundPostMessage = ch.postMessage.bind(ch);
+                        }
+                    }
+                    if (boundPostMessage) {
+                        boundPostMessage(JSON.stringify(payload));
                     }
                 } catch (_e) {}
             }
@@ -667,12 +708,12 @@ object ScriptInjector {
             webView.evaluateJavascript(darkReaderInjector.buildDisableScript(tokens.darkReaderKey), null)
             return
         }
-        val fullScript = darkReaderInjector.buildApplyScript(
+        val guarded = darkReaderInjector.buildApplyScript(
             state = darkState,
             bridgeToken = tokens.darkReaderToken,
-            runtimeKey = tokens.darkReaderKey
+            runtimeKey = tokens.darkReaderKey,
+            expectedOrigin = expectedOrigin
         )
-        val guarded = wrapOriginGuardedScript(expectedOrigin, fullScript)
         if (guarded.isNotEmpty()) {
             webView.evaluateJavascript(guarded, null)
         }
@@ -696,12 +737,12 @@ object ScriptInjector {
             if (isDestroyed()) return@evaluateJavascript
             if (result?.trim() == "\"ok\"") return@evaluateJavascript
             if (extractOrigin(webView.url.orEmpty()) != originAtCall) return@evaluateJavascript
-            val fullScript = darkReaderInjector.buildApplyScript(
-                darkState,
-                tokens.darkReaderToken,
-                tokens.darkReaderKey
+            val guarded = darkReaderInjector.buildApplyScript(
+                state = darkState,
+                bridgeToken = tokens.darkReaderToken,
+                runtimeKey = tokens.darkReaderKey,
+                expectedOrigin = originAtCall
             )
-            val guarded = wrapOriginGuardedScript(originAtCall, fullScript)
             if (guarded.isNotEmpty()) {
                 webView.evaluateJavascript(guarded, null)
             }
@@ -719,13 +760,18 @@ object ScriptInjector {
         isDestroyed: () -> Boolean = { false }
     ) {
         if (isDestroyed()) return
-        webView.evaluateJavascript(buildCssStyleScript("swiftfox-cosmetic", cosmetic.css), null)
-        webView.evaluateJavascript(buildCssStyleScript("swiftfox-cosmetic-generic", ""), null)
-        if (cosmetic.injectedScript.isNotBlank()) {
-            webView.evaluateJavascript(buildCosmeticScriptletScript(cosmetic.injectedScript), null)
+        if (cosmetic.css.isNotBlank()) {
+            webView.evaluateJavascript(buildCssStyleScript("swiftfox-cosmetic", cosmetic.css), null)
         }
-
-        webView.evaluateJavascript(zapperController.buildApplyZappedCssScript(zappedRules), null)
+        if (cosmetic.injectedScript.isNotBlank()) {
+            webView.evaluateJavascript(
+                buildCosmeticScriptletScript(cosmetic.injectedScript, tokens.cosmeticKey),
+                null
+            )
+        }
+        if (zappedRules.isNotEmpty()) {
+            webView.evaluateJavascript(zapperController.buildApplyZappedCssScript(zappedRules), null)
+        }
 
         if (docStartUserscripts.isNotEmpty()) {
             val shimJs = userscriptBridge.buildShimInitScript(tokens.gmToken, tokens.gmKey)
@@ -760,12 +806,17 @@ object ScriptInjector {
             webView.evaluateJavascript(buildCssStyleScript("swiftfox-cosmetic", cosmetic.css), null)
         }
         if (cosmetic.injectedScript.isNotBlank()) {
-            webView.evaluateJavascript(buildCosmeticScriptletScript(cosmetic.injectedScript), null)
+            webView.evaluateJavascript(
+                buildCosmeticScriptletScript(cosmetic.injectedScript, tokens.cosmeticKey),
+                null
+            )
         }
         if (runGenericCosmeticScan && !cosmetic.generichide) {
             webView.evaluateJavascript(buildGenericCosmeticScanScript(tokens.cosmeticToken), null)
         }
-        webView.evaluateJavascript(zapperController.buildApplyZappedCssScript(zappedRules), null)
+        if (zappedRules.isNotEmpty()) {
+            webView.evaluateJavascript(zapperController.buildApplyZappedCssScript(zappedRules), null)
+        }
 
         val hasAnyUserscripts = docEndUserscripts.isNotEmpty() || docIdleUserscripts.isNotEmpty()
         if (hasAnyUserscripts) {

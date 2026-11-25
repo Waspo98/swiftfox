@@ -4,6 +4,7 @@ import app.overbay.swiftfox.data.db.UserscriptDao
 import app.overbay.swiftfox.data.db.UserscriptEntity
 import app.overbay.swiftfox.data.db.UserscriptStorageDao
 import app.overbay.swiftfox.data.db.UserscriptStorageEntity
+import app.overbay.swiftfox.data.db.UserscriptSummary
 import app.overbay.swiftfox.features.userscripts.UserscriptBridge
 import app.overbay.swiftfox.features.userscripts.UserscriptParser
 import app.overbay.swiftfox.features.userscripts.UserscriptRepository
@@ -12,6 +13,7 @@ import app.overbay.swiftfox.features.userscripts.UserscriptUrlMatcher
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
@@ -496,6 +498,24 @@ class UserscriptEngineTest {
         assertEquals(1, matched.size)
         assertEquals("true", matched.first().second["greeted"])
 
+        // Sub-route document-start scripts are pre-registered when navigating anywhere on the same origin
+        val subRoute = repo.installFromCode(
+            code = """
+                // ==UserScript==
+                // @name Subroute Start
+                // @version 1.0
+                // @match https://www.reddit.com/r/*
+                // @run-at document-start
+                // ==/UserScript==
+                console.log('subroute');
+            """.trimIndent()
+        ).getOrThrow()
+        assertTrue(UserscriptUrlMatcher.canMatchOrigin("https://www.reddit.com/", listOf("https://www.reddit.com/r/*")))
+        assertFalse(UserscriptUrlMatcher.canMatchOrigin("https://news.ycombinator.com/", listOf("https://www.reddit.com/r/*")))
+        val originCandidates = repo.originCandidateDocumentStartScriptsFor("https://www.reddit.com/")
+        assertEquals(listOf(subRoute.id), originCandidates.map { it.first.id })
+        repo.deleteScript(subRoute.id)
+
         assertTrue(repo.matchingScriptsFor("https://example.com/home", UserscriptRunAt.DOCUMENT_END).isEmpty())
 
         repo.setEnabled(installed.id, false)
@@ -799,14 +819,43 @@ class UserscriptEngineTest {
 
         override fun observeAll(): Flow<List<UserscriptEntity>> = items
 
+        override fun observeSummaries(): Flow<List<UserscriptSummary>> = items.map { list ->
+            list.map { s ->
+                UserscriptSummary(
+                    id = s.id,
+                    name = s.name,
+                    namespace = s.namespace,
+                    version = s.version,
+                    description = s.description,
+                    sourceUrl = s.sourceUrl,
+                    matchesJson = s.matchesJson,
+                    excludesJson = s.excludesJson,
+                    runAt = s.runAt,
+                    grantsJson = s.grantsJson,
+                    enabled = s.enabled,
+                    installedAt = s.installedAt,
+                    updatedAt = s.updatedAt
+                )
+            }
+        }
+
         override suspend fun getAll(): List<UserscriptEntity> = items.value
 
         override suspend fun getEnabled(): List<UserscriptEntity> = items.value.filter { it.enabled }
 
         override suspend fun getById(id: String): UserscriptEntity? = items.value.firstOrNull { it.id == id }
 
+        override suspend fun findBySourceUrl(sourceUrl: String): UserscriptEntity? =
+            items.value.firstOrNull { it.sourceUrl == sourceUrl }
+
         override suspend fun upsert(script: UserscriptEntity) {
             items.value = items.value.filterNot { it.id == script.id } + script
+        }
+
+        override suspend fun updateEnabled(id: String, enabled: Boolean, updatedAt: Long) {
+            items.value = items.value.map { s ->
+                if (s.id == id) s.copy(enabled = enabled, updatedAt = updatedAt) else s
+            }
         }
 
         override suspend fun deleteById(id: String) {
@@ -819,6 +868,11 @@ class UserscriptEngineTest {
 
         override suspend fun getAllForScript(scriptId: String): List<UserscriptStorageEntity> =
             entries.filter { it.scriptId == scriptId }
+
+        override suspend fun getAllForScripts(scriptIds: List<String>): List<UserscriptStorageEntity> {
+            val idSet = scriptIds.toSet()
+            return entries.filter { it.scriptId in idSet }
+        }
 
         override suspend fun getValue(scriptId: String, key: String): UserscriptStorageEntity? =
             entries.firstOrNull { it.scriptId == scriptId && it.storageKey == key }

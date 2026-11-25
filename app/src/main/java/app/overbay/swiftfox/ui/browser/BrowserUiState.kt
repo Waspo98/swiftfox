@@ -20,10 +20,7 @@ import app.overbay.swiftfox.engine.HttpsUpgradeErrorPrompt
 import app.overbay.swiftfox.engine.SitePermissionPrompt
 import app.overbay.swiftfox.features.adblock.AdblockEngineStatus
 import app.overbay.swiftfox.features.foldable.FoldableWindowState
-import app.overbay.swiftfox.features.omnibox.InlineUrlAutocomplete
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
-import app.overbay.swiftfox.features.omnibox.OmniboxSearchScope
-import app.overbay.swiftfox.features.omnibox.OmniboxSuggestion
 import app.overbay.swiftfox.features.reader.ReaderArticle
 import app.overbay.swiftfox.features.sync.RemoteDeviceTabsGroup
 import app.overbay.swiftfox.features.sync.SyncStatusSnapshot
@@ -99,17 +96,14 @@ data class BrowserTabUi(
     val isBoundWorkspaceTab: Boolean
         get() = essentialId != null || zenPinnedId != null
 
-    val isStartPage: Boolean
-        get() = !isPopupWindow && (url.isBlank() || url == OmniboxEngine.NEW_TAB_URL)
+    val isStartPage: Boolean = !isPopupWindow && (url.isBlank() || url == OmniboxEngine.NEW_TAB_URL)
 
-    val displayHost: String
-        get() = if (isStartPage) "" else OmniboxEngine.extractHost(url).ifBlank { url }
+    val displayHost: String = if (isStartPage) "" else OmniboxEngine.extractHost(url).ifBlank { url }
 
     val displayTitle: String
         get() = customTitle?.takeIf { it.isNotBlank() } ?: title.ifBlank { "New Tab" }
 
-    val isSecureHttps: Boolean
-        get() = url.startsWith("https://", ignoreCase = true)
+    val isSecureHttps: Boolean = url.startsWith("https://", ignoreCase = true)
 }
 
 data class FindInPageState(
@@ -132,18 +126,13 @@ data class BrowserUiState(
     val isFoldedSidebarOpen: Boolean = false,
     val isUnfoldedRailExpanded: Boolean = true,
     val isOmniboxFocused: Boolean = false,
-    val omniboxQuery: String = "",
-    val omniboxSearchScope: OmniboxSearchScope? = null,
-    val omniboxSuggestions: List<OmniboxSuggestion> = emptyList(),
-    val omniboxSuggestionsQuery: String = "",
-    val omniboxSuggestionsScope: OmniboxSearchScope? = null,
-    val omniboxInlineAutocomplete: InlineUrlAutocomplete? = null,
     val isSiteRulesOpen: Boolean = false,
     val activeOverlay: BrowserOverlay = BrowserOverlay.NONE,
     val activeSettingsCategory: SettingsCategory? = null,
     val overlayBackStack: List<BrowserOverlay> = emptyList(),
     val findInPage: FindInPageState = FindInPageState(),
     val bookmarks: List<BookmarkEntity> = emptyList(),
+    val bookmarkedUrls: Set<String> = emptySet(),
     val history: List<HistoryEntity> = emptyList(),
     val downloads: List<DownloadRecordEntity> = emptyList(),
     val siteOverrides: Map<String, SiteOverrideEntity> = emptyMap(),
@@ -267,6 +256,43 @@ data class BrowserUiState(
                 visibleRegularTabs
         }
 
+    /**
+     * Zero-list-allocation navigable tab counter for toolbar count badges.
+     */
+    fun loadedNavigableTabCount(): Int {
+        if (isPrivateView) {
+            var count = 0
+            for (tab in tabs) {
+                if (tab.isPrivate) count++
+            }
+            return count
+        }
+        val activeEss = essentialsForSpace(activeSpaceId)
+        val activeEssIds = if (activeEss.isEmpty()) emptySet() else activeEss.mapTo(HashSet(activeEss.size * 2)) { it.id }
+        val activeZenIds = if (zenPinnedItems.isEmpty()) {
+            emptySet()
+        } else {
+            HashSet<String>().also { set ->
+                for (pin in zenPinnedItems) {
+                    if (pin.spaceId == activeSpaceId) set.add(pin.id)
+                }
+            }
+        }
+        var count = 0
+        for (tab in tabs) {
+            if (tab.isPrivate || tab.isUnloaded) continue
+            val essId = tab.essentialId
+            val zenId = tab.zenPinnedId
+            val inCurrentView = when {
+                essId != null -> essId in activeEssIds
+                zenId != null -> zenId in activeZenIds
+                else -> tab.spaceId == activeSpaceId
+            }
+            if (inCurrentView) count++
+        }
+        return count
+    }
+
     val activeSpace: SpaceEntity?
         get() = spaces.firstOrNull { it.id == activeSpaceId } ?: spaces.firstOrNull()
 
@@ -277,7 +303,11 @@ data class BrowserUiState(
         get() {
             val url = activeTab?.url ?: return false
             if (url == OmniboxEngine.NEW_TAB_URL) return false
-            return bookmarks.any { it.url == url }
+            return if (bookmarkedUrls.isNotEmpty() || bookmarks.isEmpty()) {
+                url in bookmarkedUrls
+            } else {
+                bookmarks.any { it.url == url }
+            }
         }
 
     val activeSiteOverride: SiteOverrideEntity?

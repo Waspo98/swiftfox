@@ -285,7 +285,11 @@ class BackgroundMediaService : Service() {
     private fun stopForegroundAndSelf() {
         cancelPendingPlayRevert()
         pendingPlayConfirmation = false
+        isServiceRunning = false
         isStartPending = false
+        if (runningInstance?.get() === this) {
+            runningInstance = null
+        }
         abandonAudioFocus()
         if (isForeground) {
             stopForeground(STOP_FOREGROUND_REMOVE)

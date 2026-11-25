@@ -25,16 +25,16 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.Bookmark
+import app.overbay.swiftfox.ui.icons.rounded.Bookmark
 import androidx.compose.material.icons.rounded.Close
-import androidx.compose.material.icons.rounded.DeleteOutline
-import androidx.compose.material.icons.rounded.DesktopWindows
+import app.overbay.swiftfox.ui.icons.rounded.DeleteOutline
+import app.overbay.swiftfox.ui.icons.rounded.DesktopWindows
 import androidx.compose.material.icons.rounded.Edit
-import androidx.compose.material.icons.rounded.History
-import androidx.compose.material.icons.rounded.Palette
+import app.overbay.swiftfox.ui.icons.rounded.History
+import app.overbay.swiftfox.ui.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Refresh
-import androidx.compose.material.icons.rounded.SwapVert
-import androidx.compose.material.icons.rounded.Tab
+import app.overbay.swiftfox.ui.icons.rounded.SwapVert
+import app.overbay.swiftfox.ui.icons.rounded.Tab
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -54,7 +54,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.boundsInRoot
-import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onPlaced
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -111,7 +111,7 @@ fun StartPageContent(
     var showAddEssentialDialog by remember { mutableStateOf(false) }
     var isReorderingEssentials by remember { mutableStateOf(false) }
     var isReorderingSpaces by remember { mutableStateOf(false) }
-    var searchCapsuleRect by remember { mutableStateOf<Rect?>(null) }
+    val searchCapsuleBounds = remember { BoundsHolder() }
 
     var actionEssential by remember { mutableStateOf<EssentialEntity?>(null) }
     var essentialToEdit by remember { mutableStateOf<EssentialEntity?>(null) }
@@ -131,7 +131,23 @@ fun StartPageContent(
         isReorderingSpaces = false
     }
 
-    val essentials = state.activeSpaceEssentials
+    val essentials = remember(
+        state.essentials,
+        state.spaces,
+        state.activeSpaceId,
+        state.settings.syncZenSeparateEssentials
+    ) {
+        state.activeSpaceEssentials
+    }
+    val tabByEssentialId = remember(state.tabs) {
+        buildMap {
+            for (tab in state.tabs) {
+                if (!tab.isPrivate && tab.essentialId != null && !containsKey(tab.essentialId)) {
+                    put(tab.essentialId, tab)
+                }
+            }
+        }
+    }
     val essentialsReorder = rememberDragReorderController(
         sourceItems = essentials,
         keyOf = { it.id },
@@ -214,7 +230,7 @@ fun StartPageContent(
 
             // Primary Search Capsule (records bounds for smooth Omnibox morph expand + Firefox-style engine picker)
             Surface(
-                onClick = { onFocusOmniboxFromRect(searchCapsuleRect) },
+                onClick = { onFocusOmniboxFromRect(searchCapsuleBounds.rect) },
                 shape = RoundedCornerShape(28.dp),
                 color = MaterialTheme.colorScheme.surfaceContainerHigh,
                 border = BorderStroke(
@@ -229,9 +245,9 @@ fun StartPageContent(
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp)
                     .heightIn(min = 56.dp)
-                    .onGloballyPositioned { coords ->
+                    .onPlaced { coords ->
                         if (coords.isAttached) {
-                            searchCapsuleRect = coords.boundsInRoot()
+                            searchCapsuleBounds.rect = coords.boundsInRoot()
                         }
                     }
             ) {
@@ -247,7 +263,7 @@ fun StartPageContent(
                         isPrivate = isPrivate,
                         compact = false,
                         onSelectScope = { scope ->
-                            onFocusOmniboxWithScope(searchCapsuleRect, scope)
+                            onFocusOmniboxWithScope(searchCapsuleBounds.rect, scope)
                         },
                         onOpenSearchSettings = onOpenSearchSettings
                     )
@@ -337,7 +353,7 @@ fun StartPageContent(
                             ) {
                                 rowItems.forEach { item ->
                                     if (item != null) {
-                                        val boundTab = state.tabForEssential(item.id)
+                                        val boundTab = tabByEssentialId[item.id]
                                         EssentialTile(
                                             essential = item,
                                             isLoaded = boundTab != null,
@@ -375,13 +391,21 @@ fun StartPageContent(
 
             // Active open tabs / recent jump cards with web favicons
             val expandedSidebarVisible = isUnfolded && state.activeProfile.showSpacesSidebar && state.isUnfoldedRailExpanded
-            val jumpTabs = if (expandedSidebarVisible) {
-                emptyList()
-            } else {
-                state.visibleTabs.filter { !it.isStartPage && !it.isUnloaded && it.id != state.activeTabId }.take(4)
+            val jumpTabs = remember(
+                expandedSidebarVisible,
+                state.tabs,
+                state.activeSpaceId,
+                state.activeTabId,
+                state.isPrivateView
+            ) {
+                if (expandedSidebarVisible) {
+                    emptyList()
+                } else {
+                    state.visibleTabs.filter { !it.isStartPage && !it.isUnloaded && it.id != state.activeTabId }.take(4)
+                }
             }
-            val recentBookmarks = state.bookmarks.take(4)
-            val recentHistory = state.history.take(4)
+            val recentBookmarks = remember(state.bookmarks) { state.bookmarks.take(4) }
+            val recentHistory = remember(state.history) { state.history.take(4) }
 
             if (!isPrivate && (jumpTabs.isNotEmpty() || recentBookmarks.isNotEmpty() || recentHistory.isNotEmpty())) {
                 Column(
@@ -399,39 +423,41 @@ fun StartPageContent(
                         color = MaterialTheme.colorScheme.onBackground
                     )
 
-                    val cards: List<StartJumpItem> = when {
-                        jumpTabs.isNotEmpty() -> jumpTabs.map {
-                            StartJumpItem(
-                                title = it.displayTitle.ifBlank { it.displayHost },
-                                subtitle = buildString {
-                                    append(it.displayHost)
-                                    if (it.resolvedSiteMode == SiteMode.DESKTOP) append(" · Desktop")
-                                },
-                                url = it.url,
-                                customIcon = it.customIcon,
-                                fallbackIcon = if (it.resolvedSiteMode == SiteMode.DESKTOP) Icons.Rounded.DesktopWindows else Icons.Rounded.Tab,
-                                onClick = { onSelectTab(it.id) }
-                            )
-                        }
-                        recentBookmarks.isNotEmpty() -> recentBookmarks.map {
-                            StartJumpItem(
-                                title = it.title,
-                                subtitle = OmniboxEngine.extractHost(it.url),
-                                url = it.url,
-                                customIcon = null,
-                                fallbackIcon = Icons.Rounded.Bookmark,
-                                onClick = { onOpenUrl(it.url) }
-                            )
-                        }
-                        else -> recentHistory.map {
-                            StartJumpItem(
-                                title = it.title,
-                                subtitle = OmniboxEngine.extractHost(it.url),
-                                url = it.url,
-                                customIcon = null,
-                                fallbackIcon = Icons.Rounded.History,
-                                onClick = { onOpenUrl(it.url) }
-                            )
+                    val cards: List<StartJumpItem> = remember(jumpTabs, recentBookmarks, recentHistory, onSelectTab, onOpenUrl) {
+                        when {
+                            jumpTabs.isNotEmpty() -> jumpTabs.map {
+                                StartJumpItem(
+                                    title = it.displayTitle.ifBlank { it.displayHost },
+                                    subtitle = buildString {
+                                        append(it.displayHost)
+                                        if (it.resolvedSiteMode == SiteMode.DESKTOP) append(" · Desktop")
+                                    },
+                                    url = it.url,
+                                    customIcon = it.customIcon,
+                                    fallbackIcon = if (it.resolvedSiteMode == SiteMode.DESKTOP) Icons.Rounded.DesktopWindows else Icons.Rounded.Tab,
+                                    onClick = { onSelectTab(it.id) }
+                                )
+                            }
+                            recentBookmarks.isNotEmpty() -> recentBookmarks.map {
+                                StartJumpItem(
+                                    title = it.title,
+                                    subtitle = OmniboxEngine.extractHost(it.url),
+                                    url = it.url,
+                                    customIcon = null,
+                                    fallbackIcon = Icons.Rounded.Bookmark,
+                                    onClick = { onOpenUrl(it.url) }
+                                )
+                            }
+                            else -> recentHistory.map {
+                                StartJumpItem(
+                                    title = it.title,
+                                    subtitle = OmniboxEngine.extractHost(it.url),
+                                    url = it.url,
+                                    customIcon = null,
+                                    fallbackIcon = Icons.Rounded.History,
+                                    onClick = { onOpenUrl(it.url) }
+                                )
+                            }
                         }
                     }
 

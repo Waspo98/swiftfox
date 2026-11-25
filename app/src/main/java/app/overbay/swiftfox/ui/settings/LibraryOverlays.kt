@@ -20,14 +20,14 @@ import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
-import androidx.compose.material.icons.rounded.Bookmark
+import app.overbay.swiftfox.ui.icons.rounded.Bookmark
 import androidx.compose.material.icons.rounded.Close
-import androidx.compose.material.icons.rounded.DeleteOutline
-import androidx.compose.material.icons.rounded.Download
-import androidx.compose.material.icons.rounded.DownloadDone
-import androidx.compose.material.icons.rounded.History
+import app.overbay.swiftfox.ui.icons.rounded.DeleteOutline
+import app.overbay.swiftfox.ui.icons.rounded.Download
+import app.overbay.swiftfox.ui.icons.rounded.DownloadDone
+import app.overbay.swiftfox.ui.icons.rounded.History
 import androidx.compose.material.icons.rounded.Search
-import androidx.compose.material.icons.rounded.Upload
+import app.overbay.swiftfox.ui.icons.rounded.Upload
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -86,16 +86,20 @@ fun BookmarksOverlay(
         }
     }
 
-    val filtered = remember(bookmarks, searchQuery, selectedFolder) {
-        bookmarks.filter { bm ->
-            val normalizedFolder = bm.folder.trim().ifBlank { "Bookmarks" }
-            val folderMatch = selectedFolder == null || normalizedFolder.equals(selectedFolder, ignoreCase = true)
-            val q = searchQuery.trim()
-            val queryMatch = q.isEmpty() ||
-                bm.title.contains(q, ignoreCase = true) ||
-                bm.url.contains(q, ignoreCase = true) ||
-                normalizedFolder.contains(q, ignoreCase = true)
-            folderMatch && queryMatch
+    val trimmedQuery = searchQuery.trim()
+    val filtered = remember(bookmarks, trimmedQuery, selectedFolder) {
+        if (selectedFolder == null && trimmedQuery.isEmpty()) {
+            bookmarks
+        } else {
+            bookmarks.filter { bm ->
+                val normalizedFolder = bm.folder.trim().ifBlank { "Bookmarks" }
+                val folderMatch = selectedFolder == null || normalizedFolder.equals(selectedFolder, ignoreCase = true)
+                val queryMatch = trimmedQuery.isEmpty() ||
+                    bm.title.contains(trimmedQuery, ignoreCase = true) ||
+                    bm.url.contains(trimmedQuery, ignoreCase = true) ||
+                    normalizedFolder.contains(trimmedQuery, ignoreCase = true)
+                folderMatch && queryMatch
+            }
         }
     }
 
@@ -271,11 +275,13 @@ fun BookmarksOverlay(
                             key = { it.id },
                             contentType = { "bookmark_row" }
                         ) { item ->
-                            val host = OmniboxEngine.extractHost(item.url)
-                            val sub = if (item.folder.isNotBlank() && !item.folder.equals("Bookmarks", ignoreCase = true)) {
-                                "${item.folder} · $host"
-                            } else {
-                                host
+                            val sub = remember(item.url, item.folder) {
+                                val host = OmniboxEngine.extractHost(item.url)
+                                if (item.folder.isNotBlank() && !item.folder.equals("Bookmarks", ignoreCase = true)) {
+                                    "${item.folder} · $host"
+                                } else {
+                                    host
+                                }
                             }
                             LibraryItemRow(
                                 title = item.title,
@@ -350,9 +356,10 @@ fun HistoryOverlay(
                     key = { it.url },
                     contentType = { "history_row" }
                 ) { entry ->
+                    val hostSubtitle = remember(entry.url) { OmniboxEngine.extractHost(entry.url) }
                     LibraryItemRow(
                         title = entry.title,
-                        subtitle = OmniboxEngine.extractHost(entry.url),
+                        subtitle = hostSubtitle,
                         faviconUrl = entry.url,
                         onClick = { onOpenUrl(entry.url) },
                         onDelete = { onDeleteEntry(entry.url) }

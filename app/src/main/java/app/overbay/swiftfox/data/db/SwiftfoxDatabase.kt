@@ -26,7 +26,7 @@ import kotlinx.coroutines.sync.withLock
         SyncedRemoteTabEntity::class,
         ZenPinnedItemEntity::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = true
 )
 abstract class SwiftfoxDatabase : RoomDatabase() {
@@ -47,6 +47,9 @@ abstract class SwiftfoxDatabase : RoomDatabase() {
     private val seedMutex = Mutex()
 
     suspend fun seedDefaultsIfEmpty(seedInitialContent: Boolean = true) = seedMutex.withLock {
+        if (!seedInitialContent && spaceDao().count() > 0) {
+            return@withLock
+        }
         withTransaction {
             if (spaceDao().getAll().isEmpty()) {
                 spaceDao().upsertAll(
@@ -288,6 +291,34 @@ abstract class SwiftfoxDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_5_6: Migration = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_tabs_spaceId` ON `tabs` (`spaceId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_tabs_essentialId` ON `tabs` (`essentialId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_tabs_zenPinnedId` ON `tabs` (`zenPinnedId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_tabs_isPrivate_isPinned_sortOrder` ON `tabs` (`isPrivate`, `isPinned`, `sortOrder`)")
+
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_bookmarks_url` ON `bookmarks` (`url`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_bookmarks_createdAt` ON `bookmarks` (`createdAt`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_bookmarks_updatedAt_createdAt` ON `bookmarks` (`updatedAt`, `createdAt`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_bookmarks_syncGuid` ON `bookmarks` (`syncGuid`)")
+
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_history_lastVisitedAt` ON `history` (`lastVisitedAt`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_history_visitCount_lastVisitedAt` ON `history` (`visitCount`, `lastVisitedAt`)")
+
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_downloads_createdAt` ON `downloads` (`createdAt`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_downloads_systemDownloadId` ON `downloads` (`systemDownloadId`)")
+
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_zapped_rules_host_enabled_createdAt` ON `zapped_rules` (`host`, `enabled`, `createdAt`)")
+
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_userscripts_enabled_installedAt` ON `userscripts` (`enabled`, `installedAt`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_userscripts_sourceUrl` ON `userscripts` (`sourceUrl`)")
+
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_zen_pinned_items_spaceId` ON `zen_pinned_items` (`spaceId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_zen_pinned_items_sortOrder` ON `zen_pinned_items` (`sortOrder`)")
+            }
+        }
+
         @Volatile
         private var instance: SwiftfoxDatabase? = null
 
@@ -297,7 +328,13 @@ abstract class SwiftfoxDatabase : RoomDatabase() {
                     context.applicationContext,
                     SwiftfoxDatabase::class.java,
                     "swiftfox.db"
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                ).addMigrations(
+                    MIGRATION_1_2,
+                    MIGRATION_2_3,
+                    MIGRATION_3_4,
+                    MIGRATION_4_5,
+                    MIGRATION_5_6
+                )
                     .fallbackToDestructiveMigrationOnDowngrade(dropAllTables = true)
                     .build()
                     .also { instance = it }

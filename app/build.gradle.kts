@@ -148,6 +148,9 @@ android {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
             excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"
+            excludes += "META-INF/**/LICENSE*"
+            excludes += "LICENSE*"
+            excludes += "**/*.proto"
         }
     }
 }
@@ -174,9 +177,9 @@ dependencies {
 
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.ui.graphics)
-    implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
-    implementation(libs.androidx.compose.material.icons.extended)
+    implementation(libs.androidx.compose.material.icons.core)
+    debugImplementation(libs.androidx.compose.ui.tooling.preview)
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
 
@@ -189,18 +192,27 @@ dependencies {
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)
 
+    fun org.gradle.api.artifacts.ExternalModuleDependency.excludeTestTransitives() {
+        exclude(group = "junit", module = "junit")
+        exclude(group = "org.hamcrest")
+        exclude(group = "androidx.test.ext")
+        exclude(group = "androidx.test.services")
+    }
+
     implementation(libs.okhttp)
-    implementation(libs.mozilla.service.firefox.accounts)
-    implementation(libs.mozilla.browser.storage.sync)
+    implementation(libs.mozilla.service.firefox.accounts) { excludeTestTransitives() }
+    implementation(libs.mozilla.browser.storage.sync) { excludeTestTransitives() }
     // Required at compile & runtime: PlacesBookmarksStorage/PlacesHistoryStorage implement AutocompleteProvider
-    implementation(libs.mozilla.concept.toolbar)
-    implementation(libs.mozilla.support.appservices)
-    implementation(libs.mozilla.lib.fetch.okhttp)
+    implementation(libs.mozilla.concept.toolbar) { excludeTestTransitives() }
+    implementation(libs.mozilla.support.appservices) { excludeTestTransitives() }
+    implementation(libs.mozilla.lib.fetch.okhttp) { excludeTestTransitives() }
     implementation("net.java.dev.jna:jna:${libs.versions.jna.get()}@aar")
     implementation(libs.androidx.camera.core)
     implementation(libs.androidx.camera.camera2)
     implementation(libs.androidx.camera.lifecycle)
-    implementation(libs.androidx.camera.view)
+    implementation(libs.androidx.camera.view) {
+        exclude(group = "androidx.camera", module = "camera-video")
+    }
     implementation(libs.zxing.core)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
@@ -252,4 +264,9 @@ tasks.register<CopyDebugApkTask>("copyDebugApkToRoot") {
 
 afterEvaluate {
     tasks.findByName("assembleDebug")?.finalizedBy("copyDebugApkToRoot")
+    // Prevent concurrent Room schema export writes to $projectDir/schemas when debug + release run together
+    val kspDebug = tasks.findByName("kspDebugKotlin")
+    if (kspDebug != null) {
+        tasks.findByName("kspReleaseKotlin")?.mustRunAfter(kspDebug)
+    }
 }

@@ -1,6 +1,7 @@
 package app.overbay.swiftfox.ui.theme
 
 import android.app.Activity
+import android.content.Context
 import android.os.Build
 import android.provider.Settings
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -15,9 +16,13 @@ import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Immutable
-import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -29,12 +34,24 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import app.overbay.swiftfox.R
 import app.overbay.swiftfox.data.prefs.AccentPreset
 import app.overbay.swiftfox.data.prefs.NightSurfaceStyle
 import app.overbay.swiftfox.data.prefs.ThemeMode
 
-// Core surface tokens anchored in the Swiftfox Surface Brief
+internal val LocalReduceMotion = staticCompositionLocalOf { false }
+
+private fun querySystemReduceMotion(context: Context): Boolean =
+    runCatching {
+        Settings.Global.getFloat(
+            context.contentResolver,
+            Settings.Global.ANIMATOR_DURATION_SCALE,
+            1f
+        ) == 0f
+    }.getOrDefault(false)
 val DaySurface = Color(0xFFFAF8F6)
 val DaySurfaceLow = Color(0xFFF5F1ED)
 val DaySurfaceContainer = Color(0xFFEFEAE4)
@@ -347,16 +364,38 @@ fun SwiftfoxTheme(
     }
 
     val view = LocalView.current
+    var reduceMotion by remember(context) {
+        mutableStateOf(if (view.isInEditMode) false else querySystemReduceMotion(context))
+    }
     if (!view.isInEditMode) {
-        LaunchedEffect(view, isDark) {
-            val window = (view.context as? Activity)?.window ?: return@LaunchedEffect
-            val controller = WindowCompat.getInsetsController(window, view)
-            controller.isAppearanceLightStatusBars = !isDark
-            controller.isAppearanceLightNavigationBars = !isDark
+        val lifecycleOwner = LocalLifecycleOwner.current
+        DisposableEffect(lifecycleOwner, context) {
+            val observer = LifecycleEventObserver { _, event ->
+                if (event == Lifecycle.Event.ON_RESUME) {
+                    reduceMotion = querySystemReduceMotion(context)
+                }
+            }
+            lifecycleOwner.lifecycle.addObserver(observer)
+            onDispose {
+                lifecycleOwner.lifecycle.removeObserver(observer)
+            }
+        }
+        val window = (view.context as? Activity)?.window
+        if (window != null) {
+            val controller = remember(window, view) {
+                WindowCompat.getInsetsController(window, view)
+            }
+            SideEffect {
+                controller.isAppearanceLightStatusBars = !isDark
+                controller.isAppearanceLightNavigationBars = !isDark
+            }
         }
     }
 
-    CompositionLocalProvider(LocalSwiftfoxColors provides extendedColors) {
+    CompositionLocalProvider(
+        LocalSwiftfoxColors provides extendedColors,
+        LocalReduceMotion provides reduceMotion
+    ) {
         MaterialTheme(
             colorScheme = colorScheme,
             typography = SwiftfoxTypography,
@@ -367,18 +406,7 @@ fun SwiftfoxTheme(
 }
 
 @Composable
-internal fun rememberReduceMotion(): Boolean {
-    val context = LocalContext.current
-    return remember(context) {
-        runCatching {
-            Settings.Global.getFloat(
-                context.contentResolver,
-                Settings.Global.ANIMATOR_DURATION_SCALE,
-                1f
-            ) == 0f
-        }.getOrDefault(false)
-    }
-}
+internal fun rememberReduceMotion(): Boolean = LocalReduceMotion.current
 
 /**
  * Extracts the first Unicode code point (avoiding broken UTF-16 surrogate halves on emoji titles)

@@ -29,18 +29,18 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
-import androidx.compose.material.icons.rounded.Bookmarks
+import app.overbay.swiftfox.ui.icons.rounded.Bookmarks
 import androidx.compose.material.icons.rounded.CheckCircle
-import androidx.compose.material.icons.rounded.DashboardCustomize
-import androidx.compose.material.icons.rounded.Devices
-import androidx.compose.material.icons.rounded.Download
-import androidx.compose.material.icons.rounded.History
+import app.overbay.swiftfox.ui.icons.rounded.DashboardCustomize
+import app.overbay.swiftfox.ui.icons.rounded.Devices
+import app.overbay.swiftfox.ui.icons.rounded.Download
+import app.overbay.swiftfox.ui.icons.rounded.History
 import androidx.compose.material.icons.rounded.Lock
-import androidx.compose.material.icons.rounded.OpenInBrowser
-import androidx.compose.material.icons.rounded.Palette
+import app.overbay.swiftfox.ui.icons.rounded.OpenInBrowser
+import app.overbay.swiftfox.ui.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Search
-import androidx.compose.material.icons.rounded.Shield
-import androidx.compose.material.icons.rounded.Sync
+import app.overbay.swiftfox.ui.icons.rounded.Shield
+import app.overbay.swiftfox.ui.icons.rounded.Sync
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -70,6 +70,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.overbay.swiftfox.BuildConfig
 import app.overbay.swiftfox.data.prefs.BrowserSettings
 import app.overbay.swiftfox.data.prefs.ExternalAppLinkPolicy
@@ -197,8 +198,10 @@ fun SettingsScreen(
                     null -> {
                         // Active page quick actions
                         item(key = "quick_actions", contentType = "settings_section") {
+                            val activeBlockedCount by viewModel.activeTabBlockedCount.collectAsStateWithLifecycle()
                             QuickActionsSection(
                                 state = state,
+                                activeTabBlockedCount = activeBlockedCount,
                                 onGoBack = {
                                     viewModel.setOverlay(BrowserOverlay.NONE)
                                     viewModel.goBack()

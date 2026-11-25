@@ -16,6 +16,9 @@ interface SpaceDao {
     @Query("SELECT * FROM spaces ORDER BY sortOrder ASC, createdAt ASC")
     suspend fun getAll(): List<SpaceEntity>
 
+    @Query("SELECT COUNT(*) FROM spaces")
+    suspend fun count(): Int
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(space: SpaceEntity)
 
@@ -125,6 +128,26 @@ interface BookmarkDao {
     )
     suspend fun searchByUrlPrefix(escapedPrefix: String, limit: Int = 12): List<BookmarkEntity>
 
+    /**
+     * Index-backed B-tree range scan (`index_bookmarks_url`) for lowercase normalized host prefixes.
+     */
+    @Query(
+        """
+        SELECT * FROM bookmarks
+        WHERE (url >= 'https://' || :rawPrefix AND url < 'https://' || :rawPrefix || char(65535))
+           OR (url >= 'https://www.' || :rawPrefix AND url < 'https://www.' || :rawPrefix || char(65535))
+           OR (url >= 'http://' || :rawPrefix AND url < 'http://' || :rawPrefix || char(65535))
+           OR (url >= 'http://www.' || :rawPrefix AND url < 'http://www.' || :rawPrefix || char(65535))
+           OR (url >= 'https://m.' || :rawPrefix AND url < 'https://m.' || :rawPrefix || char(65535))
+           OR (url >= 'https://mobile.' || :rawPrefix AND url < 'https://mobile.' || :rawPrefix || char(65535))
+           OR (url >= 'http://m.' || :rawPrefix AND url < 'http://m.' || :rawPrefix || char(65535))
+           OR (url >= 'http://mobile.' || :rawPrefix AND url < 'http://mobile.' || :rawPrefix || char(65535))
+        ORDER BY updatedAt DESC, createdAt DESC
+        LIMIT :limit
+        """
+    )
+    suspend fun searchByRawUrlPrefix(rawPrefix: String, limit: Int = 12): List<BookmarkEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(bookmark: BookmarkEntity)
 
@@ -139,6 +162,9 @@ interface BookmarkDao {
 
     @Query("DELETE FROM bookmarks WHERE id = :id")
     suspend fun deleteById(id: String)
+
+    @Query("DELETE FROM bookmarks WHERE id IN (:ids)")
+    suspend fun deleteByIds(ids: List<String>)
 }
 
 @Dao
@@ -173,6 +199,26 @@ interface HistoryDao {
         """
     )
     suspend fun searchByUrlPrefix(escapedPrefix: String, limit: Int = 20): List<HistoryEntity>
+
+    /**
+     * Index-backed B-tree range scan (`PRIMARY KEY(url)`) for lowercase normalized host prefixes.
+     */
+    @Query(
+        """
+        SELECT * FROM history
+        WHERE (url >= 'https://' || :rawPrefix AND url < 'https://' || :rawPrefix || char(65535))
+           OR (url >= 'https://www.' || :rawPrefix AND url < 'https://www.' || :rawPrefix || char(65535))
+           OR (url >= 'http://' || :rawPrefix AND url < 'http://' || :rawPrefix || char(65535))
+           OR (url >= 'http://www.' || :rawPrefix AND url < 'http://www.' || :rawPrefix || char(65535))
+           OR (url >= 'https://m.' || :rawPrefix AND url < 'https://m.' || :rawPrefix || char(65535))
+           OR (url >= 'https://mobile.' || :rawPrefix AND url < 'https://mobile.' || :rawPrefix || char(65535))
+           OR (url >= 'http://m.' || :rawPrefix AND url < 'http://m.' || :rawPrefix || char(65535))
+           OR (url >= 'http://mobile.' || :rawPrefix AND url < 'http://mobile.' || :rawPrefix || char(65535))
+        ORDER BY visitCount DESC, lastVisitedAt DESC
+        LIMIT :limit
+        """
+    )
+    suspend fun searchByRawUrlPrefix(rawPrefix: String, limit: Int = 20): List<HistoryEntity>
 
     @Query("SELECT * FROM history WHERE url = :url LIMIT 1")
     suspend fun findByUrl(url: String): HistoryEntity?
@@ -242,8 +288,20 @@ interface DownloadRecordDao {
     @Query("SELECT * FROM downloads ORDER BY createdAt DESC")
     fun observeAll(): Flow<List<DownloadRecordEntity>>
 
+    @Query("SELECT * FROM downloads ORDER BY createdAt DESC")
+    suspend fun getAll(): List<DownloadRecordEntity>
+
+    @Query("SELECT * FROM downloads WHERE systemDownloadId = :systemId LIMIT 1")
+    suspend fun findBySystemId(systemId: Long): DownloadRecordEntity?
+
+    @Query("SELECT * FROM downloads WHERE systemDownloadId > 0 AND status IN ('Downloading', 'Queued', 'Paused')")
+    suspend fun getActiveSystemDownloads(): List<DownloadRecordEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(record: DownloadRecordEntity)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAll(records: List<DownloadRecordEntity>)
 
     @Delete
     suspend fun delete(record: DownloadRecordEntity)
@@ -305,6 +363,16 @@ interface UserscriptDao {
     @Query("SELECT * FROM userscripts ORDER BY installedAt DESC")
     fun observeAll(): Flow<List<UserscriptEntity>>
 
+    @Query(
+        """
+        SELECT id, name, namespace, version, description, sourceUrl,
+               matchesJson, excludesJson, runAt, grantsJson, enabled, installedAt, updatedAt
+        FROM userscripts
+        ORDER BY installedAt DESC
+        """
+    )
+    fun observeSummaries(): Flow<List<UserscriptSummary>>
+
     @Query("SELECT * FROM userscripts ORDER BY installedAt DESC")
     suspend fun getAll(): List<UserscriptEntity>
 
@@ -313,6 +381,12 @@ interface UserscriptDao {
 
     @Query("SELECT * FROM userscripts WHERE id = :id LIMIT 1")
     suspend fun getById(id: String): UserscriptEntity?
+
+    @Query("SELECT * FROM userscripts WHERE sourceUrl = :sourceUrl LIMIT 1")
+    suspend fun findBySourceUrl(sourceUrl: String): UserscriptEntity?
+
+    @Query("UPDATE userscripts SET enabled = :enabled, updatedAt = :updatedAt WHERE id = :id")
+    suspend fun updateEnabled(id: String, enabled: Boolean, updatedAt: Long)
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(script: UserscriptEntity)
@@ -325,6 +399,9 @@ interface UserscriptDao {
 interface UserscriptStorageDao {
     @Query("SELECT * FROM userscript_storage WHERE scriptId = :scriptId")
     suspend fun getAllForScript(scriptId: String): List<UserscriptStorageEntity>
+
+    @Query("SELECT * FROM userscript_storage WHERE scriptId IN (:scriptIds)")
+    suspend fun getAllForScripts(scriptIds: List<String>): List<UserscriptStorageEntity>
 
     @Query("SELECT * FROM userscript_storage WHERE scriptId = :scriptId AND storageKey = :key LIMIT 1")
     suspend fun getValue(scriptId: String, key: String): UserscriptStorageEntity?

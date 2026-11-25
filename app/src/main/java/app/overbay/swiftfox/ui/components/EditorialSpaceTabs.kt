@@ -28,7 +28,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.DragIndicator
+import app.overbay.swiftfox.ui.icons.rounded.DragIndicator
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -44,6 +44,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -99,51 +102,79 @@ internal fun resolveHorizontalFadeFractions(
  * gradient brushes via `drawWithCache` so 120Hz scrolling stays free of mid-fling node churn.
  */
 fun Modifier.horizontalFadingEdges(
-    showStartFade: Boolean,
-    showEndFade: Boolean,
+    showStartFadeProvider: () -> Boolean,
+    showEndFadeProvider: () -> Boolean,
     startFadeWidth: Dp = 20.dp,
     endFadeWidth: Dp = 28.dp
 ): Modifier = this
     .graphicsLayer {
-        compositingStrategy = if (showStartFade || showEndFade) {
+        compositingStrategy = if (showStartFadeProvider() || showEndFadeProvider()) {
             CompositingStrategy.Offscreen
         } else {
             CompositingStrategy.Auto
         }
     }
     .drawWithCache {
-        val fractions = resolveHorizontalFadeFractions(
-            showStartFade = showStartFade,
-            showEndFade = showEndFade,
-            startFadeWidthPx = startFadeWidth.toPx(),
-            endFadeWidthPx = endFadeWidth.toPx(),
-            widthPx = size.width,
-            isRtl = layoutDirection == LayoutDirection.Rtl
-        )
-        val brush = fractions?.let { (leftFrac, rightFrac) ->
-            val stops = buildList {
-                if (leftFrac > 0f) {
-                    add(0f to Color.Transparent)
-                    add(leftFrac to Color.Black)
-                } else {
-                    add(0f to Color.Black)
-                }
-                if (rightFrac > 0f) {
-                    add((1f - rightFrac).coerceAtLeast(leftFrac) to Color.Black)
-                    add(1f to Color.Transparent)
-                } else {
-                    add(1f to Color.Black)
-                }
-            }.toTypedArray()
-            Brush.horizontalGradient(colorStops = stops)
-        }
+        val startWidthPx = startFadeWidth.toPx()
+        val endWidthPx = endFadeWidth.toPx()
+        val widthPx = size.width
+        val isRtl = layoutDirection == LayoutDirection.Rtl
+        var cachedShowStart: Boolean? = null
+        var cachedShowEnd: Boolean? = null
+        var cachedBrush: Brush? = null
+
         onDrawWithContent {
             drawContent()
+            val showStart = showStartFadeProvider()
+            val showEnd = showEndFadeProvider()
+            if (!showStart && !showEnd) return@onDrawWithContent
+            val brush = if (showStart == cachedShowStart && showEnd == cachedShowEnd) {
+                cachedBrush
+            } else {
+                cachedShowStart = showStart
+                cachedShowEnd = showEnd
+                resolveHorizontalFadeFractions(
+                    showStartFade = showStart,
+                    showEndFade = showEnd,
+                    startFadeWidthPx = startWidthPx,
+                    endFadeWidthPx = endWidthPx,
+                    widthPx = widthPx,
+                    isRtl = isRtl
+                )?.let { (leftFrac, rightFrac) ->
+                    val stops = buildList {
+                        if (leftFrac > 0f) {
+                            add(0f to Color.Transparent)
+                            add(leftFrac to Color.Black)
+                        } else {
+                            add(0f to Color.Black)
+                        }
+                        if (rightFrac > 0f) {
+                            add((1f - rightFrac).coerceAtLeast(leftFrac) to Color.Black)
+                            add(1f to Color.Transparent)
+                        } else {
+                            add(1f to Color.Black)
+                        }
+                    }.toTypedArray()
+                    Brush.horizontalGradient(colorStops = stops)
+                }.also { cachedBrush = it }
+            }
             if (brush != null) {
                 drawRect(brush = brush, blendMode = BlendMode.DstIn)
             }
         }
     }
+
+fun Modifier.horizontalFadingEdges(
+    showStartFade: Boolean,
+    showEndFade: Boolean,
+    startFadeWidth: Dp = 20.dp,
+    endFadeWidth: Dp = 28.dp
+): Modifier = horizontalFadingEdges(
+    showStartFadeProvider = { showStartFade },
+    showEndFadeProvider = { showEndFade },
+    startFadeWidth = startFadeWidth,
+    endFadeWidth = endFadeWidth
+)
 
 /**
  * Full-bleed borderless Editorial Tabs strip for switching between Swiftfox Spaces on the
@@ -172,8 +203,8 @@ fun EditorialSpacesTabStrip(
 ) {
     val reduceMotion = rememberReduceMotion()
     val listState = rememberLazyListState()
-    val canScrollBackward by remember(listState) { derivedStateOf { listState.canScrollBackward } }
-    val canScrollForward by remember(listState) { derivedStateOf { listState.canScrollForward } }
+    val canScrollBackwardState = remember(listState) { derivedStateOf { listState.canScrollBackward } }
+    val canScrollForwardState = remember(listState) { derivedStateOf { listState.canScrollForward } }
 
     // Keep the active Space smoothly scrolled into view when changed externally
     LaunchedEffect(selectedSpaceId, spaces.size, isReorderMode) {
@@ -213,8 +244,8 @@ fun EditorialSpacesTabStrip(
             modifier = Modifier
                 .fillMaxWidth()
                 .horizontalFadingEdges(
-                    showStartFade = !isReorderMode && canScrollBackward,
-                    showEndFade = !isReorderMode && canScrollForward
+                    showStartFadeProvider = { !isReorderMode && canScrollBackwardState.value },
+                    showEndFadeProvider = { !isReorderMode && canScrollForwardState.value }
                 )
         ) {
             items(
@@ -298,7 +329,7 @@ private fun EditorialSpaceTabItem(
         animationSpec = colorSpec,
         label = "space_tab_icon_color"
     )
-    val indicatorProgress by animateFloatAsState(
+    val indicatorProgressState = animateFloatAsState(
         targetValue = if (selected && !isReorderMode) 1f else 0f,
         animationSpec = floatSpec,
         label = "space_tab_indicator"
@@ -306,14 +337,16 @@ private fun EditorialSpaceTabItem(
 
     val dotColor = if (showThemeDot) parseSpaceColorHexOrNull(space.themeColorHex) else null
     val hasContainer = showLockIndicator && !space.containerProfileName.isNullOrBlank()
-    val accessibilityDescription = buildString {
-        append(space.name)
-        append(" Space")
-        if (hasContainer) append(", isolated container")
-        if (visibleTabCount != null) {
-            append(", ")
-            append(visibleTabCount)
-            append(if (visibleTabCount == 1) " open tab" else " open tabs")
+    val accessibilityDescription = remember(space.name, hasContainer, visibleTabCount) {
+        buildString {
+            append(space.name)
+            append(" Space")
+            if (hasContainer) append(", isolated container")
+            if (visibleTabCount != null) {
+                append(", ")
+                append(visibleTabCount)
+                append(if (visibleTabCount == 1) " open tab" else " open tabs")
+            }
         }
     }
 
@@ -358,15 +391,37 @@ private fun EditorialSpaceTabItem(
         return
     }
 
+    val primaryColor = MaterialTheme.colorScheme.primary
     Box(
+        contentAlignment = Alignment.Center,
         modifier = modifier
-            .width(IntrinsicSize.Max)
             .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
             .clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp))
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = onLongClick
             )
+            .drawWithCache {
+                val padPx = 4.dp.toPx()
+                val barHeightPx = 2.5.dp.toPx()
+                val cornerPx = 2.dp.toPx()
+                val maxBarWidth = (size.width - padPx * 2f).coerceAtLeast(0f)
+                onDrawWithContent {
+                    drawContent()
+                    val progress = indicatorProgressState.value
+                    if (progress > 0.001f && maxBarWidth > 0f) {
+                        val w = maxBarWidth * progress
+                        val left = (size.width - w) * 0.5f
+                        val top = size.height - barHeightPx
+                        drawRoundRect(
+                            color = primaryColor.copy(alpha = progress.coerceIn(0f, 1f)),
+                            topLeft = Offset(left, top),
+                            size = Size(w, barHeightPx + cornerPx),
+                            cornerRadius = CornerRadius(cornerPx, cornerPx)
+                        )
+                    }
+                }
+            }
             .semantics(mergeDescendants = true) {
                 role = Role.Tab
                 this.selected = selected
@@ -374,9 +429,7 @@ private fun EditorialSpaceTabItem(
             }
     ) {
         Row(
-            modifier = Modifier
-                .align(Alignment.Center)
-                .padding(horizontal = 6.dp, vertical = 12.dp),
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
@@ -426,21 +479,6 @@ private fun EditorialSpaceTabItem(
                 )
             }
         }
-
-        // Sleek editorial active indicator anchored cleanly on the bottom hairline
-        Box(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .padding(horizontal = 4.dp)
-                .height(2.5.dp)
-                .graphicsLayer {
-                    scaleX = indicatorProgress
-                    alpha = indicatorProgress
-                }
-                .clip(RoundedCornerShape(topStart = 2.dp, topEnd = 2.dp))
-                .background(MaterialTheme.colorScheme.primary)
-        )
     }
 }
 

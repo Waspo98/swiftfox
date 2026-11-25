@@ -11,7 +11,6 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.net.URI
 import java.security.MessageDigest
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
@@ -54,8 +53,47 @@ class AdblockEngine private constructor(
     @Volatile
     private var activeMatcher: AdblockMatcher? = initialMatcher
 
+    @Volatile
+    private var activeCacheFingerprint: String? = null
+
+    val hasActiveMatcher: Boolean
+        get() = activeMatcher != null
+
     private val _status = MutableStateFlow(initialStatus)
     val status: StateFlow<AdblockEngineStatus> = _status.asStateFlow()
+
+    /**
+     * Fast cold-start path: immediately loads `engine.dat` directly in Rust on IO before Room
+     * finishes seeding/emitting, closing the startup fail-open window with zero Java byte copies.
+     */
+    suspend fun tryLoadWarmCacheFast(): Boolean {
+        val ctx = context ?: return false
+        if (closed.get() || !NativeAdblockBridge.isLoaded) return false
+        return compileMutex.withLock {
+            if (closed.get() || activeMatcher != null) return@withLock activeMatcher != null
+            withContext(Dispatchers.IO) {
+                val dir = adblockDir(ctx)
+                val engineFile = File(dir, ENGINE_CACHE_FILE)
+                val metaFile = File(dir, ENGINE_META_FILE)
+                if (!engineFile.isFile || engineFile.length() <= 0L) return@withContext false
+                val meta = readCacheMeta(metaFile) ?: return@withContext false
+                val loadedMatcher = runCatching {
+                    val handle = NativeAdblockBridge.nativeDeserializeFromFile(engineFile.absolutePath)
+                    if (handle != 0L) NativeAdblockMatcher(handle) else null
+                }.getOrNull() ?: return@withContext false
+
+                if (!swapMatcher(loadedMatcher, meta.fingerprint)) {
+                    return@withContext false
+                }
+                _status.value = AdblockEngineStatus(
+                    isNativeRust = true,
+                    totalRules = meta.ruleCount,
+                    isCompiling = false
+                )
+                true
+            }
+        }
+    }
 
     suspend fun initialize(
         enabledLists: List<FilterListEntity> = emptyList(),
@@ -66,24 +104,26 @@ class AdblockEngine private constructor(
         compileMutex.withLock {
             if (closed.get()) return
             withContext(Dispatchers.IO) {
+                val expectedFingerprint = computeCacheFingerprint(ctx, enabledLists, hasAnyConfiguredLists)
+                if (activeMatcher != null && activeCacheFingerprint == expectedFingerprint) {
+                    return@withContext
+                }
                 _status.value = _status.value.copy(isCompiling = true)
                 try {
                     val dir = adblockDir(ctx)
                     val engineFile = File(dir, ENGINE_CACHE_FILE)
                     val metaFile = File(dir, ENGINE_META_FILE)
-                    val expectedFingerprint = computeCacheFingerprint(ctx, enabledLists, hasAnyConfiguredLists)
 
                     if (NativeAdblockBridge.isLoaded && engineFile.isFile && engineFile.length() > 0L) {
                         val meta = readCacheMeta(metaFile)
                         if (meta != null && meta.fingerprint == expectedFingerprint) {
                             val loadedMatcher = runCatching {
-                                val bytes = engineFile.readBytes()
-                                val handle = NativeAdblockBridge.nativeDeserialize(bytes)
+                                val handle = NativeAdblockBridge.nativeDeserializeFromFile(engineFile.absolutePath)
                                 if (handle != 0L) NativeAdblockMatcher(handle) else null
                             }.getOrNull()
 
                             if (loadedMatcher != null) {
-                                if (!swapMatcher(loadedMatcher)) {
+                                if (!swapMatcher(loadedMatcher, expectedFingerprint)) {
                                     return@withContext
                                 }
                                 _status.value = AdblockEngineStatus(
@@ -96,12 +136,12 @@ class AdblockEngine private constructor(
                         }
                     }
 
-                    val combinedRules = buildRulesText(
+                    compileFromDiskAndSwapLocked(
                         ctx = ctx,
                         enabledLists = enabledLists,
-                        hasAnyConfiguredLists = hasAnyConfiguredLists
+                        hasAnyConfiguredLists = hasAnyConfiguredLists,
+                        fingerprint = expectedFingerprint
                     )
-                    compileAndSwapLocked(ctx, combinedRules, expectedFingerprint)
                 } finally {
                     if (_status.value.isCompiling) {
                         _status.value = _status.value.copy(isCompiling = false)
@@ -123,12 +163,12 @@ class AdblockEngine private constructor(
                 _status.value = _status.value.copy(isCompiling = true)
                 try {
                     val fingerprint = computeCacheFingerprint(ctx, enabledLists, hasAnyConfiguredLists)
-                    val combinedRules = buildRulesText(
+                    compileFromDiskAndSwapLocked(
                         ctx = ctx,
                         enabledLists = enabledLists,
-                        hasAnyConfiguredLists = hasAnyConfiguredLists
+                        hasAnyConfiguredLists = hasAnyConfiguredLists,
+                        fingerprint = fingerprint
                     )
-                    compileAndSwapLocked(ctx, combinedRules, fingerprint)
                 } finally {
                     if (_status.value.isCompiling) {
                         _status.value = _status.value.copy(isCompiling = false)
@@ -152,13 +192,18 @@ class AdblockEngine private constructor(
         siteDisabled: Boolean
     ): Boolean {
         if (!globalEnabled || siteDisabled) return false
+        val matcher = activeMatcher ?: return false
         if (!isHttpOrHttps(requestUrl)) return false
 
         val reqHost = OmniboxEngine.extractHost(requestUrl).trim('[', ']')
         if (reqHost.isBlank() || OmniboxEngine.isLocalHostOrLan(reqHost)) return false
 
-        val matcher = activeMatcher ?: return false
-        return matcher.checkNetworkRequest(requestUrl, pageUrl, resourceType)
+        val typeCode = NativeAdblockBridge.codeForRequestType(resourceType)
+        val first = matcher.checkNetworkRequestTriState(requestUrl, pageUrl, resourceType, typeCode)
+        if (first >= 0) return first == 1
+        if (closed.get()) return false
+        val retryMatcher = activeMatcher ?: return false
+        return retryMatcher.checkNetworkRequestTriState(requestUrl, pageUrl, resourceType, typeCode) == 1
     }
 
     fun cosmeticForUrl(
@@ -168,12 +213,12 @@ class AdblockEngine private constructor(
         siteDisabled: Boolean
     ): CosmeticPayload {
         if (!globalEnabled || !cosmeticEnabled || siteDisabled) return CosmeticPayload()
+        val matcher = activeMatcher ?: return CosmeticPayload()
         if (!isHttpOrHttps(url)) return CosmeticPayload()
 
         val host = OmniboxEngine.extractHost(url).trim('[', ']')
         if (host.isBlank() || OmniboxEngine.isLocalHostOrLan(host)) return CosmeticPayload()
 
-        val matcher = activeMatcher ?: return CosmeticPayload()
         return matcher.cosmeticResources(url)
     }
 
@@ -187,14 +232,34 @@ class AdblockEngine private constructor(
         siteDisabled: Boolean
     ): String {
         if (!globalEnabled || !cosmeticEnabled || siteDisabled) return ""
+        val matcher = activeMatcher ?: return ""
         if (!isHttpOrHttps(url)) return ""
         if (classes.isEmpty() && ids.isEmpty()) return ""
 
         val host = OmniboxEngine.extractHost(url).trim('[', ']')
         if (host.isBlank() || OmniboxEngine.isLocalHostOrLan(host)) return ""
 
-        val matcher = activeMatcher ?: return ""
         return matcher.hiddenClassIdCss(classes, ids, exceptions)
+    }
+
+    fun genericCosmeticCssFromJson(
+        url: String,
+        classesJson: String,
+        idsJson: String,
+        exceptions: Set<String>,
+        globalEnabled: Boolean,
+        cosmeticEnabled: Boolean,
+        siteDisabled: Boolean
+    ): String {
+        if (!globalEnabled || !cosmeticEnabled || siteDisabled) return ""
+        val matcher = activeMatcher ?: return ""
+        if (!isHttpOrHttps(url)) return ""
+        if ((classesJson.isBlank() || classesJson == "[]") && (idsJson.isBlank() || idsJson == "[]")) return ""
+
+        val host = OmniboxEngine.extractHost(url).trim('[', ']')
+        if (host.isBlank() || OmniboxEngine.isLocalHostOrLan(host)) return ""
+
+        return matcher.hiddenClassIdCssFromJson(classesJson, idsJson, exceptions)
     }
 
     fun inferResourceType(url: String, headers: Map<String, String>): String {
@@ -240,16 +305,45 @@ class AdblockEngine private constructor(
         val previous = synchronized(swapLock) {
             val prev = activeMatcher
             activeMatcher = null
+            activeCacheFingerprint = null
             prev
         }
         previous?.close()
     }
 
-    private fun compileAndSwapLocked(ctx: Context, combinedRules: String, fingerprint: String) {
+    private fun compileFromDiskAndSwapLocked(
+        ctx: Context,
+        enabledLists: List<FilterListEntity>,
+        hasAnyConfiguredLists: Boolean,
+        fingerprint: String
+    ) {
         if (closed.get()) return
-        val ruleCount = countFilterRules(combinedRules)
+        val activeLists = enabledLists.filter { it.enabled }
+        val compileZero = hasAnyConfiguredLists && activeLists.isEmpty()
+
+        val starter = if (compileZero) "" else readStarterFilters(ctx)
+        val starterCount = if (starter.isEmpty()) 0 else countFilterRules(starter)
+        val listsDir = File(adblockDir(ctx), LISTS_SUBDIR)
+        val existingFiles = if (compileZero) {
+            emptyList()
+        } else {
+            activeLists.mapNotNull { entity ->
+                val f = File(listsDir, "${entity.id}.txt")
+                if (f.isFile) entity to f else null
+            }
+        }
+        val listRuleSum = existingFiles.sumOf { (entity, file) ->
+            if (entity.ruleCount > 0) entity.ruleCount else countFilterRulesInFile(file)
+        }
+        val ruleCount = starterCount + listRuleSum
+
         val nativeHandle = if (NativeAdblockBridge.isLoaded) {
-            NativeAdblockBridge.nativeCreateFromRules(combinedRules)
+            if (compileZero) {
+                NativeAdblockBridge.nativeCreateFromRules("")
+            } else {
+                val paths = existingFiles.map { (_, f) -> f.absolutePath }.toTypedArray()
+                NativeAdblockBridge.nativeCreateFromFiles(starter, paths)
+            }
         } else {
             0L
         }
@@ -257,6 +351,7 @@ class AdblockEngine private constructor(
         val newMatcher: AdblockMatcher = if (nativeHandle != 0L) {
             NativeAdblockMatcher(nativeHandle)
         } else {
+            val combinedRules = buildRulesText(ctx, enabledLists, hasAnyConfiguredLists)
             FallbackKotlinAdblockMatcher(combinedRules)
         }
 
@@ -265,18 +360,16 @@ class AdblockEngine private constructor(
             return
         }
 
-        // Serialize before swapping so the Engine handle is not shared concurrently with serialize()
-        if (newMatcher is NativeAdblockMatcher) {
-            val serialized = newMatcher.serialize()
-            if (serialized != null && serialized.isNotEmpty() && !closed.get()) {
-                val dir = adblockDir(ctx)
-                if (writeAtomicBytes(File(dir, ENGINE_CACHE_FILE), serialized)) {
-                    writeAtomicText(File(dir, ENGINE_META_FILE), "$CACHE_META_VERSION|$fingerprint|$ruleCount")
-                }
+        // Serialize directly to file in Rust before swapping so zero multi-MB ByteArrays hit Java heap
+        if (newMatcher is NativeAdblockMatcher && !closed.get()) {
+            val dir = adblockDir(ctx)
+            val engineFile = File(dir, ENGINE_CACHE_FILE)
+            if (newMatcher.serializeToFile(engineFile.absolutePath)) {
+                writeAtomicText(File(dir, ENGINE_META_FILE), "$CACHE_META_VERSION|$fingerprint|$ruleCount")
             }
         }
 
-        if (!swapMatcher(newMatcher)) {
+        if (!swapMatcher(newMatcher, fingerprint)) {
             return
         }
         _status.value = AdblockEngineStatus(
@@ -286,7 +379,7 @@ class AdblockEngine private constructor(
         )
     }
 
-    private fun swapMatcher(newMatcher: AdblockMatcher): Boolean {
+    private fun swapMatcher(newMatcher: AdblockMatcher, fingerprint: String? = null): Boolean {
         var shouldCloseNew = false
         val previous = synchronized(swapLock) {
             if (closed.get()) {
@@ -295,6 +388,7 @@ class AdblockEngine private constructor(
             } else {
                 val prev = activeMatcher
                 activeMatcher = newMatcher
+                activeCacheFingerprint = fingerprint
                 prev
             }
         }
@@ -366,7 +460,14 @@ class AdblockEngine private constructor(
             val sig = "${entity.id}:${if (f.isFile) f.length() else -1L}:${f.lastModified()};"
             digest.update(sig.toByteArray(Charsets.UTF_8))
         }
-        return digest.digest().joinToString("") { "%02x".format(Locale.ROOT, it) }.take(24)
+        val hash = digest.digest()
+        val hex = CharArray(24)
+        for (i in 0 until 12) {
+            val b = hash[i].toInt() and 0xFF
+            hex[i * 2] = HEX_CHARS[b ushr 4]
+            hex[i * 2 + 1] = HEX_CHARS[b and 0x0F]
+        }
+        return String(hex)
     }
 
     private fun readStarterFilters(ctx: Context): String =
@@ -403,29 +504,68 @@ class AdblockEngine private constructor(
 
     private fun headerIgnoreCase(headers: Map<String, String>, key: String): String? {
         headers[key]?.let { return it }
-        return headers.entries.firstOrNull { it.key.equals(key, ignoreCase = true) }?.value
+        for ((k, v) in headers) {
+            if (k.equals(key, ignoreCase = true)) return v
+        }
+        return null
     }
 
     private fun extractPathExtension(url: String): String {
-        val path = runCatching { URI(url).path }.getOrNull()
-            ?: url.substringAfter("://", url)
-                .substringAfter('/', "")
-                .substringBefore('?')
-                .substringBefore('#')
-        if (path.isBlank()) return ""
-        val lastSegment = path.substringAfterLast('/')
-        val dotIdx = lastSegment.lastIndexOf('.')
-        if (dotIdx < 0 || dotIdx == lastSegment.lastIndex) return ""
-        return lastSegment.substring(dotIdx + 1).lowercase(Locale.ROOT)
+        val schemeIdx = url.indexOf("://")
+        val afterAuthorityStart = if (schemeIdx >= 0) schemeIdx + 3 else 0
+        val slashIdx = url.indexOf('/', afterAuthorityStart)
+        if (slashIdx < 0 || slashIdx + 1 >= url.length) return ""
+        var pathEnd = url.length
+        for (i in slashIdx + 1 until url.length) {
+            val c = url[i]
+            if (c == '?' || c == '#') {
+                pathEnd = i
+                break
+            }
+        }
+        if (pathEnd <= slashIdx + 1) return ""
+        var lastSlash = slashIdx
+        for (i in pathEnd - 1 downTo slashIdx + 1) {
+            if (url[i] == '/') {
+                lastSlash = i
+                break
+            }
+        }
+        var dotIdx = -1
+        for (i in pathEnd - 1 downTo lastSlash + 1) {
+            if (url[i] == '.') {
+                dotIdx = i
+                break
+            }
+        }
+        if (dotIdx < 0 || dotIdx >= pathEnd - 1) return ""
+        val extLen = pathEnd - (dotIdx + 1)
+        if (extLen > 8) return ""
+        return url.substring(dotIdx + 1, pathEnd).lowercase(Locale.ROOT)
     }
+
+    private fun countFilterRulesInFile(file: File): Int =
+        runCatching {
+            file.useLines { lines ->
+                var count = 0
+                for (line in lines) {
+                    val trimmed = line.trim()
+                    if (trimmed.isNotEmpty() && !trimmed.startsWith('!') && !trimmed.startsWith('[')) {
+                        count++
+                    }
+                }
+                count
+            }
+        }.getOrDefault(0)
 
     companion object {
         private const val ADBLOCK_DIR = "adblock"
         private const val LISTS_SUBDIR = "lists"
         private const val ENGINE_CACHE_FILE = "engine.dat"
         private const val ENGINE_META_FILE = "engine.meta"
-        private const val CACHE_META_VERSION = "v2"
+        private const val CACHE_META_VERSION = "v3"
         private const val STARTER_ASSET_PATH = "adblock/starter_filters.txt"
+        private val HEX_CHARS = "0123456789abcdef".toCharArray()
 
         fun createForTesting(rulesText: String): AdblockEngine {
             val matcher = FallbackKotlinAdblockMatcher(rulesText)

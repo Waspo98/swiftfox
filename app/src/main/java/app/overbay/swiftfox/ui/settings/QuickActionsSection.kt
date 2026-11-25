@@ -25,23 +25,23 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.ArrowForward
-import androidx.compose.material.icons.automirrored.rounded.MenuBook
-import androidx.compose.material.icons.automirrored.rounded.SendToMobile
-import androidx.compose.material.icons.rounded.AutoFixHigh
-import androidx.compose.material.icons.rounded.Bookmark
-import androidx.compose.material.icons.rounded.BookmarkBorder
+import app.overbay.swiftfox.ui.icons.automirrored.MenuBook
+import app.overbay.swiftfox.ui.icons.automirrored.SendToMobile
+import app.overbay.swiftfox.ui.icons.rounded.AutoFixHigh
+import app.overbay.swiftfox.ui.icons.rounded.Bookmark
+import app.overbay.swiftfox.ui.icons.rounded.BookmarkBorder
 import androidx.compose.material.icons.rounded.Close
-import androidx.compose.material.icons.rounded.DesktopWindows
-import androidx.compose.material.icons.rounded.FindInPage
-import androidx.compose.material.icons.rounded.PictureInPictureAlt
-import androidx.compose.material.icons.rounded.Print
-import androidx.compose.material.icons.rounded.PushPin
+import app.overbay.swiftfox.ui.icons.rounded.DesktopWindows
+import app.overbay.swiftfox.ui.icons.rounded.FindInPage
+import app.overbay.swiftfox.ui.icons.rounded.PictureInPictureAlt
+import app.overbay.swiftfox.ui.icons.rounded.Print
+import app.overbay.swiftfox.ui.icons.rounded.PushPin
 import androidx.compose.material.icons.rounded.Refresh
-import androidx.compose.material.icons.rounded.Security
+import app.overbay.swiftfox.ui.icons.rounded.Security
 import androidx.compose.material.icons.rounded.Share
-import androidx.compose.material.icons.rounded.Shield
-import androidx.compose.material.icons.rounded.Smartphone
-import androidx.compose.material.icons.rounded.Tune
+import app.overbay.swiftfox.ui.icons.rounded.Shield
+import app.overbay.swiftfox.ui.icons.rounded.Smartphone
+import app.overbay.swiftfox.ui.icons.rounded.Tune
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -76,12 +76,14 @@ fun QuickActionsSection(
     onFindInPage: () -> Unit,
     onPinEssential: () -> Unit,
     onSendToZenSpace: () -> Unit,
+    activeTabBlockedCount: Int = state.activeTab?.blockedCount ?: 0,
     modifier: Modifier = Modifier
 ) {
     val activeTab = state.activeTab
     val isWebPage = activeTab != null && !activeTab.isStartPage
     val isDesktop = activeTab?.resolvedSiteMode == SiteMode.DESKTOP
-    val siteAdblockDisabled = state.activeSiteOverride?.adblockDisabled == true
+    val activeOverride = state.activeSiteOverride
+    val siteAdblockDisabled = activeOverride?.adblockDisabled == true
     val isShieldActive = state.settings.adblockEnabled && !siteAdblockDisabled
 
     val shieldEnabled = !isWebPage || state.settings.adblockEnabled
@@ -89,10 +91,11 @@ fun QuickActionsSection(
         isWebPage && !state.settings.adblockEnabled -> "Disabled in Settings"
         !state.settings.adblockEnabled -> "Shield off"
         isWebPage && siteAdblockDisabled -> "Paused on site"
-        isWebPage -> "${activeTab.blockedCount} blocked"
+        isWebPage -> "$activeTabBlockedCount blocked"
         else -> "${state.adblockStatus.totalRules} rules ready"
     }
-    val jsEnabledForSite = state.activeSiteOverride?.javascriptEnabled != false
+    val jsEnabledForSite = activeOverride?.javascriptEnabled != false
+    val isBookmarked = state.isActiveUrlBookmarked
 
     Surface(
         shape = RoundedCornerShape(22.dp),
@@ -166,13 +169,13 @@ fun QuickActionsSection(
                             modifier = Modifier.weight(1f)
                         )
                         QuickIconAction(
-                            label = if (state.isActiveUrlBookmarked) "Saved" else "Save",
-                            icon = if (state.isActiveUrlBookmarked) {
+                            label = if (isBookmarked) "Saved" else "Save",
+                            icon = if (isBookmarked) {
                                 Icons.Rounded.Bookmark
                             } else {
                                 Icons.Rounded.BookmarkBorder
                             },
-                            active = state.isActiveUrlBookmarked,
+                            active = isBookmarked,
                             onClick = onToggleBookmark,
                             modifier = Modifier.weight(1f)
                         )

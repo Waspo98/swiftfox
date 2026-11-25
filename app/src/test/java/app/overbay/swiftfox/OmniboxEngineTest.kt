@@ -116,8 +116,13 @@ class OmniboxEngineTest {
     fun normalizesHostsAndExtractsWithSpecialCharacters() {
         assertEquals("example.com", OmniboxEngine.normalizeHost("WWW.Example.COM"))
         assertEquals("example.com", OmniboxEngine.extractHost("https://www.example.com/path with spaces?a=1"))
+        assertEquals("theverge.com", OmniboxEngine.extractHost("https://www.theverge.com/2026/tech?utm=a|b&ctx={1}[2]"))
+        assertEquals("overbay.app", OmniboxEngine.extractHost("https://user@www.overbay.app:8443/dashboard#top"))
         assertEquals("::1", OmniboxEngine.extractHost("http://[::1]:8080/dashboard"))
         assertEquals("evil.com", OmniboxEngine.extractHost("https://evil.com\\@good.com/path"))
+        assertEquals("", OmniboxEngine.extractHost("about:blank"))
+        assertEquals("", OmniboxEngine.extractHost("javascript:alert(1)"))
+        assertEquals("", OmniboxEngine.extractHost("data:text/html,<h1>hi</h1>"))
     }
 
     @Test
@@ -526,9 +531,13 @@ class OmniboxEngineTest {
     @Test
     fun hostPrefixExtractionEscapesSqlLikeWildcards() {
         assertEquals("the\\_verge\\%1", OmniboxEngine.extractHostPrefixForDbQuery("https://www.the_verge%1"))
+        assertEquals("the_verge%1", OmniboxEngine.extractRawHostPrefixForDbQuery("https://www.the_verge%1"))
+        assertEquals("the_verge%1/path", OmniboxEngine.extractRawHostPrefixForDbQuery("https://www.the_verge%1/path"))
         assertEquals("youtube", OmniboxEngine.extractHostPrefixForDbQuery("m.youtube"))
+        assertEquals("youtube", OmniboxEngine.extractRawHostPrefixForDbQuery("m.youtube"))
         assertEquals("theverge", OmniboxEngine.extractHostPrefixForDbQuery("theverge"))
         assertNull(OmniboxEngine.extractHostPrefixForDbQuery("!g theverge"))
+        assertNull(OmniboxEngine.extractRawHostPrefixForDbQuery("!g theverge"))
         assertNull(OmniboxEngine.extractHostPrefixForDbQuery("the verge"))
     }
 

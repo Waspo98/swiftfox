@@ -23,8 +23,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
-import androidx.compose.material.icons.rounded.Link
-import androidx.compose.material.icons.rounded.QrCodeScanner
+import app.overbay.swiftfox.ui.icons.rounded.Link
+import app.overbay.swiftfox.ui.icons.rounded.QrCodeScanner
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -56,6 +56,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import app.overbay.swiftfox.features.sync.MozillaSyncCoordinator
 import com.google.zxing.BarcodeFormat
@@ -94,6 +96,21 @@ fun QrPairingOverlay(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         hasCameraPermission = granted
+    }
+
+    DisposableEffect(lifecycleOwner, context) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                hasCameraPermission = ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.CAMERA
+                ) == PackageManager.PERMISSION_GRANTED
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
     }
 
     LaunchedEffect(Unit) {
@@ -256,6 +273,10 @@ fun QrPairingOverlay(
 
     if (showManualDialog) {
         var linkDraft by remember { mutableStateOf("") }
+        val trimmedLink = linkDraft.trim()
+        val isLinkValid = remember(trimmedLink) {
+            trimmedLink.isNotEmpty() && MozillaSyncCoordinator.isValidPairingUrl(trimmedLink)
+        }
         AlertDialog(
             onDismissRequest = { showManualDialog = false },
             title = { Text("Paste pairing URL") },
@@ -265,6 +286,12 @@ fun QrPairingOverlay(
                     onValueChange = { linkDraft = it },
                     label = { Text("https://accounts.firefox.com/pair#...") },
                     singleLine = true,
+                    isError = trimmedLink.isNotEmpty() && !isLinkValid,
+                    supportingText = if (trimmedLink.isNotEmpty() && !isLinkValid) {
+                        { Text("Enter a valid Firefox / Mozilla pairing link") }
+                    } else {
+                        null
+                    },
                     shape = RoundedCornerShape(16.dp),
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -273,9 +300,9 @@ fun QrPairingOverlay(
                 TextButton(
                     onClick = {
                         showManualDialog = false
-                        onPairingUrlDetected(linkDraft)
+                        onPairingUrlDetected(trimmedLink)
                     },
-                    enabled = linkDraft.isNotBlank()
+                    enabled = isLinkValid
                 ) {
                     Text("Connect")
                 }
@@ -320,6 +347,7 @@ private fun QrCameraPreview(
         val executor = Executors.newSingleThreadExecutor()
         val providerFuture = ProcessCameraProvider.getInstance(context)
         val mainExecutor = ContextCompat.getMainExecutor(context)
+        var boundAnalysis: ImageAnalysis? = null
         var reusableBytes = ByteArray(0)
         var reusableRowBuf = ByteArray(0)
 
@@ -339,6 +367,7 @@ private fun QrCameraPreview(
                 val analysis = ImageAnalysis.Builder()
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .build()
+                boundAnalysis = analysis
 
                 analysis.setAnalyzer(executor) { imageProxy ->
                     try {
@@ -416,6 +445,8 @@ private fun QrCameraPreview(
 
         onDispose {
             disposed.set(true)
+            runCatching { boundAnalysis?.clearAnalyzer() }
+            boundAnalysis = null
             if (providerFuture.isDone) {
                 runCatching { providerFuture.get().unbindAll() }
             }

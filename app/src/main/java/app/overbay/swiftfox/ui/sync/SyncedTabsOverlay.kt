@@ -16,11 +16,11 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
-import androidx.compose.material.icons.rounded.Computer
-import androidx.compose.material.icons.rounded.Devices
-import androidx.compose.material.icons.rounded.PhoneAndroid
+import app.overbay.swiftfox.ui.icons.rounded.Computer
+import app.overbay.swiftfox.ui.icons.rounded.Devices
+import app.overbay.swiftfox.ui.icons.rounded.PhoneAndroid
 import androidx.compose.material.icons.rounded.Refresh
-import androidx.compose.material.icons.rounded.TabletAndroid
+import app.overbay.swiftfox.ui.icons.rounded.TabletAndroid
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -74,14 +74,21 @@ fun SyncedTabsOverlay(
     val isConnected = state.syncStatus.accountState is SyncAccountState.Connected
     val displayGroups = remember(state.syncedRemoteTabs) {
         state.remoteTabGroups.map { group ->
-            SyncedDeviceDisplayGroup(
-                group = group,
-                rows = group.tabs.map { tab ->
-                    SyncedTabRowItem(
-                        tab = tab,
-                        displayHost = OmniboxEngine.extractHost(tab.url).ifBlank { tab.url }
+            val seenIds = HashSet<String>(group.tabs.size)
+            val uniqueRows = ArrayList<SyncedTabRowItem>(group.tabs.size)
+            for (tab in group.tabs) {
+                if (seenIds.add(tab.id)) {
+                    uniqueRows.add(
+                        SyncedTabRowItem(
+                            tab = tab,
+                            displayHost = OmniboxEngine.extractHost(tab.url).ifBlank { tab.url }
+                        )
                     )
                 }
+            }
+            SyncedDeviceDisplayGroup(
+                group = group,
+                rows = uniqueRows
             )
         }
     }
@@ -222,7 +229,7 @@ fun SyncedTabsOverlay(
                     }
                     itemsIndexed(
                         items = rows,
-                        key = { idx, item -> "remote_tab_${group.deviceId}_${item.tab.id}_$idx" },
+                        key = { _, item -> "remote_tab_${group.deviceId}_${item.tab.id}" },
                         contentType = { _, _ -> "remote_tab_row" }
                     ) { idx, item ->
                         RemoteTabItemRow(

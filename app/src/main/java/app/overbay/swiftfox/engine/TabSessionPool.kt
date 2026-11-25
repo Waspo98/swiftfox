@@ -11,17 +11,62 @@ import androidx.webkit.WebViewFeature
 import app.overbay.swiftfox.features.darkreader.DarkReaderInjector
 
 class TabSessionPool(
-    private val maxWarmSessions: Int = 5
+    private val maxWarmSessions: Int = 5,
+    private val maxThumbnailCacheBytes: Long = DEFAULT_MAX_THUMBNAIL_BYTES,
+    private val maxHibernatedBundles: Int = DEFAULT_MAX_HIBERNATED_BUNDLES
 ) {
     private val lock = Any()
     private val warmSessions = LinkedHashMap<String, BrowserSession>(maxWarmSessions, 0.75f, true)
-    private val hibernatedBundles = mutableMapOf<String, Bundle>()
-    private val thumbnails = mutableMapOf<String, Bitmap>()
+    private val hibernatedBundles = LinkedHashMap<String, Bundle>(16, 0.75f, true)
+    private val thumbnails = LinkedHashMap<String, Bitmap>(16, 0.75f, true)
+    private var thumbnailCacheBytes: Long = 0L
     private var currentHostContext: Context? = null
     @Volatile
     private var currentActiveTabId: String? = null
     @Volatile
     var onThumbnailsEvicted: ((Set<String>) -> Unit)? = null
+    @Volatile
+    var onThumbnailCaptured: ((String) -> Unit)? = null
+
+    private fun storeHibernatedBundleLocked(tabId: String, bundle: Bundle) {
+        hibernatedBundles[tabId] = bundle
+        while (hibernatedBundles.size > maxHibernatedBundles) {
+            val eldestKey = hibernatedBundles.entries.firstOrNull { it.key != currentActiveTabId }?.key
+                ?: hibernatedBundles.entries.firstOrNull()?.key
+                ?: break
+            hibernatedBundles.remove(eldestKey)
+        }
+    }
+
+    private fun putThumbnailLocked(tabId: String, bitmap: Bitmap): Set<String> {
+        val addedBytes = bitmapByteSize(bitmap)
+        thumbnails.remove(tabId)?.let { prev ->
+            thumbnailCacheBytes = (thumbnailCacheBytes - bitmapByteSize(prev)).coerceAtLeast(0L)
+        }
+        thumbnails[tabId] = bitmap
+        thumbnailCacheBytes += addedBytes
+        if (thumbnailCacheBytes <= maxThumbnailCacheBytes) return emptySet()
+
+        val evictedKeys = mutableSetOf<String>()
+        while (thumbnailCacheBytes > maxThumbnailCacheBytes && thumbnails.size > 1) {
+            val eldestKey = thumbnails.entries.firstOrNull { it.key != currentActiveTabId && it.key != tabId }?.key
+                ?: thumbnails.entries.firstOrNull { it.key != tabId }?.key
+                ?: break
+            val removed = thumbnails.remove(eldestKey) ?: break
+            thumbnailCacheBytes = (thumbnailCacheBytes - bitmapByteSize(removed)).coerceAtLeast(0L)
+            evictedKeys += eldestKey
+        }
+        return evictedKeys
+    }
+
+    private fun removeThumbnailLocked(tabId: String): Boolean {
+        val removed = thumbnails.remove(tabId) ?: return false
+        thumbnailCacheBytes = (thumbnailCacheBytes - bitmapByteSize(removed)).coerceAtLeast(0L)
+        return true
+    }
+
+    private fun bitmapByteSize(bitmap: Bitmap): Long =
+        runCatching { bitmap.allocationByteCount.toLong() }.getOrDefault(0L).coerceAtLeast(1024L)
 
     fun setActiveTab(tabId: String?) {
         currentActiveTabId = tabId
@@ -60,14 +105,15 @@ class TabSessionPool(
                 val session = warmSessions.remove(key) ?: continue
                 val bundle = Bundle()
                 session.saveState(bundle)
-                hibernatedBundles[key] = bundle
+                storeHibernatedBundleLocked(key, bundle)
                 evicted += session
             }
             if (evictThumbnails) {
                 val thumbKeysToClear = thumbnails.keys.filter { it != keepTabId }
                 thumbKeysToClear.forEach {
-                    thumbnails.remove(it)
-                    evictedThumbKeys += it
+                    if (removeThumbnailLocked(it)) {
+                        evictedThumbKeys += it
+                    }
                 }
             }
         }
@@ -97,6 +143,35 @@ class TabSessionPool(
             warmSessions.values.toList()
         }
         snapshot.forEach { it.rebindContext(context) }
+    }
+
+    fun rebindAllCallbacks(callbacks: SessionHostCallbacks) {
+        val snapshot = synchronized(lock) { warmSessions.values.toList() }
+        snapshot.forEach { it.rebindCallbacks(callbacks) }
+    }
+
+    fun detachCallbacksOnCleared(destroyPrivateSessions: Boolean = false) {
+        val privateEvicted = mutableListOf<BrowserSession>()
+        val nonPrivateSnapshot: List<BrowserSession>
+        synchronized(lock) {
+            if (destroyPrivateSessions) {
+                val privIds = warmSessions.entries.filter { it.value.isPrivate }.map { it.key }
+                privIds.forEach { id ->
+                    hibernatedBundles.remove(id)
+                    removeThumbnailLocked(id)
+                    warmSessions.remove(id)?.let { privateEvicted += it }
+                }
+            }
+            nonPrivateSnapshot = warmSessions.values.toList()
+        }
+        nonPrivateSnapshot.forEach { it.rebindCallbacks(NoOpSessionHostCallbacks) }
+        if (privateEvicted.isNotEmpty()) {
+            privateEvicted.forEach { session ->
+                (session.webView.parent as? ViewGroup)?.removeView(session.webView)
+                session.destroy()
+            }
+            clearPrivateProfileData()
+        }
     }
 
     fun unbindHostActivity(activityContext: Context, fallbackApplicationContext: Context) {
@@ -143,6 +218,7 @@ class TabSessionPool(
             stale.destroy()
         }
         if (existing != null) {
+            existing.rebindCallbacks(callbacks)
             existing.rebindContext(hostCtx)
             return existing
         }
@@ -157,7 +233,8 @@ class TabSessionPool(
 
         var duplicateCreated = false
         val winner: BrowserSession
-        val evicted = mutableListOf<BrowserSession>()
+        var raceEvicted: BrowserSession? = null
+        val lruEvicted = mutableListOf<Pair<String, BrowserSession>>()
         var savedBundle: Bundle? = null
         synchronized(lock) {
             val raceWinner = warmSessions[tabId]
@@ -167,16 +244,17 @@ class TabSessionPool(
             } else {
                 if (raceWinner != null) {
                     warmSessions.remove(tabId)
-                    evicted += raceWinner
+                    raceEvicted = raceWinner
                 }
                 savedBundle = hibernatedBundles.remove(tabId)
                 warmSessions[tabId] = created
-                evictIfNeededLocked(activeTabId = tabId, outEvicted = evicted)
+                evictIfNeededLocked(activeTabId = tabId, outEvicted = lruEvicted)
                 winner = created
             }
         }
         if (duplicateCreated) {
             created.destroy()
+            winner.rebindCallbacks(callbacks)
             winner.rebindContext(hostCtx)
         } else {
             // Apply posture UA, site overrides, JS/cookie policies, and surface background
@@ -186,9 +264,36 @@ class TabSessionPool(
                 created.restoreState(saved)
             }
         }
-        evicted.forEach { session ->
+        raceEvicted?.let { session ->
             (session.webView.parent as? ViewGroup)?.removeView(session.webView)
             session.destroy()
+        }
+        if (lruEvicted.isNotEmpty()) {
+            val evictedThumbKeys = mutableSetOf<String>()
+            val capturedTabIds = mutableListOf<String>()
+            for ((evictedId, session) in lruEvicted) {
+                val capturedThumb = session.captureThumbnail()
+                val bundle = Bundle()
+                session.saveState(bundle)
+                synchronized(lock) {
+                    // Only commit hibernated state/thumbnail if the tab wasn't removed or re-warmed
+                    if (!warmSessions.containsKey(evictedId)) {
+                        storeHibernatedBundleLocked(evictedId, bundle)
+                        if (capturedThumb != null) {
+                            evictedThumbKeys += putThumbnailLocked(evictedId, capturedThumb)
+                            capturedTabIds += evictedId
+                        }
+                    }
+                }
+                (session.webView.parent as? ViewGroup)?.removeView(session.webView)
+                session.destroy()
+            }
+            if (evictedThumbKeys.isNotEmpty()) {
+                onThumbnailsEvicted?.invoke(evictedThumbKeys)
+            }
+            capturedTabIds.forEach { id ->
+                onThumbnailCaptured?.invoke(id)
+            }
         }
         return winner
     }
@@ -225,13 +330,17 @@ class TabSessionPool(
         }
     }
 
-    fun captureAndStoreThumbnail(tabId: String) {
-        val session = synchronized(lock) { warmSessions[tabId] } ?: return
-        session.captureThumbnail()?.let { bmp ->
-            synchronized(lock) {
-                thumbnails[tabId] = bmp
-            }
+    fun captureAndStoreThumbnail(tabId: String): Boolean {
+        val session = synchronized(lock) { warmSessions[tabId] } ?: return false
+        val bmp = session.captureThumbnail() ?: return false
+        val evictedKeys = synchronized(lock) {
+            putThumbnailLocked(tabId, bmp)
         }
+        if (evictedKeys.isNotEmpty()) {
+            onThumbnailsEvicted?.invoke(evictedKeys)
+        }
+        onThumbnailCaptured?.invoke(tabId)
+        return true
     }
 
     fun getThumbnail(tabId: String): Bitmap? = synchronized(lock) {
@@ -241,7 +350,7 @@ class TabSessionPool(
     fun remove(tabId: String) {
         val session = synchronized(lock) {
             hibernatedBundles.remove(tabId)
-            thumbnails.remove(tabId)
+            removeThumbnailLocked(tabId)
             warmSessions.remove(tabId)
         }
         if (session != null) {
@@ -312,6 +421,7 @@ class TabSessionPool(
             }
             if (clearCache) {
                 thumbnails.clear()
+                thumbnailCacheBytes = 0L
             }
             warmSessions.values.toList()
         }
@@ -356,7 +466,10 @@ class TabSessionPool(
         }
     }
 
-    private fun evictIfNeededLocked(activeTabId: String, outEvicted: MutableList<BrowserSession>) {
+    private fun evictIfNeededLocked(
+        activeTabId: String,
+        outEvicted: MutableList<Pair<String, BrowserSession>>
+    ) {
         while (warmSessions.size > maxWarmSessions) {
             // Prefer evicting non-active tabs that are not currently playing background media
             val eldestKey = warmSessions.entries.firstOrNull { (id, session) ->
@@ -364,11 +477,12 @@ class TabSessionPool(
             }?.key ?: warmSessions.keys.firstOrNull { it != activeTabId } ?: break
 
             val session = warmSessions.remove(eldestKey) ?: break
-            session.captureThumbnail()?.let { thumbnails[eldestKey] = it }
-            val bundle = Bundle()
-            session.saveState(bundle)
-            hibernatedBundles[eldestKey] = bundle
-            outEvicted += session
+            outEvicted += eldestKey to session
         }
+    }
+
+    companion object {
+        private const val DEFAULT_MAX_THUMBNAIL_BYTES = 8L * 1024L * 1024L
+        private const val DEFAULT_MAX_HIBERNATED_BUNDLES = 40
     }
 }

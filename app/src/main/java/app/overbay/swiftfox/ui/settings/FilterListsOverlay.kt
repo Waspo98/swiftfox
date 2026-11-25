@@ -19,9 +19,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.DeleteOutline
+import app.overbay.swiftfox.ui.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Refresh
-import androidx.compose.material.icons.rounded.Shield
+import app.overbay.swiftfox.ui.icons.rounded.Shield
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api

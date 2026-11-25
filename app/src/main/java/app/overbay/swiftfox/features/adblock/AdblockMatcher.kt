@@ -18,13 +18,42 @@ data class CosmeticPayload(
 
 interface AdblockMatcher {
     fun checkNetworkRequest(url: String, sourceUrl: String, requestType: String): Boolean
+    /**
+     * Tri-state check used by [AdblockEngine] to avoid fail-open races across matcher swaps:
+     * `1` = blocked, `0` = allowed, `-1` = matcher handle was already closed.
+     */
+    fun checkNetworkRequestTriState(
+        url: String,
+        sourceUrl: String,
+        requestType: String,
+        requestTypeCode: Int = NativeAdblockBridge.codeForRequestType(requestType)
+    ): Int = if (checkNetworkRequest(url, sourceUrl, requestType)) 1 else 0
+
     fun cosmeticResources(url: String): CosmeticPayload
     fun hiddenClassIdCss(
         classes: List<String>,
         ids: List<String>,
         exceptions: Set<String>
     ): String = ""
+
+    fun hiddenClassIdCssFromJson(
+        classesJson: String,
+        idsJson: String,
+        exceptions: Set<String>,
+        maxTokens: Int = 1500
+    ): String {
+        val classes = runCatching {
+            NativeAdblockMatcher.sharedJson.decodeFromString<List<String>>(classesJson).take(maxTokens)
+        }.getOrDefault(emptyList())
+        val ids = runCatching {
+            NativeAdblockMatcher.sharedJson.decodeFromString<List<String>>(idsJson).take(maxTokens)
+        }.getOrDefault(emptyList())
+        if (classes.isEmpty() && ids.isEmpty()) return ""
+        return hiddenClassIdCss(classes, ids, exceptions)
+    }
+
     fun serialize(): ByteArray?
+    fun serializeToFile(path: String): Boolean = false
     fun close()
 }
 
@@ -40,10 +69,23 @@ class NativeAdblockMatcher(
     private val lock = ReentrantReadWriteLock()
 
     override fun checkNetworkRequest(url: String, sourceUrl: String, requestType: String): Boolean =
-        lock.read {
-            if (handle == 0L || !NativeAdblockBridge.isLoaded) return false
-            NativeAdblockBridge.nativeCheckNetworkRequest(handle, url, sourceUrl, requestType)
-        }
+        checkNetworkRequestTriState(
+            url = url,
+            sourceUrl = sourceUrl,
+            requestType = requestType,
+            requestTypeCode = NativeAdblockBridge.codeForRequestType(requestType)
+        ) == 1
+
+    override fun checkNetworkRequestTriState(
+        url: String,
+        sourceUrl: String,
+        requestType: String,
+        requestTypeCode: Int
+    ): Int = lock.read {
+        val active = handle
+        if (active == 0L || !NativeAdblockBridge.isLoaded) return -1
+        if (NativeAdblockBridge.nativeCheckNetworkRequestCode(active, url, sourceUrl, requestTypeCode)) 1 else 0
+    }
 
     override fun cosmeticResources(url: String): CosmeticPayload {
         val rawJson = lock.read {
@@ -51,7 +93,7 @@ class NativeAdblockMatcher(
             NativeAdblockBridge.nativeCosmeticForUrl(handle, url).orEmpty()
         }
         if (rawJson.isBlank()) return CosmeticPayload()
-        return runCatching { json.decodeFromString<CosmeticPayload>(rawJson) }
+        return runCatching { sharedJson.decodeFromString<CosmeticPayload>(rawJson) }
             .getOrDefault(CosmeticPayload())
     }
 
@@ -61,9 +103,21 @@ class NativeAdblockMatcher(
         exceptions: Set<String>
     ): String {
         if (classes.isEmpty() && ids.isEmpty()) return ""
-        val classesJson = json.encodeToString(classes)
-        val idsJson = json.encodeToString(ids)
-        val exceptionsJson = json.encodeToString(exceptions.toList())
+        val classesJson = sharedJson.encodeToString(classes)
+        val idsJson = sharedJson.encodeToString(ids)
+        return hiddenClassIdCssFromJson(classesJson, idsJson, exceptions)
+    }
+
+    override fun hiddenClassIdCssFromJson(
+        classesJson: String,
+        idsJson: String,
+        exceptions: Set<String>,
+        maxTokens: Int
+    ): String {
+        if ((classesJson.isBlank() || classesJson == "[]") && (idsJson.isBlank() || idsJson == "[]")) {
+            return ""
+        }
+        val exceptionsJson = if (exceptions.isEmpty()) "[]" else sharedJson.encodeToString(exceptions.toList())
         return lock.read {
             if (handle == 0L || !NativeAdblockBridge.isLoaded) return ""
             NativeAdblockBridge.nativeHiddenClassIdSelectors(
@@ -81,6 +135,12 @@ class NativeAdblockMatcher(
             NativeAdblockBridge.nativeSerialize(handle)
         }
 
+    override fun serializeToFile(path: String): Boolean =
+        lock.read {
+            if (handle == 0L || !NativeAdblockBridge.isLoaded) return false
+            NativeAdblockBridge.nativeSerializeToFile(handle, path)
+        }
+
     override fun close() {
         lock.write {
             val active = handle
@@ -94,7 +154,7 @@ class NativeAdblockMatcher(
     }
 
     companion object {
-        private val json = Json { ignoreUnknownKeys = true }
+        internal val sharedJson = Json { ignoreUnknownKeys = true }
     }
 }
 
@@ -479,24 +539,11 @@ class FallbackKotlinAdblockMatcher(rulesText: String) : AdblockMatcher {
     private fun parseUrlLenient(url: String): ParsedUrlParts? {
         val trimmed = url.trim()
         if (trimmed.isEmpty()) return null
-        val strict = runCatching { URI(trimmed) }.getOrNull()
-        val strictHost = strict?.host?.lowercase(java.util.Locale.ROOT)?.trim('[', ']')
-        if (strict != null && !strictHost.isNullOrBlank()) {
-            val rawPath = strict.rawPath.orEmpty().ifEmpty { "/" }
-            val pathAndQuery = buildString {
-                append(rawPath)
-                strict.rawQuery?.let {
-                    append('?')
-                    append(it)
-                }
-            }
-            return ParsedUrlParts(host = strictHost, pathAndQuery = pathAndQuery)
-        }
         val schemeIdx = trimmed.indexOf("://")
         if (schemeIdx <= 0) return null
         val afterScheme = trimmed.substring(schemeIdx + 3)
         val noFragment = afterScheme.substringBefore('#')
-        val pathStart = noFragment.indexOfAny(charArrayOf('/', '?'))
+        val pathStart = noFragment.indexOfAny(PATH_OR_QUERY_CHARS)
         val authority = (if (pathStart >= 0) noFragment.substring(0, pathStart) else noFragment)
             .substringAfterLast('@')
         val hostPart = if (authority.startsWith('[')) {
@@ -530,6 +577,7 @@ class FallbackKotlinAdblockMatcher(rulesText: String) : AdblockMatcher {
     }
 
     companion object {
+        private val PATH_OR_QUERY_CHARS = charArrayOf('/', '?')
         private val MULTI_PART_PUBLIC_SUFFIXES = setOf(
             "co.uk", "org.uk", "ac.uk", "gov.uk", "me.uk", "net.uk",
             "com.au", "net.au", "org.au", "edu.au", "gov.au",

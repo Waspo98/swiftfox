@@ -65,24 +65,24 @@ import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.ArrowForward
-import androidx.compose.material.icons.automirrored.rounded.MenuBook
-import androidx.compose.material.icons.automirrored.rounded.OpenInNew
-import androidx.compose.material.icons.automirrored.rounded.ViewSidebar
+import app.overbay.swiftfox.ui.icons.automirrored.MenuBook
+import app.overbay.swiftfox.ui.icons.automirrored.OpenInNew
+import app.overbay.swiftfox.ui.icons.automirrored.ViewSidebar
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Close
-import androidx.compose.material.icons.rounded.ContentCopy
-import androidx.compose.material.icons.rounded.DesktopWindows
-import androidx.compose.material.icons.rounded.Download
+import app.overbay.swiftfox.ui.icons.rounded.ContentCopy
+import app.overbay.swiftfox.ui.icons.rounded.DesktopWindows
+import app.overbay.swiftfox.ui.icons.rounded.Download
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.Lock
-import androidx.compose.material.icons.rounded.LockOpen
+import app.overbay.swiftfox.ui.icons.rounded.LockOpen
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
-import androidx.compose.material.icons.rounded.Security
+import app.overbay.swiftfox.ui.icons.rounded.Security
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Share
-import androidx.compose.material.icons.rounded.Shield
+import app.overbay.swiftfox.ui.icons.rounded.Shield
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -105,6 +105,7 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -112,6 +113,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -129,7 +131,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.boundsInRoot
-import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onPlaced
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
@@ -294,9 +296,6 @@ fun BrowserScreen(
             triggerDistancePx = with(density) { 72.dp.toPx() }
         )
     }
-    val toolbarsCollapsed by remember(collapseBridge) {
-        derivedStateOf { collapseBridge.progressState.floatValue >= 0.5f }
-    }
 
     val forceExpandToolbars = hideChrome ||
         !state.settings.hideToolbarsOnScroll ||
@@ -398,29 +397,39 @@ fun BrowserScreen(
 
     var omniboxSourceRect by remember { mutableStateOf<Rect?>(null) }
     val omniboxProgress = remember { Animatable(if (state.isOmniboxFocused) 1f else 0f) }
-    val isOmniboxAnimating by remember { derivedStateOf { omniboxProgress.value > 0.001f } }
+    var isOmniboxMounted by remember { mutableStateOf(state.isOmniboxFocused) }
     LaunchedEffect(state.windowState) {
         omniboxSourceRect = null
     }
     LaunchedEffect(state.isOmniboxFocused, reduceMotion) {
-        val target = if (state.isOmniboxFocused) 1f else 0f
-        if (reduceMotion) {
-            omniboxProgress.snapTo(target)
-        } else {
-            omniboxProgress.animateTo(
-                targetValue = target,
-                animationSpec = tween(
-                    durationMillis = if (state.isOmniboxFocused) 270 else 210,
-                    easing = if (state.isOmniboxFocused) EmphasizedDecelerateEasing else EmphasizedAccelerateEasing
+        if (state.isOmniboxFocused) {
+            isOmniboxMounted = true
+            if (reduceMotion) {
+                omniboxProgress.snapTo(1f)
+            } else {
+                omniboxProgress.animateTo(
+                    targetValue = 1f,
+                    animationSpec = tween(durationMillis = 270, easing = EmphasizedDecelerateEasing)
                 )
-            )
+            }
+        } else {
+            if (reduceMotion) {
+                omniboxProgress.snapTo(0f)
+            } else {
+                omniboxProgress.animateTo(
+                    targetValue = 0f,
+                    animationSpec = tween(durationMillis = 210, easing = EmphasizedAccelerateEasing)
+                )
+            }
+            isOmniboxMounted = false
         }
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
         BrowserShellLayout(
             state = state,
-            toolbarsCollapsed = toolbarsCollapsed,
+            activeTabProgressFlow = viewModel.activeTabProgress,
+            chromeHeights = collapseBridge.chromeHeights,
             toolbarCollapseProgressProvider = { collapseBridge.progressState.floatValue },
             pullToRefreshVisualState = pullToRefreshVisualState,
             onChromeHeightsMeasured = { topPx, bottomPx ->
@@ -811,6 +820,7 @@ fun BrowserScreen(
                         onInstallFromUrl = { url -> viewModel.installUserscriptFromUrl(url) },
                         onImportLocalFile = { viewModel.triggerImportUserscriptFile() },
                         onSaveScriptCode = { existingId, code -> viewModel.saveUserscriptCode(existingId, code) },
+                        onLoadScriptCode = { id -> viewModel.loadUserscriptCode(id) },
                         onDeleteScript = { id -> viewModel.deleteUserscript(id) },
                         userscriptsEnabled = state.settings.userscriptsEnabled,
                         onEnableUserscripts = { viewModel.setUserscriptsEnabled(true) }
@@ -964,50 +974,42 @@ fun BrowserScreen(
         }
 
         // Focused Omnibox overlay with zero-recomposition 120Hz bounds-anchored morph expand
-        if (state.isOmniboxFocused || isOmniboxAnimating) {
-            OmniboxOverlay(
+        if (state.isOmniboxFocused || isOmniboxMounted) {
+            FocusedOmniboxHost(
                 isVisible = state.isOmniboxFocused,
                 expandProgressProvider = { omniboxProgress.value },
                 sourceRect = omniboxSourceRect,
-                query = state.omniboxQuery,
                 defaultSearchEngine = state.settings.searchEngine,
                 customSearchUrlTemplate = state.settings.customSearchUrlTemplate,
-                activeSearchScope = state.omniboxSearchScope,
                 isPrivate = activeTab?.isPrivate == true || state.isPrivateView,
-                suggestions = state.omniboxSuggestions,
-                inlineAutocomplete = state.omniboxInlineAutocomplete,
-                onQueryChange = { viewModel.onOmniboxQueryChanged(it) },
-                onSelectSearchScope = { viewModel.setOmniboxSearchScope(it) },
-                onOpenSearchSettings = { viewModel.openSearchSettings() },
-                onSubmit = { viewModel.submitOmnibox(it) },
-                onSelectSuggestion = { suggestion: OmniboxSuggestion ->
-                    if (suggestion.tabId != null) {
-                        viewModel.selectTab(suggestion.tabId)
-                    } else if (suggestion.targetUrl.endsWith(" ")) {
-                        viewModel.onOmniboxQueryChanged(suggestion.targetUrl)
-                    } else {
-                        viewModel.navigateActiveTab(suggestion.targetUrl)
-                    }
-                },
-                onDismiss = { viewModel.dismissOmnibox() }
+                viewModel = viewModel
             )
         }
 
         // Per-Site Rules & Overrides Sheet
         if (isSiteRulesVisible) {
             val siteRulesTab = activeTab
-            val host = OmniboxEngine.normalizeHost(siteRulesTab.displayHost)
-            val persistentRulesForHost = state.zappedRules.filter { it.host.equals(host, ignoreCase = true) }
-            val rulesForHost = if (siteRulesTab.isPrivate) {
-                (persistentRulesForHost + state.privateZappedRules[host].orEmpty())
-                    .distinctBy { it.id }
-            } else {
-                persistentRulesForHost
+            val host = remember(siteRulesTab.displayHost) {
+                OmniboxEngine.normalizeHost(siteRulesTab.displayHost)
             }
-            val persistentRuleIds = if (siteRulesTab.isPrivate) {
-                persistentRulesForHost.mapTo(mutableSetOf()) { it.id }
-            } else {
-                emptySet()
+            val persistentRulesForHost = remember(state.zappedRules, host) {
+                state.zappedRules.filter { it.host.equals(host, ignoreCase = true) }
+            }
+            val privateHostRules = state.privateZappedRules[host]
+            val rulesForHost = remember(siteRulesTab.isPrivate, persistentRulesForHost, privateHostRules) {
+                if (siteRulesTab.isPrivate) {
+                    (persistentRulesForHost + privateHostRules.orEmpty())
+                        .distinctBy { it.id }
+                } else {
+                    persistentRulesForHost
+                }
+            }
+            val persistentRuleIds = remember(siteRulesTab.isPrivate, persistentRulesForHost) {
+                if (siteRulesTab.isPrivate) {
+                    persistentRulesForHost.mapTo(mutableSetOf()) { it.id }
+                } else {
+                    emptySet()
+                }
             }
             SiteRulesSheet(
                 host = host,
@@ -1113,23 +1115,89 @@ fun BrowserScreen(
         }
 
         // Root SnackbarHost rendered above all fullscreen overlays so Sync, Bookmarks, and Settings feedback is always visible
-        val snackbarBottomPadding = when {
-            state.activeOverlay == BrowserOverlay.TAB_SWITCHER -> 88.dp
-            isAnyFullscreenOverlayOpen -> 16.dp
-            state.zapper.isActive && hasBottomToolbar -> 156.dp
-            state.zapper.isActive -> 100.dp
-            hasBottomToolbar && !toolbarsCollapsed -> 72.dp
-            else -> 12.dp
-        }
-        SnackbarHost(
-            hostState = snackbarHostState,
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .navigationBarsPadding()
-                .imePadding()
-                .padding(start = 16.dp, end = 16.dp, bottom = snackbarBottomPadding)
+        RootBrowserSnackbarHost(
+            snackbarHostState = snackbarHostState,
+            activeOverlay = state.activeOverlay,
+            isAnyFullscreenOverlayOpen = isAnyFullscreenOverlayOpen,
+            zapperActive = state.zapper.isActive,
+            hasBottomToolbar = hasBottomToolbar,
+            collapseProgressProvider = { collapseBridge.progressState.floatValue },
+            modifier = Modifier.align(Alignment.BottomCenter)
         )
     }
+}
+
+@Composable
+private fun FocusedOmniboxHost(
+    isVisible: Boolean,
+    expandProgressProvider: () -> Float,
+    sourceRect: Rect?,
+    defaultSearchEngine: app.overbay.swiftfox.data.prefs.SearchEngineId,
+    customSearchUrlTemplate: String,
+    isPrivate: Boolean,
+    viewModel: BrowserViewModel
+) {
+    val omniboxState by viewModel.omniboxState.collectAsStateWithLifecycle()
+    OmniboxOverlay(
+        isVisible = isVisible,
+        expandProgressProvider = expandProgressProvider,
+        sourceRect = sourceRect,
+        query = omniboxState.query,
+        defaultSearchEngine = defaultSearchEngine,
+        customSearchUrlTemplate = customSearchUrlTemplate,
+        activeSearchScope = omniboxState.searchScope,
+        isPrivate = isPrivate,
+        suggestions = omniboxState.suggestions,
+        inlineAutocomplete = omniboxState.inlineAutocomplete,
+        onQueryChange = { viewModel.onOmniboxQueryChanged(it) },
+        onSelectSearchScope = { viewModel.setOmniboxSearchScope(it) },
+        onOpenSearchSettings = { viewModel.openSearchSettings() },
+        onSubmit = { viewModel.submitOmnibox(it) },
+        onSelectSuggestion = { suggestion: OmniboxSuggestion ->
+            if (suggestion.tabId != null) {
+                viewModel.selectTab(suggestion.tabId)
+            } else if (suggestion.targetUrl.endsWith(" ")) {
+                viewModel.onOmniboxQueryChanged(suggestion.targetUrl)
+            } else {
+                viewModel.navigateActiveTab(suggestion.targetUrl)
+            }
+        },
+        onDismiss = { viewModel.dismissOmnibox() }
+    )
+}
+
+@Composable
+private fun RootBrowserSnackbarHost(
+    snackbarHostState: SnackbarHostState,
+    activeOverlay: BrowserOverlay,
+    isAnyFullscreenOverlayOpen: Boolean,
+    zapperActive: Boolean,
+    hasBottomToolbar: Boolean,
+    collapseProgressProvider: () -> Float,
+    modifier: Modifier = Modifier
+) {
+    val toolbarsCollapsed by remember(hasBottomToolbar) {
+        derivedStateOf { hasBottomToolbar && collapseProgressProvider() >= 0.5f }
+    }
+    val snackbarBottomPadding = when {
+        activeOverlay == BrowserOverlay.TAB_SWITCHER -> 88.dp
+        isAnyFullscreenOverlayOpen -> 16.dp
+        zapperActive && hasBottomToolbar -> 156.dp
+        zapperActive -> 100.dp
+        hasBottomToolbar && !toolbarsCollapsed -> 72.dp
+        else -> 12.dp
+    }
+    SnackbarHost(
+        hostState = snackbarHostState,
+        modifier = modifier
+            .navigationBarsPadding()
+            .imePadding()
+            .padding(start = 16.dp, end = 16.dp, bottom = snackbarBottomPadding)
+    )
+}
+
+private class ShellBoundsHolder {
+    var rect: Rect? = null
 }
 
 private class TabStripNavTracker {
@@ -1142,7 +1210,7 @@ private class TabStripNavTracker {
 }
 
 @Composable
-fun BrowserShellLayout(
+internal fun BrowserShellLayout(
     state: BrowserUiState,
     onFocusOmnibox: () -> Unit,
     onFocusSearchFresh: () -> Unit,
@@ -1192,7 +1260,8 @@ fun BrowserShellLayout(
         onAddEssential = onAddEssential,
         onRemoveEssential = onRemoveEssential
     ),
-    toolbarsCollapsed: Boolean = false,
+    activeTabProgressFlow: StateFlow<Int>? = null,
+    chromeHeights: ChromeBarHeights = remember { ChromeBarHeights() },
     toolbarCollapseProgressProvider: () -> Float = { 0f },
     pullToRefreshVisualState: PullToRefreshVisualState? = null,
     onChromeHeightsMeasured: (topBarPx: Int, bottomBarPx: Int) -> Unit = { _, _ -> }
@@ -1283,7 +1352,6 @@ fun BrowserShellLayout(
             placement == ToolbarPlacement.TOP ||
                 (placement == ToolbarPlacement.SPLIT && !isStartPage)
         )
-        val chromeHeights = remember { ChromeBarHeights() }
 
         Row(modifier = Modifier.fillMaxSize()) {
             // Optional collapsible Arc/Zen vertical Spaces sidebar when unfolded
@@ -1354,6 +1422,7 @@ fun BrowserShellLayout(
                             ToolbarPlacement.TOP -> {
                                 FullOmniboxToolbar(
                                     state = state,
+                                    activeTabProgressFlow = activeTabProgressFlow,
                                     isTop = true,
                                     showInlineNav = posture == DevicePosture.UNFOLDED,
                                     showTrailingActions = true,
@@ -1375,6 +1444,7 @@ fun BrowserShellLayout(
                                 if (!isStartPage) {
                                     FullOmniboxToolbar(
                                         state = state,
+                                        activeTabProgressFlow = activeTabProgressFlow,
                                         isTop = true,
                                         showInlineNav = false,
                                         showTrailingActions = false,
@@ -1415,6 +1485,7 @@ fun BrowserShellLayout(
                             ToolbarPlacement.BOTTOM -> {
                                 FullOmniboxToolbar(
                                     state = state,
+                                    activeTabProgressFlow = activeTabProgressFlow,
                                     isTop = false,
                                     showInlineNav = false,
                                     showTrailingActions = true,
@@ -1498,7 +1569,8 @@ fun BrowserShellLayout(
                         if (!hideChrome && placement == ToolbarPlacement.SIDE_RAIL) {
                             ToolbarProgressSlot(
                                 isLoading = activeTab?.isLoading == true,
-                                progress = activeTab?.progress ?: 0,
+                                fallbackProgress = activeTab?.progress ?: 0,
+                                activeTabProgressFlow = activeTabProgressFlow,
                                 dividerAlignment = Alignment.TopCenter,
                                 showIdleDivider = false,
                                 modifier = Modifier.align(Alignment.TopCenter)
@@ -1507,10 +1579,13 @@ fun BrowserShellLayout(
 
                         // Compact top domain badge when Side Rail placement is active on unfolded display
                         if (!hideChrome && placement == ToolbarPlacement.SIDE_RAIL && activeTab != null && !activeTab.isStartPage) {
-                            var sideRailBadgeRect by remember { mutableStateOf<Rect?>(null) }
+                            val sideRailBadgeBounds = remember { ShellBoundsHolder() }
+                            val sideRailBadgeEnabled by remember {
+                                derivedStateOf { toolbarCollapseProgressProvider() < 0.5f }
+                            }
                             Surface(
-                                onClick = { onFocusOmniboxFromRect(sideRailBadgeRect, true) },
-                                enabled = !toolbarsCollapsed,
+                                onClick = { onFocusOmniboxFromRect(sideRailBadgeBounds.rect, true) },
+                                enabled = sideRailBadgeEnabled,
                                 shape = RoundedCornerShape(24.dp),
                                 color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.94f),
                                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)),
@@ -1518,8 +1593,8 @@ fun BrowserShellLayout(
                                     .align(Alignment.TopCenter)
                                     .padding(top = 8.dp)
                                     .heightIn(min = 48.dp)
-                                    .onGloballyPositioned { coords ->
-                                        if (coords.isAttached) sideRailBadgeRect = coords.boundsInRoot()
+                                    .onPlaced { coords ->
+                                        if (coords.isAttached) sideRailBadgeBounds.rect = coords.boundsInRoot()
                                     }
                                     .graphicsLayer {
                                         val progress = toolbarCollapseProgressProvider().coerceIn(0f, 1f)
@@ -1711,14 +1786,35 @@ private fun BoxScope.FoldedSidebarDrawerOverlay(
         )
     }
 
-    val drawerDragOffsetPx = remember { Animatable(0f) }
+    var drawerDragOffsetPx by remember { mutableFloatStateOf(0f) }
+    var settleJob by remember { mutableStateOf<Job?>(null) }
     val drawerScope = rememberCoroutineScope()
     val dismissThresholdPx = with(LocalDensity.current) { 72.dp.toPx() }
     val currentOnCloseFoldedSidebar by rememberUpdatedState(onCloseFoldedSidebar)
     val currentReduceMotion by rememberUpdatedState(reduceMotion)
     LaunchedEffect(state.isFoldedSidebarOpen) {
         if (state.isFoldedSidebarOpen) {
-            drawerDragOffsetPx.snapTo(0f)
+            settleJob?.cancel()
+            drawerDragOffsetPx = 0f
+        }
+    }
+
+    fun settleDrawerBackToOrigin() {
+        settleJob?.cancel()
+        val startOffset = drawerDragOffsetPx
+        if (currentReduceMotion || kotlin.math.abs(startOffset) < 0.5f) {
+            drawerDragOffsetPx = 0f
+            return
+        }
+        settleJob = drawerScope.launch {
+            val anim = Animatable(startOffset)
+            anim.animateTo(
+                targetValue = 0f,
+                animationSpec = tween(180, easing = EmphasizedDecelerateEasing)
+            ) {
+                drawerDragOffsetPx = value
+            }
+            drawerDragOffsetPx = 0f
         }
     }
 
@@ -1739,49 +1835,24 @@ private fun BoxScope.FoldedSidebarDrawerOverlay(
         Box(
             modifier = Modifier
                 .fillMaxHeight()
-                .offset { IntOffset(drawerDragOffsetPx.value.roundToInt(), 0) }
+                .offset { IntOffset(drawerDragOffsetPx.roundToInt(), 0) }
                 .pointerInput(dismissThresholdPx) {
-                    var currentDragOffset = 0f
                     detectHorizontalDragGestures(
                         onDragStart = {
-                            currentDragOffset = drawerDragOffsetPx.value
+                            settleJob?.cancel()
                         },
                         onDragEnd = {
-                            if (currentDragOffset < -dismissThresholdPx) {
+                            if (drawerDragOffsetPx < -dismissThresholdPx) {
                                 currentOnCloseFoldedSidebar()
                             } else {
-                                currentDragOffset = 0f
-                                drawerScope.launch {
-                                    if (currentReduceMotion) {
-                                        drawerDragOffsetPx.snapTo(0f)
-                                    } else {
-                                        drawerDragOffsetPx.animateTo(
-                                            0f,
-                                            tween(180, easing = EmphasizedDecelerateEasing)
-                                        )
-                                    }
-                                }
+                                settleDrawerBackToOrigin()
                             }
                         },
                         onDragCancel = {
-                            currentDragOffset = 0f
-                            drawerScope.launch {
-                                if (currentReduceMotion) {
-                                    drawerDragOffsetPx.snapTo(0f)
-                                } else {
-                                    drawerDragOffsetPx.animateTo(
-                                        0f,
-                                        tween(180, easing = EmphasizedDecelerateEasing)
-                                    )
-                                }
-                            }
+                            settleDrawerBackToOrigin()
                         },
                         onHorizontalDrag = { _, dragAmount ->
-                            currentDragOffset = (currentDragOffset + dragAmount).coerceAtMost(0f)
-                            val target = currentDragOffset
-                            drawerScope.launch {
-                                drawerDragOffsetPx.snapTo(target)
-                            }
+                            drawerDragOffsetPx = (drawerDragOffsetPx + dragAmount).coerceAtMost(0f)
                         }
                     )
                 }
@@ -1826,6 +1897,7 @@ private fun FullOmniboxToolbar(
     onOpenSettings: () -> Unit,
     onOpenTabSwitcher: () -> Unit,
     onSwitchAdjacentTab: (Int) -> Unit,
+    activeTabProgressFlow: StateFlow<Int>? = null,
     showUrlPill: Boolean = true,
     showSidebarToggle: Boolean = false,
     isSidebarOpen: Boolean = false,
@@ -1834,7 +1906,7 @@ private fun FullOmniboxToolbar(
     val activeTab = state.activeTab
     val foxColors = LocalSwiftfoxColors.current
     val isPrivate = activeTab?.isPrivate == true || state.isPrivateView
-    val tabCount = state.loadedNavigableTabs.size.coerceAtLeast(1)
+    val tabCount = state.loadedNavigableTabCount().coerceAtLeast(1)
     val accentTint = if (isPrivate) foxColors.privateAccent else MaterialTheme.colorScheme.primary
     val accentContainer = if (isPrivate) foxColors.privateContainer else MaterialTheme.colorScheme.primaryContainer
 
@@ -1846,7 +1918,7 @@ private fun FullOmniboxToolbar(
     val currentOnOpenTabSwitcher by rememberUpdatedState(onOpenTabSwitcher)
 
     val swipeModifier = if (state.settings.swipeUrlBarSwitchTabs) {
-        Modifier.pointerInput(isTop, state.loadedNavigableTabs.size, horizontalSwipeThresholdPx, verticalSwipeThresholdPx) {
+        Modifier.pointerInput(isTop, horizontalSwipeThresholdPx, verticalSwipeThresholdPx) {
             detectDragGestures(
                 onDragStart = {
                     dragAccum.x = 0f
@@ -1904,7 +1976,8 @@ private fun FullOmniboxToolbar(
             if (!isTop) {
                 ToolbarProgressSlot(
                     isLoading = activeTab?.isLoading == true,
-                    progress = activeTab?.progress ?: 0,
+                    fallbackProgress = activeTab?.progress ?: 0,
+                    activeTabProgressFlow = activeTabProgressFlow,
                     dividerAlignment = Alignment.TopCenter
                 )
             }
@@ -1964,9 +2037,9 @@ private fun FullOmniboxToolbar(
 
                 // Rounded Omnibox Capsule Pill (hidden on Start Page where the Start Page search bar is primary)
                 if (showUrlPill) {
-                    var urlPillRect by remember { mutableStateOf<Rect?>(null) }
+                    val urlPillBounds = remember { ShellBoundsHolder() }
                     Surface(
-                        onClick = { onFocusOmnibox(urlPillRect) },
+                        onClick = { onFocusOmnibox(urlPillBounds.rect) },
                         shape = RoundedCornerShape(26.dp),
                         color = if (isPrivate) {
                             foxColors.privateContainer
@@ -1984,8 +2057,8 @@ private fun FullOmniboxToolbar(
                         modifier = Modifier
                             .weight(1f)
                             .heightIn(min = 48.dp)
-                            .onGloballyPositioned { coords ->
-                                if (coords.isAttached) urlPillRect = coords.boundsInRoot()
+                            .onPlaced { coords ->
+                                if (coords.isAttached) urlPillBounds.rect = coords.boundsInRoot()
                             }
                             .then(swipeModifier)
                     ) {
@@ -2120,7 +2193,8 @@ private fun FullOmniboxToolbar(
             if (isTop) {
                 ToolbarProgressSlot(
                     isLoading = activeTab?.isLoading == true,
-                    progress = activeTab?.progress ?: 0,
+                    fallbackProgress = activeTab?.progress ?: 0,
+                    activeTabProgressFlow = activeTabProgressFlow,
                     dividerAlignment = Alignment.BottomCenter,
                     showIdleDivider = !transparentStartTopChrome
                 )
@@ -2132,13 +2206,19 @@ private fun FullOmniboxToolbar(
 @Composable
 private fun ToolbarProgressSlot(
     isLoading: Boolean,
-    progress: Int,
+    fallbackProgress: Int,
+    activeTabProgressFlow: StateFlow<Int>?,
     dividerAlignment: Alignment,
     modifier: Modifier = Modifier,
     showIdleDivider: Boolean = true
 ) {
     val reduceMotion = rememberReduceMotion()
-    val targetFraction = if (isLoading) (progress / 100f).coerceIn(0.08f, 1f) else 1f
+    val liveProgress = if (isLoading && activeTabProgressFlow != null) {
+        activeTabProgressFlow.collectAsStateWithLifecycle().value
+    } else {
+        fallbackProgress
+    }
+    val targetFraction = if (isLoading) (liveProgress / 100f).coerceIn(0.08f, 1f) else 1f
     val animatedFraction = animateFloatAsState(
         targetValue = targetFraction,
         animationSpec = tween(durationMillis = if (reduceMotion) 0 else 160),
@@ -2188,7 +2268,7 @@ private fun SplitBottomActionBar(
     val activeTab = state.activeTab
     val foxColors = LocalSwiftfoxColors.current
     val isPrivate = activeTab?.isPrivate == true || state.isPrivateView
-    val tabCount = state.loadedNavigableTabs.size.coerceAtLeast(1)
+    val tabCount = state.loadedNavigableTabCount().coerceAtLeast(1)
     val accentTint = if (isPrivate) foxColors.privateAccent else MaterialTheme.colorScheme.primary
     val accentContainer = if (isPrivate) foxColors.privateContainer else MaterialTheme.colorScheme.primaryContainer
 
@@ -2301,8 +2381,8 @@ private fun ErgonomicSideRail(
 ) {
     val activeTab = state.activeTab
     val isPrivate = activeTab?.isPrivate == true || state.isPrivateView
-    val tabCount = state.loadedNavigableTabs.size.coerceAtLeast(1)
-    var searchButtonRect by remember { mutableStateOf<Rect?>(null) }
+    val tabCount = state.loadedNavigableTabCount().coerceAtLeast(1)
+    val searchButtonBounds = remember { ShellBoundsHolder() }
 
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -2325,13 +2405,13 @@ private fun ErgonomicSideRail(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Surface(
-                    onClick = { onFocusOmnibox(searchButtonRect) },
+                    onClick = { onFocusOmnibox(searchButtonBounds.rect) },
                     shape = CircleShape,
                     color = MaterialTheme.colorScheme.primaryContainer,
                     modifier = Modifier
                         .size(48.dp)
-                        .onGloballyPositioned { coords ->
-                            if (coords.isAttached) searchButtonRect = coords.boundsInRoot()
+                        .onPlaced { coords ->
+                            if (coords.isAttached) searchButtonBounds.rect = coords.boundsInRoot()
                         }
                 ) {
                     Box(contentAlignment = Alignment.Center) {

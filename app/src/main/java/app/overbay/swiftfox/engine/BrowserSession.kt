@@ -12,8 +12,13 @@ import android.os.Looper
 import android.print.PrintDocumentAdapter
 import android.util.Log
 import android.view.View
+import android.view.ViewGroup
 import android.webkit.CookieManager
+import android.webkit.GeolocationPermissions
+import android.webkit.PermissionRequest
 import android.webkit.URLUtil
+import android.webkit.ValueCallback
+import android.webkit.WebChromeClient
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -23,12 +28,14 @@ import androidx.webkit.ScriptHandler
 import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
+import app.overbay.swiftfox.data.prefs.ExternalAppLinkPolicy
 import app.overbay.swiftfox.data.prefs.SiteMode
 import app.overbay.swiftfox.features.darkreader.DarkReaderInjector
 import app.overbay.swiftfox.features.darkreader.ResolvedWebDarkState
 import org.json.JSONObject
 import java.security.SecureRandom
 import java.util.Locale
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 
 data class ContextMenuHit(
@@ -49,6 +56,7 @@ data class BridgeTokenSet(
     val gmKey: String = "__sfGm_${gmToken.take(12)}"
     val zapperKey: String = "__sfZap_${zapperToken.take(12)}"
     val readerKey: String = "__sfRd_${readerToken.take(12)}"
+    val cosmeticKey: String = "__sfCosm_${cosmeticToken.take(12)}"
 
     companion object {
         fun generate(): BridgeTokenSet = BridgeTokenSet(
@@ -103,14 +111,168 @@ class BrowserSession(
     val isPrivate: Boolean,
     val profileName: String,
     context: Context,
-    private val hostCallbacks: SessionHostCallbacks
+    hostCallbacks: SessionHostCallbacks
 ) {
+    internal data class SiteOverrideSnapshot(
+        val effectiveMode: SiteMode,
+        val customUa: String?,
+        val jsEnabled: Boolean,
+        val cookiesEnabled: Boolean
+    )
+
     private data class PendingBlobDownload(
         val blobUrl: String,
         val fileName: String,
         val mimeType: String,
         val expiresAtMs: Long
     )
+
+    @Volatile
+    private var currentCallbacks: SessionHostCallbacks = hostCallbacks
+
+    private val callbackProxy: SessionHostCallbacks = object : SessionHostCallbacks {
+        override fun getHttpsOnlyEnabled(): Boolean = currentCallbacks.getHttpsOnlyEnabled()
+        override fun isHttpsBypassedForHost(tabId: String, host: String): Boolean =
+            currentCallbacks.isHttpsBypassedForHost(tabId, host)
+        override fun getExternalAppPolicy(tabId: String, host: String): ExternalAppLinkPolicy =
+            currentCallbacks.getExternalAppPolicy(tabId, host)
+        override fun shouldBlockNetworkRequest(
+            tabId: String,
+            requestUrl: String,
+            pageUrl: String,
+            headers: Map<String, String>
+        ): Boolean = currentCallbacks.shouldBlockNetworkRequest(tabId, requestUrl, pageUrl, headers)
+        override fun shouldBlockNetworkRequest(
+            tabId: String,
+            isPrivate: Boolean,
+            requestUrl: String,
+            pageUrl: String,
+            cachedPageHost: String,
+            headers: Map<String, String>
+        ): Boolean = currentCallbacks.shouldBlockNetworkRequest(
+            tabId,
+            isPrivate,
+            requestUrl,
+            pageUrl,
+            cachedPageHost,
+            headers
+        )
+        override fun onPageStarted(tabId: String, url: String, canGoBack: Boolean, canGoForward: Boolean) {
+            if (url.startsWith("http://", ignoreCase = true) || url.startsWith("https://", ignoreCase = true)) {
+                committedOverrideSnapshot = currentOverrideSnapshot()
+            }
+            currentCallbacks.onPageStarted(tabId, url, canGoBack, canGoForward)
+        }
+        override fun onInjectOnPageStarted(tabId: String, url: String) =
+            currentCallbacks.onInjectOnPageStarted(tabId, url)
+        override fun onPageFinished(
+            tabId: String,
+            url: String,
+            title: String,
+            canGoBack: Boolean,
+            canGoForward: Boolean
+        ) = currentCallbacks.onPageFinished(tabId, url, title, canGoBack, canGoForward)
+        override fun onInjectOnPageFinished(tabId: String, url: String) =
+            currentCallbacks.onInjectOnPageFinished(tabId, url)
+        override fun onVisitedHistoryUpdated(tabId: String, url: String, canGoBack: Boolean, canGoForward: Boolean) =
+            currentCallbacks.onVisitedHistoryUpdated(tabId, url, canGoBack, canGoForward)
+        override fun onExternalAppPrompt(prompt: ExternalAppPrompt) =
+            currentCallbacks.onExternalAppPrompt(prompt)
+        override fun onLaunchExternalIntent(intent: android.content.Intent): Boolean =
+            currentCallbacks.onLaunchExternalIntent(intent)
+        override fun onHttpsOnlyFailure(prompt: HttpsUpgradeErrorPrompt) =
+            currentCallbacks.onHttpsOnlyFailure(prompt)
+        override fun onMainFrameLoadError(tabId: String, url: String, errorCode: Int, description: String) =
+            currentCallbacks.onMainFrameLoadError(tabId, url, errorCode, description)
+        override fun onRenderProcessGone(tabId: String, didCrash: Boolean) =
+            currentCallbacks.onRenderProcessGone(tabId, didCrash)
+        override fun onProgressChanged(tabId: String, progress: Int) =
+            currentCallbacks.onProgressChanged(tabId, progress)
+        override fun onTitleChanged(tabId: String, title: String) =
+            currentCallbacks.onTitleChanged(tabId, title)
+        override fun onFaviconReceived(tabId: String, url: String?, icon: Bitmap) =
+            currentCallbacks.onFaviconReceived(tabId, url, icon)
+        override fun onShowCustomView(view: View, callback: WebChromeClient.CustomViewCallback) =
+            currentCallbacks.onShowCustomView(view, callback)
+        override fun onHideCustomView() = currentCallbacks.onHideCustomView()
+        override fun onShowFileChooser(
+            filePathCallback: ValueCallback<Array<android.net.Uri>>,
+            chooserIntent: android.content.Intent
+        ): Boolean = currentCallbacks.onShowFileChooser(filePathCallback, chooserIntent)
+        override fun onPermissionRequested(tabId: String, prompt: SitePermissionPrompt) =
+            currentCallbacks.onPermissionRequested(tabId, prompt)
+        override fun onPermissionRequestCanceled(
+            tabId: String,
+            webRequest: PermissionRequest?,
+            isGeolocation: Boolean
+        ) = currentCallbacks.onPermissionRequestCanceled(tabId, webRequest, isGeolocation)
+        override fun onOpenNewWindow(parentTabId: String, resultMsg: android.os.Message?): Boolean =
+            currentCallbacks.onOpenNewWindow(parentTabId, resultMsg)
+        override fun onCloseWindow(tabId: String) = currentCallbacks.onCloseWindow(tabId)
+        override fun onDownloadRequested(
+            tabId: String,
+            url: String,
+            userAgent: String,
+            contentDisposition: String?,
+            mimeType: String?,
+            profileName: String,
+            isPrivate: Boolean
+        ) = currentCallbacks.onDownloadRequested(
+            tabId,
+            url,
+            userAgent,
+            contentDisposition,
+            mimeType,
+            profileName,
+            isPrivate
+        )
+        override fun onBlobDownloadReady(
+            tabId: String,
+            fileName: String,
+            mimeType: String,
+            base64Data: String,
+            sourceUrl: String,
+            isPrivate: Boolean
+        ) = currentCallbacks.onBlobDownloadReady(tabId, fileName, mimeType, base64Data, sourceUrl, isPrivate)
+        override fun onBlobDownloadFailed(tabId: String, message: String) =
+            currentCallbacks.onBlobDownloadFailed(tabId, message)
+        override fun onMediaPlaybackStateChanged(tabId: String, isPlaying: Boolean, hasVideo: Boolean, title: String) =
+            currentCallbacks.onMediaPlaybackStateChanged(tabId, isPlaying, hasVideo, title)
+        override fun onFindMatchesUpdated(tabId: String, activeMatchOrdinal: Int, numberOfMatches: Int) =
+            currentCallbacks.onFindMatchesUpdated(tabId, activeMatchOrdinal, numberOfMatches)
+        override fun onContextMenuLongPress(tabId: String, hit: ContextMenuHit) =
+            currentCallbacks.onContextMenuLongPress(tabId, hit)
+        override fun onZapperSelectionChanged(tabId: String, json: String) =
+            currentCallbacks.onZapperSelectionChanged(tabId, json)
+        override fun onZapperTemporaryZap(tabId: String, json: String) =
+            currentCallbacks.onZapperTemporaryZap(tabId, json)
+        override fun onZapperUndoTemporaryZap(tabId: String, json: String) =
+            currentCallbacks.onZapperUndoTemporaryZap(tabId, json)
+        override fun onZapperPermanentRule(tabId: String, json: String) =
+            currentCallbacks.onZapperPermanentRule(tabId, json)
+        override fun onDarkReaderStatus(tabId: String, json: String) =
+            currentCallbacks.onDarkReaderStatus(tabId, json)
+        override fun onCosmeticDomTokens(tabId: String, pageUrl: String, classesJson: String, idsJson: String) =
+            currentCallbacks.onCosmeticDomTokens(tabId, pageUrl, classesJson, idsJson)
+        override fun onUserscriptSetValue(
+            tabId: String,
+            pageUrl: String,
+            scriptId: String,
+            key: String,
+            valueJson: String
+        ) = currentCallbacks.onUserscriptSetValue(tabId, pageUrl, scriptId, key, valueJson)
+        override fun onUserscriptDeleteValue(tabId: String, pageUrl: String, scriptId: String, key: String) =
+            currentCallbacks.onUserscriptDeleteValue(tabId, pageUrl, scriptId, key)
+        override fun onUserscriptXmlHttpRequest(
+            tabId: String,
+            pageUrl: String,
+            scriptId: String,
+            reqId: String,
+            requestJson: String
+        ) = currentCallbacks.onUserscriptXmlHttpRequest(tabId, pageUrl, scriptId, reqId, requestJson)
+        override fun onUserscriptAbortXmlHttpRequest(tabId: String, reqId: String) =
+            currentCallbacks.onUserscriptAbortXmlHttpRequest(tabId, reqId)
+    }
 
     private val mutableContext = MutableContextWrapper(context)
     val webView: SwiftfoxWebView = SwiftfoxWebView(mutableContext)
@@ -119,13 +281,17 @@ class BrowserSession(
     var tokens: BridgeTokenSet = BridgeTokenSet.generate()
         private set
 
+    private val originTokensLock = Any()
+    private val originTokens = LinkedHashMap<String, BridgeTokenSet>(8, 0.75f, true)
+
     @Volatile
     private var lastTokenOrigin: String = ""
 
     val webViewClient: SwiftfoxWebViewClient = SwiftfoxWebViewClient(
         tabId = tabId,
-        callbacks = hostCallbacks,
-        mediaTokenProvider = { tokens.mediaToken }
+        callbacks = callbackProxy,
+        mediaTokenProvider = { tokens.mediaToken },
+        isPrivate = isPrivate
     )
     private val defaultMobileUserAgent: String
     private val documentStartHandlers = mutableListOf<ScriptHandler>()
@@ -135,6 +301,7 @@ class BrowserSession(
     private var subframeDarkRuntimeHandler: ScriptHandler? = null
     private var isSubframeDarkRuntimeRegistered: Boolean = false
     private val pendingBlobDownloads = ConcurrentHashMap<String, PendingBlobDownload>()
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     @Volatile
     var isDestroyed: Boolean = false
@@ -155,6 +322,15 @@ class BrowserSession(
     private var currentCustomUa: String? = null
     private var currentJsEnabled: Boolean = true
     private var currentCookiesEnabled: Boolean = true
+    @Volatile
+    private var committedOverrideSnapshot: SiteOverrideSnapshot? = null
+
+    private fun currentOverrideSnapshot(): SiteOverrideSnapshot = SiteOverrideSnapshot(
+        effectiveMode = if (currentCustomUa != null) SiteMode.MOBILE else currentSiteMode,
+        customUa = currentCustomUa,
+        jsEnabled = currentJsEnabled,
+        cookiesEnabled = currentCookiesEnabled
+    )
 
     val userAgentString: String
         get() = runCatching { webView.settings.userAgentString }.getOrDefault(defaultMobileUserAgent)
@@ -168,12 +344,22 @@ class BrowserSession(
 
     fun rotateTokensForOrigin(origin: String): BridgeTokenSet {
         val normalized = origin.trim().lowercase(Locale.ROOT)
-        if (normalized.isNotEmpty() && normalized != lastTokenOrigin) {
-            lastTokenOrigin = normalized
-            tokens = BridgeTokenSet.generate()
-            pendingBlobDownloads.clear()
+        if (normalized.isEmpty() || normalized == lastTokenOrigin) {
+            return tokens
         }
-        return tokens
+        val resolved = synchronized(originTokensLock) {
+            selectTokensForOrigin(normalized, originTokens, MAX_CACHED_ORIGINS_PER_TAB)
+        }
+        lastTokenOrigin = normalized
+        tokens = resolved
+        pendingBlobDownloads.clear()
+        return resolved
+    }
+
+    fun rebindCallbacks(newCallbacks: SessionHostCallbacks) {
+        if (!isDestroyed) {
+            currentCallbacks = newCallbacks
+        }
     }
 
     fun rebindContext(newContext: Context) {
@@ -254,10 +440,10 @@ class BrowserSession(
 
     private fun configureClients() {
         webView.webViewClient = webViewClient
-        webView.webChromeClient = SwiftfoxChromeClient(tabId, hostCallbacks)
+        webView.webChromeClient = SwiftfoxChromeClient(tabId, callbackProxy)
 
         webView.setFindListener { activeMatchOrdinal, numberOfMatches, _ ->
-            if (!isDestroyed) hostCallbacks.onFindMatchesUpdated(tabId, activeMatchOrdinal, numberOfMatches)
+            if (!isDestroyed) callbackProxy.onFindMatchesUpdated(tabId, activeMatchOrdinal, numberOfMatches)
         }
 
         webView.setDownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
@@ -269,12 +455,14 @@ class BrowserSession(
                 triggerBlobDownload(url, URLUtil.guessFileName(url, contentDisposition, mimeType), mimeType)
             } else if (url.startsWith("data:", ignoreCase = true)) {
                 if (url.length > MAX_BLOB_BASE64_CHARS + 128) return@setDownloadListener
-                val meta = if (url.length >= 5) url.substring(5).substringBefore(",") else ""
+                val headerLimit = minOf(url.length, 256)
+                val commaIdx = url.indexOf(',').let { if (it in 5 until headerLimit) it else headerLimit }
+                val meta = if (commaIdx > 5) url.substring(5, commaIdx) else ""
                 val guessedMime = meta.substringBefore(";").trim().ifBlank { "application/octet-stream" }
-                val safeName = URLUtil.guessFileName(url, contentDisposition, guessedMime)
-                hostCallbacks.onBlobDownloadReady(tabId, safeName, guessedMime, url, url, isPrivate)
+                val safeName = URLUtil.guessFileName("data:$meta,", contentDisposition, guessedMime)
+                callbackProxy.onBlobDownloadReady(tabId, safeName, guessedMime, url, "data:$guessedMime", isPrivate)
             } else {
-                hostCallbacks.onDownloadRequested(
+                callbackProxy.onDownloadRequested(
                     tabId = tabId,
                     url = url,
                     userAgent = userAgent,
@@ -293,7 +481,7 @@ class BrowserSession(
             when (result.type) {
                 WebView.HitTestResult.SRC_ANCHOR_TYPE -> {
                     if (!extra.isNullOrBlank()) {
-                        hostCallbacks.onContextMenuLongPress(
+                        callbackProxy.onContextMenuLongPress(
                             tabId,
                             ContextMenuHit(type = result.type, url = extra, imageUrl = null)
                         )
@@ -302,7 +490,7 @@ class BrowserSession(
                 }
                 WebView.HitTestResult.IMAGE_TYPE -> {
                     if (!extra.isNullOrBlank()) {
-                        hostCallbacks.onContextMenuLongPress(
+                        callbackProxy.onContextMenuLongPress(
                             tabId,
                             ContextMenuHit(type = result.type, url = extra, imageUrl = extra)
                         )
@@ -317,7 +505,7 @@ class BrowserSession(
                         val srcUrl = msg.data.getString("src")?.takeIf { it.isNotBlank() } ?: extra
                         val resolvedUrl = anchorUrl ?: srcUrl
                         if (!resolvedUrl.isNullOrBlank()) {
-                            hostCallbacks.onContextMenuLongPress(
+                            callbackProxy.onContextMenuLongPress(
                                 tabId,
                                 ContextMenuHit(
                                     type = result.type,
@@ -344,8 +532,21 @@ class BrowserSession(
                 ) { _, message, sourceOrigin, isMainFrame, _ ->
                     if (isDestroyed || !isMainFrame) return@addWebMessageListener
                     val raw = message.data ?: return@addWebMessageListener
-                    val obj = runCatching { JSONObject(raw) }.getOrNull() ?: return@addWebMessageListener
-                    handleNativeChannelMessage(obj, sourceOrigin.toString())
+                    val originStr = sourceOrigin.toString()
+                    if (raw.length > LARGE_BRIDGE_MESSAGE_CHARS) {
+                        CompletableFuture.runAsync {
+                            if (isDestroyed) return@runAsync
+                            val parsed = runCatching { JSONObject(raw) }.getOrNull() ?: return@runAsync
+                            mainHandler.post {
+                                if (!isDestroyed) {
+                                    handleNativeChannelMessage(parsed, originStr)
+                                }
+                            }
+                        }
+                    } else {
+                        val obj = runCatching { JSONObject(raw) }.getOrNull() ?: return@addWebMessageListener
+                        handleNativeChannelMessage(obj, originStr)
+                    }
                 }
             }
             touchScrollGateHandler = ScriptInjector.registerGlobalTouchScrollGateScript(webView)
@@ -377,7 +578,7 @@ class BrowserSession(
                 val hasVideo = obj.optBoolean("hasVideo", false)
                 val title = obj.optString("title", "")
                 webView.isMediaCurrentlyPlaying = isPlaying
-                hostCallbacks.onMediaPlaybackStateChanged(tabId, isPlaying, hasVideo, title)
+                callbackProxy.onMediaPlaybackStateChanged(tabId, isPlaying, hasVideo, title)
             }
 
             "blob" -> {
@@ -387,11 +588,11 @@ class BrowserSession(
                 if (pending == null || System.currentTimeMillis() > pending.expiresAtMs) return
                 val base64Data = obj.optString("base64Data", "")
                 if (base64Data.isBlank() || base64Data.length > MAX_BLOB_BASE64_CHARS) {
-                    hostCallbacks.onBlobDownloadFailed(tabId, "Blob download exceeds 25 MB limit")
+                    callbackProxy.onBlobDownloadFailed(tabId, "Blob download exceeds 25 MB limit")
                     return
                 }
                 val resolvedMime = obj.optString("mimeType", "").ifBlank { pending.mimeType }
-                hostCallbacks.onBlobDownloadReady(
+                callbackProxy.onBlobDownloadReady(
                     tabId = tabId,
                     fileName = pending.fileName,
                     mimeType = resolvedMime,
@@ -407,7 +608,7 @@ class BrowserSession(
                 val pending = if (nonce.isNotEmpty()) pendingBlobDownloads.remove(nonce) else null
                 if (pending != null) {
                     val msg = obj.optString("message", "").ifBlank { "Download failed" }
-                    hostCallbacks.onBlobDownloadFailed(tabId, msg)
+                    callbackProxy.onBlobDownloadFailed(tabId, msg)
                 }
             }
 
@@ -415,22 +616,22 @@ class BrowserSession(
                 if (token.isEmpty() || token != curTokens.zapperToken) return
                 val payload = obj.optString("json", "")
                 when (obj.optString("event")) {
-                    "onSelectionChanged" -> hostCallbacks.onZapperSelectionChanged(tabId, payload)
-                    "onTemporaryZap" -> hostCallbacks.onZapperTemporaryZap(tabId, payload)
-                    "onUndoTemporaryZap" -> hostCallbacks.onZapperUndoTemporaryZap(tabId, payload)
-                    "onPermanentRule" -> hostCallbacks.onZapperPermanentRule(tabId, payload)
+                    "onSelectionChanged" -> callbackProxy.onZapperSelectionChanged(tabId, payload)
+                    "onTemporaryZap" -> callbackProxy.onZapperTemporaryZap(tabId, payload)
+                    "onUndoTemporaryZap" -> callbackProxy.onZapperUndoTemporaryZap(tabId, payload)
+                    "onPermanentRule" -> callbackProxy.onZapperPermanentRule(tabId, payload)
                 }
             }
 
             "darkReader" -> {
                 if (token.isEmpty() || token != curTokens.darkReaderToken) return
-                hostCallbacks.onDarkReaderStatus(tabId, obj.optString("json", ""))
+                callbackProxy.onDarkReaderStatus(tabId, obj.optString("json", ""))
             }
 
             "cosmetic" -> {
                 if (token.isEmpty() || token != curTokens.cosmeticToken) return
                 if (committedOrigin == null || msgOrigin != committedOrigin) return
-                hostCallbacks.onCosmeticDomTokens(
+                callbackProxy.onCosmeticDomTokens(
                     tabId = tabId,
                     pageUrl = committedUrl,
                     classesJson = obj.optString("classesJson", "[]"),
@@ -442,27 +643,27 @@ class BrowserSession(
                 if (token.isEmpty() || token != curTokens.gmToken) return
                 if (committedOrigin == null || msgOrigin != committedOrigin) return
                 when (obj.optString("action")) {
-                    "setValue" -> hostCallbacks.onUserscriptSetValue(
+                    "setValue" -> callbackProxy.onUserscriptSetValue(
                         tabId = tabId,
                         pageUrl = committedUrl,
                         scriptId = obj.optString("scriptId", ""),
                         key = obj.optString("key", ""),
                         valueJson = obj.optString("valueJson", "")
                     )
-                    "deleteValue" -> hostCallbacks.onUserscriptDeleteValue(
+                    "deleteValue" -> callbackProxy.onUserscriptDeleteValue(
                         tabId = tabId,
                         pageUrl = committedUrl,
                         scriptId = obj.optString("scriptId", ""),
                         key = obj.optString("key", "")
                     )
-                    "xhr" -> hostCallbacks.onUserscriptXmlHttpRequest(
+                    "xhr" -> callbackProxy.onUserscriptXmlHttpRequest(
                         tabId = tabId,
                         pageUrl = committedUrl,
                         scriptId = obj.optString("scriptId", ""),
                         reqId = obj.optString("reqId", ""),
                         requestJson = obj.optString("requestJson", "")
                     )
-                    "abortXhr" -> hostCallbacks.onUserscriptAbortXmlHttpRequest(
+                    "abortXhr" -> callbackProxy.onUserscriptAbortXmlHttpRequest(
                         tabId = tabId,
                         reqId = obj.optString("reqId", "")
                     )
@@ -555,16 +756,13 @@ class BrowserSession(
     ): Boolean {
         if (isDestroyed) return false
         val normalizedCustomUa = customUserAgent?.trim()?.takeIf { it.isNotEmpty() }
-        val modeChanged = currentSiteMode != mode
-        val effectiveModeChanged = modeChanged && normalizedCustomUa == null
-        val uaChanged = currentCustomUa != normalizedCustomUa
-        val jsChanged = currentJsEnabled != javascriptEnabled
-        val cookieChanged = currentCookiesEnabled != cookiesEnabled
+        val prevSnapshot = currentOverrideSnapshot()
 
         currentSiteMode = mode
         currentCustomUa = normalizedCustomUa
         currentJsEnabled = javascriptEnabled
         currentCookiesEnabled = cookiesEnabled
+        val nextSnapshot = currentOverrideSnapshot()
 
         webView.settings.apply {
             javaScriptEnabled = javascriptEnabled
@@ -586,14 +784,18 @@ class BrowserSession(
             cm.setAcceptThirdPartyCookies(webView, cookiesEnabled && !blockThirdParty)
         }
 
-        if ((effectiveModeChanged || uaChanged || jsChanged || cookieChanged) && reloadIfChanged) {
-            val current = webView.url.orEmpty()
-            if (current.startsWith("http://", ignoreCase = true) ||
-                current.startsWith("https://", ignoreCase = true)
-            ) {
-                webView.reload()
-                return true
-            }
+        val currentUrl = webView.url.orEmpty()
+        val (shouldReload, nextCommitted) = shouldReloadForOverrideTransition(
+            committedSnapshot = committedOverrideSnapshot,
+            previousAppliedSnapshot = prevSnapshot,
+            nextSnapshot = nextSnapshot,
+            reloadIfChanged = reloadIfChanged,
+            currentUrl = currentUrl
+        )
+        committedOverrideSnapshot = nextCommitted
+        if (shouldReload) {
+            webView.reload()
+            return true
         }
         return false
     }
@@ -645,18 +847,18 @@ class BrowserSession(
             val currentUrl = webView.url.orEmpty()
             val originAtCall = ScriptInjector.extractOrigin(currentUrl)
             if (originAtCall != null) {
-                // Attempt single-shot fast apply; only inject full ~112KB runtime if missing on this window.
+                // Attempt single-shot fast apply; only inject full runtime if missing on this window.
                 val fastScript = darkReaderInjector.buildFastApplyScript(state, curTokens.darkReaderKey)
                 evaluateJavascript(fastScript) { result ->
                     if (isDestroyed) return@evaluateJavascript
                     if (result?.trim() == "\"ok\"") return@evaluateJavascript
                     if (ScriptInjector.extractOrigin(webView.url.orEmpty()) != originAtCall) return@evaluateJavascript
-                    val fullScript = darkReaderInjector.buildApplyScript(
-                        state,
-                        curTokens.darkReaderToken,
-                        curTokens.darkReaderKey
+                    val guarded = darkReaderInjector.buildApplyScript(
+                        state = state,
+                        bridgeToken = curTokens.darkReaderToken,
+                        runtimeKey = curTokens.darkReaderKey,
+                        expectedOrigin = originAtCall
                     )
-                    val guarded = ScriptInjector.wrapOriginGuardedScript(originAtCall, fullScript)
                     if (guarded.isNotEmpty()) {
                         evaluateJavascript(guarded)
                     }
@@ -760,7 +962,10 @@ class BrowserSession(
     }
 
     fun stopLoading() {
-        if (!isDestroyed) webView.stopLoading()
+        if (!isDestroyed) {
+            webViewClient.resetPendingMainFrameUrl()
+            webView.stopLoading()
+        }
     }
 
     fun canGoBack(): Boolean = !isDestroyed && webView.canGoBack()
@@ -812,7 +1017,16 @@ class BrowserSession(
     }
 
     fun restoreState(bundle: Bundle) {
-        if (!isDestroyed) webView.restoreState(bundle)
+        if (!isDestroyed) {
+            webView.restoreState(bundle)
+            val restoredUrl = webView.url.orEmpty()
+            if (committedOverrideSnapshot == null &&
+                (restoredUrl.startsWith("http://", ignoreCase = true) ||
+                    restoredUrl.startsWith("https://", ignoreCase = true))
+            ) {
+                committedOverrideSnapshot = currentOverrideSnapshot()
+            }
+        }
     }
 
     fun captureThumbnail(targetWidth: Int = 360, targetHeight: Int = 480): Bitmap? {
@@ -832,6 +1046,12 @@ class BrowserSession(
     fun destroy() {
         if (isDestroyed) return
         isDestroyed = true
+        currentCallbacks = NoOpSessionHostCallbacks
+        synchronized(originTokensLock) {
+            originTokens.clear()
+        }
+        mutableContext.baseContext = mutableContext.baseContext.applicationContext
+        (webView.parent as? ViewGroup)?.removeView(webView)
         webView.isMediaCurrentlyPlaying = false
         webView.onScrollMetricsChanged = null
         webView.onDomPullToRefreshBlocked = null
@@ -841,8 +1061,8 @@ class BrowserSession(
         clearGlobalPrepaintDarkScript()
         clearSubframeDarkReaderRuntime()
         pendingBlobDownloads.clear()
-        // Detach all clients, listeners, and bridges BEFORE loadUrl("about:blank")
-        // so teardown/hibernation never fires stale callbacks into BrowserViewModel.
+        // Detach all clients, listeners, and bridges BEFORE teardown
+        // so hibernation/disposal never fires stale callbacks into BrowserViewModel.
         webView.setFindListener(null)
         webView.setDownloadListener(null)
         webView.setOnLongClickListener(null)
@@ -860,8 +1080,8 @@ class BrowserSession(
                 webView.clearFormData()
             }
         }
-        webView.stopLoading()
-        webView.loadUrl("about:blank")
+        runCatching { webView.stopLoading() }
+        runCatching { webView.onPause() }
         webView.removeAllViews()
         webView.destroy()
     }
@@ -872,12 +1092,18 @@ class BrowserSession(
         private const val NATIVE_CHANNEL_NAME = "SwiftfoxNativeChannel"
         private const val MAX_BLOB_BYTES = 25 * 1024 * 1024
         private const val MAX_BLOB_BASE64_CHARS = 36_000_000
+        private const val LARGE_BRIDGE_MESSAGE_CHARS = 65_536
         private const val BLOB_PENDING_TTL_MS = 60_000L
+        private const val MAX_CACHED_ORIGINS_PER_TAB = 16
         private const val DESKTOP_USER_AGENT =
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
         private val WEBVIEW_WV_TOKEN_REGEX = Regex(""";\s*wv\b""", RegexOption.IGNORE_CASE)
         private val WEBVIEW_VERSION_TOKEN_REGEX = Regex("""\bVersion/\d+(?:\.\d+)*\s+""", RegexOption.IGNORE_CASE)
         private val secureRandom = SecureRandom()
+        private val HEX_CHARS = charArrayOf(
+            '0', '1', '2', '3', '4', '5', '6', '7',
+            '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'
+        )
 
         /**
          * Strips Android WebView's `; wv` and `Version/4.0` markers so Google Sign-In and other
@@ -896,7 +1122,138 @@ class BrowserSession(
         internal fun generateHexToken(): String {
             val bytes = ByteArray(16)
             secureRandom.nextBytes(bytes)
-            return bytes.joinToString("") { "%02x".format(Locale.ROOT, it) }
+            val chars = CharArray(32)
+            for (i in 0 until 16) {
+                val b = bytes[i].toInt() and 0xFF
+                chars[i * 2] = HEX_CHARS[b ushr 4]
+                chars[i * 2 + 1] = HEX_CHARS[b and 0x0F]
+            }
+            return String(chars)
+        }
+
+        internal fun selectTokensForOrigin(
+            normalizedOrigin: String,
+            cache: LinkedHashMap<String, BridgeTokenSet>,
+            maxEntries: Int = MAX_CACHED_ORIGINS_PER_TAB
+        ): BridgeTokenSet {
+            cache[normalizedOrigin]?.let { return it }
+            val created = BridgeTokenSet.generate()
+            cache[normalizedOrigin] = created
+            while (cache.size > maxEntries) {
+                val eldestKey = cache.entries.firstOrNull()?.key ?: break
+                cache.remove(eldestKey)
+            }
+            return created
+        }
+
+        internal fun shouldReloadForOverrideTransition(
+            committedSnapshot: SiteOverrideSnapshot?,
+            previousAppliedSnapshot: SiteOverrideSnapshot,
+            nextSnapshot: SiteOverrideSnapshot,
+            reloadIfChanged: Boolean,
+            currentUrl: String
+        ): Pair<Boolean, SiteOverrideSnapshot?> {
+            val isHttpLoaded = currentUrl.startsWith("http://", ignoreCase = true) ||
+                currentUrl.startsWith("https://", ignoreCase = true)
+            if (!isHttpLoaded) {
+                return false to committedSnapshot
+            }
+            val baseline = committedSnapshot ?: previousAppliedSnapshot
+            if (baseline == nextSnapshot) {
+                return false to nextSnapshot
+            }
+            return if (reloadIfChanged) {
+                true to nextSnapshot
+            } else {
+                false to baseline
+            }
         }
     }
+}
+
+internal object NoOpSessionHostCallbacks : SessionHostCallbacks {
+    override fun getHttpsOnlyEnabled(): Boolean = false
+    override fun isHttpsBypassedForHost(tabId: String, host: String): Boolean = false
+    override fun getExternalAppPolicy(tabId: String, host: String): ExternalAppLinkPolicy =
+        ExternalAppLinkPolicy.ALWAYS_IN_SWIFTFOX
+    override fun shouldBlockNetworkRequest(
+        tabId: String,
+        requestUrl: String,
+        pageUrl: String,
+        headers: Map<String, String>
+    ): Boolean = false
+    override fun onPageStarted(tabId: String, url: String, canGoBack: Boolean, canGoForward: Boolean) = Unit
+    override fun onInjectOnPageStarted(tabId: String, url: String) = Unit
+    override fun onPageFinished(
+        tabId: String,
+        url: String,
+        title: String,
+        canGoBack: Boolean,
+        canGoForward: Boolean
+    ) = Unit
+    override fun onInjectOnPageFinished(tabId: String, url: String) = Unit
+    override fun onVisitedHistoryUpdated(tabId: String, url: String, canGoBack: Boolean, canGoForward: Boolean) = Unit
+    override fun onExternalAppPrompt(prompt: ExternalAppPrompt) = Unit
+    override fun onLaunchExternalIntent(intent: android.content.Intent): Boolean = false
+    override fun onHttpsOnlyFailure(prompt: HttpsUpgradeErrorPrompt) = Unit
+    override fun onRenderProcessGone(tabId: String, didCrash: Boolean) = Unit
+    override fun onProgressChanged(tabId: String, progress: Int) = Unit
+    override fun onTitleChanged(tabId: String, title: String) = Unit
+    override fun onShowCustomView(view: View, callback: WebChromeClient.CustomViewCallback) = Unit
+    override fun onHideCustomView() = Unit
+    override fun onShowFileChooser(
+        filePathCallback: ValueCallback<Array<android.net.Uri>>,
+        chooserIntent: android.content.Intent
+    ): Boolean = false
+    override fun onPermissionRequested(tabId: String, prompt: SitePermissionPrompt) = Unit
+    override fun onPermissionRequestCanceled(
+        tabId: String,
+        webRequest: PermissionRequest?,
+        isGeolocation: Boolean
+    ) = Unit
+    override fun onOpenNewWindow(parentTabId: String, resultMsg: android.os.Message?): Boolean = false
+    override fun onCloseWindow(tabId: String) = Unit
+    override fun onDownloadRequested(
+        tabId: String,
+        url: String,
+        userAgent: String,
+        contentDisposition: String?,
+        mimeType: String?,
+        profileName: String,
+        isPrivate: Boolean
+    ) = Unit
+    override fun onBlobDownloadReady(
+        tabId: String,
+        fileName: String,
+        mimeType: String,
+        base64Data: String,
+        sourceUrl: String,
+        isPrivate: Boolean
+    ) = Unit
+    override fun onBlobDownloadFailed(tabId: String, message: String) = Unit
+    override fun onMediaPlaybackStateChanged(tabId: String, isPlaying: Boolean, hasVideo: Boolean, title: String) = Unit
+    override fun onFindMatchesUpdated(tabId: String, activeMatchOrdinal: Int, numberOfMatches: Int) = Unit
+    override fun onContextMenuLongPress(tabId: String, hit: ContextMenuHit) = Unit
+    override fun onZapperSelectionChanged(tabId: String, json: String) = Unit
+    override fun onZapperTemporaryZap(tabId: String, json: String) = Unit
+    override fun onZapperUndoTemporaryZap(tabId: String, json: String) = Unit
+    override fun onZapperPermanentRule(tabId: String, json: String) = Unit
+    override fun onDarkReaderStatus(tabId: String, json: String) = Unit
+    override fun onCosmeticDomTokens(tabId: String, pageUrl: String, classesJson: String, idsJson: String) = Unit
+    override fun onUserscriptSetValue(
+        tabId: String,
+        pageUrl: String,
+        scriptId: String,
+        key: String,
+        valueJson: String
+    ) = Unit
+    override fun onUserscriptDeleteValue(tabId: String, pageUrl: String, scriptId: String, key: String) = Unit
+    override fun onUserscriptXmlHttpRequest(
+        tabId: String,
+        pageUrl: String,
+        scriptId: String,
+        reqId: String,
+        requestJson: String
+    ) = Unit
+    override fun onUserscriptAbortXmlHttpRequest(tabId: String, reqId: String) = Unit
 }

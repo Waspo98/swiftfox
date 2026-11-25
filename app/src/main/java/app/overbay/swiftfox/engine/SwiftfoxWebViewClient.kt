@@ -46,6 +46,14 @@ interface WebNavigationCallbacks {
         pageUrl: String,
         headers: Map<String, String>
     ): Boolean
+    fun shouldBlockNetworkRequest(
+        tabId: String,
+        isPrivate: Boolean,
+        requestUrl: String,
+        pageUrl: String,
+        cachedPageHost: String,
+        headers: Map<String, String>
+    ): Boolean = shouldBlockNetworkRequest(tabId, requestUrl, pageUrl, headers)
     fun onPageStarted(tabId: String, url: String, canGoBack: Boolean, canGoForward: Boolean)
     fun onInjectOnPageStarted(tabId: String, url: String)
     fun onPageFinished(tabId: String, url: String, title: String, canGoBack: Boolean, canGoForward: Boolean)
@@ -61,8 +69,17 @@ interface WebNavigationCallbacks {
 class SwiftfoxWebViewClient(
     private val tabId: String,
     private val callbacks: WebNavigationCallbacks,
-    private val mediaTokenProvider: () -> String = { "" }
+    private val mediaTokenProvider: () -> String = { "" },
+    private val isPrivate: Boolean = false
 ) : WebViewClient() {
+
+    private val mediaHookKey: String = "__sfMedia_" + BrowserSession.generateHexToken().take(12)
+
+    @Volatile
+    private var cachedPageUrlForHost: String = ""
+
+    @Volatile
+    private var cachedPageHost: String = ""
 
     private val upgradedFromHttpByUrl: MutableMap<String, String> = Collections.synchronizedMap(
         object : LinkedHashMap<String, String>(32, 0.75f, true) {
@@ -123,6 +140,7 @@ class SwiftfoxWebViewClient(
                     if (canonicalHost.isNotBlank()) {
                         upgradedFromHttpByHost.remove(canonicalHost)
                     }
+                    resetPendingMainFrameUrl()
                     callbacks.onHttpsOnlyFailure(
                         HttpsUpgradeErrorPrompt(
                             tabId = tabId,
@@ -143,6 +161,7 @@ class SwiftfoxWebViewClient(
                     return false
                 }
                 if (request.hasGesture() && handleHttpExternalAppLink(view, uri, url, canonicalHost)) {
+                    resetPendingMainFrameUrl()
                     return true
                 }
             }
@@ -154,30 +173,45 @@ class SwiftfoxWebViewClient(
         }
 
         if (!request.isForMainFrame || !request.hasGesture()) {
+            if (request.isForMainFrame) resetPendingMainFrameUrl()
             return true
         }
 
         return handleNonHttpUri(view, uri, url)
     }
 
+    private fun resolveCachedPageHost(pageUrl: String): String {
+        if (pageUrl == cachedPageUrlForHost) {
+            return cachedPageHost
+        }
+        val computed = OmniboxEngine.extractHost(pageUrl)
+        cachedPageUrlForHost = pageUrl
+        cachedPageHost = computed
+        return computed
+    }
+
     override fun shouldInterceptRequest(
         view: WebView,
         request: WebResourceRequest
     ): WebResourceResponse? {
-        val url = request.url?.toString().orEmpty()
-        if (url.isEmpty()) return null
+        val uri = request.url ?: return null
+        val scheme = uri.scheme
+        val isHttp = scheme.equals("https", ignoreCase = true) || scheme.equals("http", ignoreCase = true)
+        if (!isHttp) return null
 
-        val scheme = request.url?.scheme?.lowercase(Locale.ROOT).orEmpty()
-        if (scheme != "http" && scheme != "https") return null
+        val url = uri.toString()
+        if (url.isEmpty()) return null
 
         if (request.isForMainFrame) {
             lastRequestedMainFrameUrl = url
+            resolveCachedPageHost(url)
             return null
         }
 
         val pageUrl = lastRequestedMainFrameUrl.ifBlank { committedMainFrameUrl }.ifBlank { url }
+        val pageHost = resolveCachedPageHost(pageUrl)
         val headers = request.requestHeaders ?: emptyMap()
-        if (callbacks.shouldBlockNetworkRequest(tabId, url, pageUrl, headers)) {
+        if (callbacks.shouldBlockNetworkRequest(tabId, isPrivate, url, pageUrl, pageHost, headers)) {
             return buildBlockedSubresourceResponse(url, headers)
         }
 
@@ -193,10 +227,6 @@ class SwiftfoxWebViewClient(
         val dest = headers.entries.firstOrNull { it.key.equals("sec-fetch-dest", ignoreCase = true) }?.value
             ?.lowercase(Locale.ROOT).orEmpty()
         val path = url.substringBefore('?').substringBefore('#').lowercase(Locale.ROOT)
-        val corsHeaders = mapOf(
-            "Access-Control-Allow-Origin" to "*",
-            "Cache-Control" to "no-store"
-        )
 
         return when {
             dest == "image" || accept.startsWith("image/") ||
@@ -208,7 +238,7 @@ class SwiftfoxWebViewClient(
                     null,
                     200,
                     "OK",
-                    corsHeaders,
+                    BLOCKED_CORS_HEADERS,
                     ByteArrayInputStream(TRANSPARENT_1X1_PNG)
                 )
             }
@@ -218,7 +248,7 @@ class SwiftfoxWebViewClient(
                     "utf-8",
                     200,
                     "OK",
-                    corsHeaders,
+                    BLOCKED_CORS_HEADERS,
                     ByteArrayInputStream(EMPTY_JS_BYTES)
                 )
             }
@@ -228,8 +258,8 @@ class SwiftfoxWebViewClient(
                     "utf-8",
                     200,
                     "OK",
-                    corsHeaders,
-                    ByteArrayInputStream(ByteArray(0))
+                    BLOCKED_CORS_HEADERS,
+                    ByteArrayInputStream(EMPTY_BYTES)
                 )
             }
             dest == "iframe" || dest == "frame" || dest == "document" || accept.contains("text/html") -> {
@@ -238,7 +268,7 @@ class SwiftfoxWebViewClient(
                     "utf-8",
                     200,
                     "OK",
-                    corsHeaders,
+                    BLOCKED_CORS_HEADERS,
                     ByteArrayInputStream(TRANSPARENT_EMPTY_HTML_BYTES)
                 )
             }
@@ -248,8 +278,8 @@ class SwiftfoxWebViewClient(
                     "utf-8",
                     200,
                     "OK",
-                    corsHeaders,
-                    ByteArrayInputStream(ByteArray(0))
+                    BLOCKED_CORS_HEADERS,
+                    ByteArrayInputStream(EMPTY_BYTES)
                 )
             }
         }
@@ -394,11 +424,16 @@ class SwiftfoxWebViewClient(
         val host = OmniboxEngine.extractHost(view.url.orEmpty())
         val policy = callbacks.getExternalAppPolicy(tabId, host)
 
-        val (parsedIntent, fallbackUrl) = sanitizeExternalIntent(context, uri, url) ?: return true
+        val (parsedIntent, fallbackUrl) = sanitizeExternalIntent(context, uri, url) ?: run {
+            resetPendingMainFrameUrl()
+            return true
+        }
 
         if (policy == ExternalAppLinkPolicy.ALWAYS_IN_SWIFTFOX) {
             if (!fallbackUrl.isNullOrBlank()) {
                 loadFallbackUrlRespectingHttpsOnly(view, fallbackUrl)
+            } else {
+                resetPendingMainFrameUrl()
             }
             return true
         }
@@ -418,8 +453,14 @@ class SwiftfoxWebViewClient(
 
         return when (policy) {
             ExternalAppLinkPolicy.NATIVE_APP -> {
-                if (!callbacks.onLaunchExternalIntent(parsedIntent) && !fallbackUrl.isNullOrBlank()) {
-                    loadFallbackUrlRespectingHttpsOnly(view, fallbackUrl)
+                if (!callbacks.onLaunchExternalIntent(parsedIntent)) {
+                    if (!fallbackUrl.isNullOrBlank()) {
+                        loadFallbackUrlRespectingHttpsOnly(view, fallbackUrl)
+                    } else {
+                        resetPendingMainFrameUrl()
+                    }
+                } else {
+                    resetPendingMainFrameUrl()
                 }
                 true
             }
@@ -429,9 +470,12 @@ class SwiftfoxWebViewClient(
                 if (resolved == null && parsedIntent.`package`.isNullOrBlank() && uri.scheme.equals("intent", true)) {
                     if (!fallbackUrl.isNullOrBlank()) {
                         loadFallbackUrlRespectingHttpsOnly(view, fallbackUrl)
+                    } else {
+                        resetPendingMainFrameUrl()
                     }
                     return true
                 }
+                resetPendingMainFrameUrl()
                 callbacks.onExternalAppPrompt(
                     ExternalAppPrompt(
                         tabId = tabId,
@@ -443,7 +487,10 @@ class SwiftfoxWebViewClient(
                 )
                 true
             }
-            ExternalAppLinkPolicy.ALWAYS_IN_SWIFTFOX -> true
+            ExternalAppLinkPolicy.ALWAYS_IN_SWIFTFOX -> {
+                resetPendingMainFrameUrl()
+                true
+            }
         }
     }
 
@@ -574,54 +621,75 @@ class SwiftfoxWebViewClient(
 
     private fun injectRuntimeHelpers(view: WebView, mediaToken: String) {
         val tokenLit = JSONObject.quote(mediaToken)
+        val hookKeyLit = JSONObject.quote(mediaHookKey)
         val js = """
             (function() {
+              var hookKey = $hookKeyLit;
               var mediaToken = $tokenLit;
-              if (!window.__swiftfoxMediaHooked) {
-                window.__swiftfoxMediaHooked = true;
-                var notify = function(evt) {
-                  try {
-                    if (evt && evt.target && (evt.target.tagName === 'VIDEO' || evt.target.tagName === 'AUDIO')) {
-                      if (evt.type === 'play' || evt.type === 'playing') {
-                        window.__swiftfoxLastMedia = evt.target;
-                      }
-                    }
-                    var els = document.querySelectorAll('audio, video');
-                    var playing = false;
-                    var hasVideo = false;
-                    for (var i = 0; i < els.length; i++) {
-                      var el = els[i];
-                      var isActive = !el.paused && !el.ended && (el.readyState >= 1 || (evt && evt.type === 'playing' && evt.target === el));
-                      if (isActive) {
-                        playing = true;
-                        window.__swiftfoxLastMedia = el;
-                        if (el.tagName === 'VIDEO' && (el.videoWidth > 0 || el.clientHeight > 60)) {
-                          hasVideo = true;
+              var state = Object.prototype.hasOwnProperty.call(window, hookKey) ? window[hookKey] : null;
+              if (!state || typeof state.notify !== 'function') {
+                var ch = window.SwiftfoxNativeChannel;
+                var boundPost = (ch && typeof ch.postMessage === 'function') ? ch.postMessage.bind(ch) : null;
+                state = {
+                  token: mediaToken,
+                  notify: function(evt) {
+                    try {
+                      if (evt && evt.target && (evt.target.tagName === 'VIDEO' || evt.target.tagName === 'AUDIO')) {
+                        if (evt.type === 'play' || evt.type === 'playing') {
+                          window.__swiftfoxLastMedia = evt.target;
                         }
                       }
-                    }
-                    var ch = window.SwiftfoxNativeChannel;
-                    if (mediaToken && ch && typeof ch.postMessage === 'function') {
-                      ch.postMessage(JSON.stringify({
-                        channel: 'media',
-                        token: mediaToken,
-                        isPlaying: playing,
-                        hasVideo: hasVideo,
-                        title: document.title || ''
-                      }));
-                    }
-                  } catch (e) {}
+                      var els = document.querySelectorAll('audio, video');
+                      var playing = false;
+                      var hasVideo = false;
+                      for (var i = 0; i < els.length; i++) {
+                        var el = els[i];
+                        var isActive = !el.paused && !el.ended && (el.readyState >= 1 || (evt && evt.type === 'playing' && evt.target === el));
+                        if (isActive) {
+                          playing = true;
+                          window.__swiftfoxLastMedia = el;
+                          if (el.tagName === 'VIDEO' && (el.videoWidth > 0 || el.clientHeight > 60)) {
+                            hasVideo = true;
+                          }
+                        }
+                      }
+                      if (!boundPost) {
+                        var curCh = window.SwiftfoxNativeChannel;
+                        if (curCh && typeof curCh.postMessage === 'function') {
+                          boundPost = curCh.postMessage.bind(curCh);
+                        }
+                      }
+                      if (state.token && boundPost) {
+                        boundPost(JSON.stringify({
+                          channel: 'media',
+                          token: state.token,
+                          isPlaying: playing,
+                          hasVideo: hasVideo,
+                          title: document.title || ''
+                        }));
+                      }
+                    } catch (e) {}
+                  }
                 };
-                document.addEventListener('play', notify, true);
-                document.addEventListener('playing', notify, true);
-                document.addEventListener('pause', notify, true);
-                document.addEventListener('ended', notify, true);
-                document.addEventListener('emptied', notify, true);
-                window.__swiftfoxNotifyMedia = notify;
+                document.addEventListener('play', state.notify, true);
+                document.addEventListener('playing', state.notify, true);
+                document.addEventListener('pause', state.notify, true);
+                document.addEventListener('ended', state.notify, true);
+                document.addEventListener('emptied', state.notify, true);
+                try {
+                  Object.defineProperty(window, hookKey, {
+                    value: state,
+                    writable: false,
+                    configurable: false,
+                    enumerable: false
+                  });
+                } catch (e) {
+                  window[hookKey] = state;
+                }
+              } else {
+                state.token = mediaToken;
               }
-              if (window.__swiftfoxNotifyMedia) {
-                window.__swiftfoxNotifyMedia(null);
-              }
+              state.notify(null);
             })();
         """.trimIndent()
         view.evaluateJavascript(js, null)
@@ -629,6 +697,11 @@ class SwiftfoxWebViewClient(
 
     companion object {
         private const val BROWSER_CACHE_TTL_MS = 60_000L
+        private val BLOCKED_CORS_HEADERS = mapOf(
+            "Access-Control-Allow-Origin" to "*",
+            "Cache-Control" to "no-store"
+        )
+        private val EMPTY_BYTES = ByteArray(0)
 
         @Volatile
         private var browserPackagesCache: Set<String>? = null

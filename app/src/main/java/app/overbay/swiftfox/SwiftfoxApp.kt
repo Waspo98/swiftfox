@@ -22,6 +22,7 @@ import app.overbay.swiftfox.features.sync.SyncWorkerBridge
 import app.overbay.swiftfox.features.userscripts.UserscriptBridge
 import app.overbay.swiftfox.features.userscripts.UserscriptRepository
 import app.overbay.swiftfox.features.zapper.ZapperController
+import app.overbay.swiftfox.ui.reader.clearGlobalReaderImageCache
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -90,32 +91,38 @@ class SwiftfoxApp : Application() {
         super.onCreate()
         database = SwiftfoxDatabase.getInstance(this)
         preferencesRepository = PreferencesRepository(this)
-        faviconRepository = FaviconRepository(this, httpClient, appScope)
+        val lazyClientProvider: () -> OkHttpClient = { httpClient }
+
+        faviconRepository = FaviconRepository(this, lazyClientProvider, appScope)
         topDomainsRepository = TopDomainsRepository(this)
-        OmniboxEngine.configureHttpClient(httpClient)
-        downloadCoordinator = DownloadCoordinator(this, database.downloadRecordDao(), httpClient)
-        downloadCoordinator.registerCompletionReceiver(appScope)
+        OmniboxEngine.configureHttpClientProvider(lazyClientProvider)
+        downloadCoordinator = DownloadCoordinator(
+            context = this,
+            downloadRecordDao = database.downloadRecordDao(),
+            httpClientProvider = lazyClientProvider,
+            downloadScope = appScope
+        )
 
         adblockEngine = AdblockEngine(this)
         filterListRepository = FilterListRepository(
             context = this,
             dao = database.filterListDao(),
             engine = adblockEngine,
-            client = httpClient
+            clientProvider = lazyClientProvider
         )
         zapperController = ZapperController(this)
         darkReaderInjector = DarkReaderInjector(this)
         userscriptRepository = UserscriptRepository(
             scriptDao = database.userscriptDao(),
             storageDao = database.userscriptStorageDao(),
-            client = httpClient
+            clientProvider = lazyClientProvider
         )
         userscriptBridge = UserscriptBridge(
             context = this,
             scope = appScope,
             scriptDao = database.userscriptDao(),
             storageDao = database.userscriptStorageDao(),
-            client = httpClient
+            clientProvider = lazyClientProvider
         )
         readerExtractor = ReaderExtractor(this)
         mozillaSyncCoordinator = MozillaSyncCoordinator(
@@ -123,7 +130,7 @@ class SwiftfoxApp : Application() {
             db = database,
             prefs = preferencesRepository,
             scope = appScope,
-            httpClient = httpClient
+            httpClientProvider = lazyClientProvider
         )
         SyncWorkerBridge.onRunSync = {
             mozillaSyncCoordinator.syncNow(SyncReason.Startup)
@@ -139,25 +146,32 @@ class SwiftfoxApp : Application() {
             }
         }
 
-        // Defer WebView/ProfileStore initialization until Main Looper is idle after first frame
-        // so Chromium never blocks cold launch.
+        // Load warm engine.dat immediately on IO without waiting behind DataStore/Room setup
+        appScope.launch {
+            adblockEngine.tryLoadWarmCacheFast()
+        }
+
+        // Defer WebView/ProfileStore initialization and download receiver registration until
+        // Main Looper is idle after first frame so cold launch stays completely unblocked.
         Looper.getMainLooper().queue.addIdleHandler {
             if (BuildConfig.DEBUG) {
                 runCatching { WebView.setWebContentsDebuggingEnabled(true) }
             }
+            downloadCoordinator.registerCompletionReceiver(appScope)
             tabSessionPool.clearPrivateProfileData()
+            appScope.launch {
+                downloadCoordinator.reconcileActiveSystemDownloads()
+            }
             false
         }
 
-        // Run Mozilla Sync/JNA init, JS asset warmup, and WorkManager scheduling off the main thread.
+        // Warm core navigation assets & schedule periodic filter updates off the main thread.
+        // Zapper and Readability JS remain lazily loaded on demand to save cold-start I/O & RAM.
         appScope.launch {
             topDomainsRepository.warmUp()
             darkReaderInjector.warmUpAssets()
-            zapperController.warmUpAssets()
             userscriptBridge.warmUpAssets()
-            readerExtractor.warmUpAssets()
             FilterListUpdateWorker.schedulePeriodic(this@SwiftfoxApp)
-            mozillaSyncCoordinator.initialize()
         }
 
         appScope.launch {
@@ -165,6 +179,10 @@ class SwiftfoxApp : Application() {
             database.seedDefaultsIfEmpty(seedInitialContent = !initialSettings.hasSeededDefaults)
             if (!initialSettings.hasSeededDefaults) {
                 preferencesRepository.setHasSeededDefaults(true)
+            }
+            // Only load JNA/megazord & Places/Tabs SQLite at cold start when a Sync account is connected.
+            if (initialSettings.syncHasConnectedAccount || mozillaSyncCoordinator.hasPersistedAccountHint()) {
+                mozillaSyncCoordinator.initialize()
             }
             val allLists = database.filterListDao().getAll()
             val enabledLists = allLists.filter { it.enabled }
@@ -183,7 +201,11 @@ class SwiftfoxApp : Application() {
                 level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL ||
                 level >= ComponentCallbacks2.TRIM_MEMORY_BACKGROUND
         if (isGenuineMemoryPressure) {
+            val isCritical = level == ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL ||
+                level >= ComponentCallbacks2.TRIM_MEMORY_COMPLETE
             tabSessionPool.hibernateBackgroundSessions(evictThumbnails = true)
+            faviconRepository.trimMemory(evictAll = isCritical)
+            clearGlobalReaderImageCache()
         }
     }
 }

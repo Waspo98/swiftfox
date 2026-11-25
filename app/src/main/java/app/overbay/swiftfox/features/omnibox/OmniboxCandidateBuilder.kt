@@ -18,8 +18,14 @@ object OmniboxCandidateBuilder {
         maxBookmarksAndHistory: Int = Int.MAX_VALUE
     ): List<AutocompleteCandidate> {
         val inPrivate = state.isPrivateView
+        val isBoundedFastPass = maxBookmarksAndHistory < Int.MAX_VALUE
+        val maxTabs = if (isBoundedFastPass) 40 else Int.MAX_VALUE
+        val maxPins = if (isBoundedFastPass) 40 else Int.MAX_VALUE
+        val maxRemoteTabs = if (isBoundedFastPass) 50 else Int.MAX_VALUE
         return buildList {
-            state.tabs.forEach { tab ->
+            var tabsAdded = 0
+            for (tab in state.tabs) {
+                if (tabsAdded >= maxTabs) break
                 if (tab.isPrivate == inPrivate) {
                     val effectiveUrl = if (tab.isUnloaded) {
                         tab.pinnedUrl?.takeIf { it.isNotBlank() } ?: tab.url
@@ -39,11 +45,13 @@ object OmniboxCandidateBuilder {
                                 lastVisitedAt = tab.lastAccessedAt
                             )
                         )
+                        tabsAdded++
                     }
                 }
             }
             if (!inPrivate) {
-                state.essentials.forEach { ess ->
+                val essSlice = if (state.essentials.size > maxPins) state.essentials.take(maxPins) else state.essentials
+                essSlice.forEach { ess ->
                     add(
                         AutocompleteCandidate(
                             url = ess.url,
@@ -52,7 +60,12 @@ object OmniboxCandidateBuilder {
                         )
                     )
                 }
-                state.zenPinnedItems.forEach { pin ->
+                val zenSlice = if (state.zenPinnedItems.size > maxPins) {
+                    state.zenPinnedItems.take(maxPins)
+                } else {
+                    state.zenPinnedItems
+                }
+                zenSlice.forEach { pin ->
                     add(
                         AutocompleteCandidate(
                             url = pin.url,
@@ -61,7 +74,12 @@ object OmniboxCandidateBuilder {
                         )
                     )
                 }
-                state.syncedRemoteTabs.forEach { remoteTab ->
+                val remoteSlice = if (state.syncedRemoteTabs.size > maxRemoteTabs) {
+                    state.syncedRemoteTabs.take(maxRemoteTabs)
+                } else {
+                    state.syncedRemoteTabs
+                }
+                remoteSlice.forEach { remoteTab ->
                     add(
                         AutocompleteCandidate(
                             url = remoteTab.url,

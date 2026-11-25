@@ -35,7 +35,7 @@ class ZapperController(private val context: Context? = null) {
         val safeHex = normalizeAccentHex(accentHex)
         val keyLit = jsStringLiteral(runtimeKey)
         val tokenLit = jsStringLiteral(bridgeToken)
-        return buildString {
+        return buildString(zapperScript.length + 256) {
             append("(function(){\n")
             if (zapperScript.isNotBlank()) {
                 append("if (!Object.prototype.hasOwnProperty.call(window, ").append(keyLit).append(")) {\n")
@@ -172,10 +172,13 @@ class ZapperController(private val context: Context? = null) {
         }.getOrDefault(0)
     }
 
-    private fun jsStringLiteral(value: String): String =
-        jsonParser.encodeToString(value)
+    private fun jsStringLiteral(value: String): String {
+        val encoded = jsonParser.encodeToString(value)
+        if (encoded.indexOf('<') < 0 && encoded.indexOf('>') < 0) return encoded
+        return encoded
             .replace("<", "\\u003c")
             .replace(">", "\\u003e")
+    }
 
     private fun normalizeAccentHex(accentHex: String): String {
         val trimmed = accentHex.trim()
@@ -211,7 +214,7 @@ class ZapperController(private val context: Context? = null) {
         var escaped = false
         var bracketDepth = 0
         var parenDepth = 0
-        val currentSeg = StringBuilder()
+        val currentSeg = StringBuilder(minOf(trimmed.length, 128))
         for (ch in trimmed) {
             if (escaped) {
                 currentSeg.append(ch)

@@ -1,5 +1,6 @@
 package app.overbay.swiftfox.ui.browser
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.atomic.AtomicInteger
@@ -32,9 +33,15 @@ internal class SiteOverrideWriteCoordinator<T> {
         var settledSnapshot: T? = null
         try {
             writeMutex.withLock {
-                writeToDb()
+                try {
+                    writeToDb()
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (_: Throwable) {
+                    // Recover authoritative DB state below so optimistic UI never drifts permanently
+                }
                 if (writeGeneration.get() == generation) {
-                    settledSnapshot = readSettledFromDb()
+                    settledSnapshot = runCatching { readSettledFromDb() }.getOrNull()
                 }
             }
         } finally {

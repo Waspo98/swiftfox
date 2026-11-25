@@ -1,5 +1,7 @@
 package app.overbay.swiftfox.features.reader
 
+import java.net.URI
+
 /**
  * Pure-Kotlin HTML-to-[ReaderBlock] parser for Readability output and plain-text fallbacks.
  * Supports headings, paragraphs, blockquotes, code blocks, nested lists, tables, images/figures,
@@ -10,6 +12,9 @@ object ReaderHtmlParser {
 
     private const val MAX_HTML_CHARS = 2_000_000
     private const val MAX_DOM_DEPTH = 64
+
+    @Volatile
+    private var activeParseBaseUri: URI? = null
 
     private sealed interface HtmlToken {
         data class Text(val raw: String, val decodeEntities: Boolean = true) : HtmlToken
@@ -237,48 +242,75 @@ object ReaderHtmlParser {
         "Yuml" to "\u0178"
     )
 
-    fun parse(html: String): List<ReaderBlock> {
+    fun parse(html: String, baseUrl: String? = null): List<ReaderBlock> {
         if (html.isBlank()) return emptyList()
         val bounded = if (html.length > MAX_HTML_CHARS) html.substring(0, MAX_HTML_CHARS) else html
+        val parsedBaseUri = baseUrl?.trim()?.takeIf {
+            it.startsWith("http://", ignoreCase = true) || it.startsWith("https://", ignoreCase = true)
+        }?.let { runCatching { URI(it) }.getOrNull() }
+        val prevBase = activeParseBaseUri
+        activeParseBaseUri = parsedBaseUri
+        try {
+            val tokens = tokenize(bounded)
+            val root = buildTree(tokens)
+            val blocks = mutableListOf<ReaderBlock>()
+            var nextId = 0
 
-        val tokens = tokenize(bounded)
-        val root = buildTree(tokens)
-        val blocks = mutableListOf<ReaderBlock>()
-        var nextId = 0
+            fun generateId(prefix: String): String = "${prefix}_${nextId++}"
 
-        fun generateId(prefix: String): String = "${prefix}_${nextId++}"
+            emitChildrenBlocks(root.children, blocks, ::generateId, depth = 0)
 
-        emitChildrenBlocks(root.children, blocks, ::generateId, depth = 0)
-
-        if (blocks.isEmpty()) {
-            val fallbackText = extractPlainFallbackText(root)
-            if (fallbackText.isNotBlank()) {
-                fallbackText.split(BLANK_LINE_REGEX).forEach { chunk ->
-                    val cleaned = collapseWhitespace(chunk)
-                    if (cleaned.isNotEmpty()) {
-                        blocks.add(
-                            ReaderBlock.Paragraph(
-                                id = generateId("p"),
-                                runs = listOf(TextRun(text = cleaned))
+            if (blocks.isEmpty()) {
+                val fallbackText = extractPlainFallbackText(root)
+                if (fallbackText.isNotBlank()) {
+                    fallbackText.split(BLANK_LINE_REGEX).forEach { chunk ->
+                        val cleaned = collapseWhitespace(chunk)
+                        if (cleaned.isNotEmpty()) {
+                            blocks.add(
+                                ReaderBlock.Paragraph(
+                                    id = generateId("p"),
+                                    runs = listOf(TextRun(text = cleaned))
+                                )
                             )
-                        )
+                        }
                     }
                 }
             }
-        }
 
-        return blocks
+            return blocks
+        } finally {
+            activeParseBaseUri = prevBase
+        }
     }
 
-    internal fun sanitizeHttpUrl(raw: String?): String? {
+    internal fun sanitizeHttpUrl(raw: String?, baseUri: URI? = activeParseBaseUri): String? {
         if (raw.isNullOrBlank()) return null
         val trimmed = raw.trim()
         if (trimmed.any { it.code < 0x20 || it.code == 0x7F }) return null
         val lower = trimmed.lowercase(java.util.Locale.ROOT)
-        if (!lower.startsWith("http://") && !lower.startsWith("https://")) return null
-        val afterScheme = trimmed.substringAfter("://")
+        if (lower.startsWith("javascript:") ||
+            lower.startsWith("data:") ||
+            lower.startsWith("vbscript:") ||
+            lower.startsWith("file:") ||
+            lower.startsWith("intent:") ||
+            lower.startsWith("content:") ||
+            lower.startsWith("blob:") ||
+            lower.startsWith("mailto:") ||
+            lower.startsWith("tel:") ||
+            lower.startsWith("#")
+        ) {
+            return null
+        }
+        val candidate = if (!lower.startsWith("http://") && !lower.startsWith("https://") && baseUri != null) {
+            runCatching { baseUri.resolve(trimmed).toString() }.getOrNull() ?: return null
+        } else {
+            trimmed
+        }
+        val candidateLower = candidate.lowercase(java.util.Locale.ROOT)
+        if (!candidateLower.startsWith("http://") && !candidateLower.startsWith("https://")) return null
+        val afterScheme = candidate.substringAfter("://")
         if (afterScheme.isEmpty() || afterScheme.startsWith("/")) return null
-        return trimmed
+        return candidate
     }
 
     internal fun decodeEntities(input: String): String {
@@ -1499,22 +1531,46 @@ object ReaderHtmlParser {
 
             if (runs.isEmpty()) return emptyList()
 
-            // Merge adjacent runs with identical formatting
-            val merged = mutableListOf<TextRun>()
-            for (run in runs) {
-                if (run.text.isEmpty()) continue
-                val prev = merged.lastOrNull()
-                if (prev != null &&
-                    prev.bold == run.bold &&
-                    prev.italic == run.italic &&
-                    prev.code == run.code &&
-                    prev.strikethrough == run.strikethrough &&
-                    prev.linkUrl == run.linkUrl
-                ) {
-                    merged[merged.lastIndex] = prev.copy(text = prev.text + run.text)
-                } else {
-                    merged.add(run)
+            // Merge adjacent runs with identical formatting without O(N^2) string copies
+            val merged = ArrayList<TextRun>(runs.size)
+            var idx = 0
+            while (idx < runs.size) {
+                val base = runs[idx]
+                if (base.text.isEmpty()) {
+                    idx++
+                    continue
                 }
+                var end = idx + 1
+                var totalLen = base.text.length
+                while (end < runs.size) {
+                    val next = runs[end]
+                    if (next.text.isEmpty()) {
+                        end++
+                        continue
+                    }
+                    if (base.bold == next.bold &&
+                        base.italic == next.italic &&
+                        base.code == next.code &&
+                        base.strikethrough == next.strikethrough &&
+                        base.linkUrl == next.linkUrl
+                    ) {
+                        totalLen += next.text.length
+                        end++
+                    } else {
+                        break
+                    }
+                }
+                if (totalLen == base.text.length) {
+                    merged.add(base)
+                } else {
+                    val sb = StringBuilder(totalLen)
+                    for (k in idx until end) {
+                        val t = runs[k].text
+                        if (t.isNotEmpty()) sb.append(t)
+                    }
+                    merged.add(base.copy(text = sb.toString()))
+                }
+                idx = end
             }
             return merged
         }

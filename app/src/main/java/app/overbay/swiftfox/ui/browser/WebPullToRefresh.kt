@@ -45,11 +45,22 @@ import kotlin.math.ln
  * cleanly while top-of-page pull-to-refresh works reliably at `scrollTop == 0`.
  */
 internal class PullToRefreshController(
-    val triggerDistancePx: Float,
-    val maxPullDistancePx: Float = triggerDistancePx * 1.65f,
+    triggerDistancePx: Float,
+    maxPullDistancePx: Float = triggerDistancePx * 1.65f,
     private val dragRate: Float = 0.55f,
-    private val showDeadzonePx: Float = 12f
+    showDeadzonePx: Float = 12f
 ) {
+    var triggerDistancePx: Float = triggerDistancePx
+        private set
+    var maxPullDistancePx: Float = maxPullDistancePx
+        private set
+    private var showDeadzonePx: Float = showDeadzonePx
+
+    fun updateDensityMetrics(newTriggerDistancePx: Float, newDeadzonePx: Float) {
+        triggerDistancePx = newTriggerDistancePx
+        maxPullDistancePx = newTriggerDistancePx * 1.65f
+        showDeadzonePx = newDeadzonePx
+    }
     var touchActive: Boolean = false
         private set
     var eligible: Boolean = false

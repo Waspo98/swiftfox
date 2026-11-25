@@ -1,6 +1,7 @@
 package app.overbay.swiftfox.data.db
 
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
 @Entity(tableName = "spaces")
@@ -29,7 +30,15 @@ data class EssentialEntity(
     val customIcon: String? = null
 )
 
-@Entity(tableName = "tabs")
+@Entity(
+    tableName = "tabs",
+    indices = [
+        Index(value = ["spaceId"], name = "index_tabs_spaceId"),
+        Index(value = ["essentialId"], name = "index_tabs_essentialId"),
+        Index(value = ["zenPinnedId"], name = "index_tabs_zenPinnedId"),
+        Index(value = ["isPrivate", "isPinned", "sortOrder"], name = "index_tabs_isPrivate_isPinned_sortOrder")
+    ]
+)
 data class TabEntity(
     @PrimaryKey val id: String,
     val spaceId: String,
@@ -48,7 +57,15 @@ data class TabEntity(
     val pinnedUrl: String? = null
 )
 
-@Entity(tableName = "bookmarks")
+@Entity(
+    tableName = "bookmarks",
+    indices = [
+        Index(value = ["url"], name = "index_bookmarks_url"),
+        Index(value = ["createdAt"], name = "index_bookmarks_createdAt"),
+        Index(value = ["updatedAt", "createdAt"], name = "index_bookmarks_updatedAt_createdAt"),
+        Index(value = ["syncGuid"], name = "index_bookmarks_syncGuid")
+    ]
+)
 data class BookmarkEntity(
     @PrimaryKey val id: String,
     val title: String,
@@ -60,7 +77,13 @@ data class BookmarkEntity(
     val updatedAt: Long = System.currentTimeMillis()
 )
 
-@Entity(tableName = "history")
+@Entity(
+    tableName = "history",
+    indices = [
+        Index(value = ["lastVisitedAt"], name = "index_history_lastVisitedAt"),
+        Index(value = ["visitCount", "lastVisitedAt"], name = "index_history_visitCount_lastVisitedAt")
+    ]
+)
 data class HistoryEntity(
     @PrimaryKey val url: String,
     val title: String,
@@ -101,7 +124,13 @@ data class SiteOverrideEntity(
             customUserAgent.isNullOrBlank()
 }
 
-@Entity(tableName = "downloads")
+@Entity(
+    tableName = "downloads",
+    indices = [
+        Index(value = ["createdAt"], name = "index_downloads_createdAt"),
+        Index(value = ["systemDownloadId"], name = "index_downloads_systemDownloadId")
+    ]
+)
 data class DownloadRecordEntity(
     @PrimaryKey val id: String,
     val fileName: String,
@@ -125,7 +154,12 @@ data class FilterListEntity(
     val lastError: String? = null
 )
 
-@Entity(tableName = "zapped_rules")
+@Entity(
+    tableName = "zapped_rules",
+    indices = [
+        Index(value = ["host", "enabled", "createdAt"], name = "index_zapped_rules_host_enabled_createdAt")
+    ]
+)
 data class ZappedRuleEntity(
     @PrimaryKey val id: String,
     val host: String,
@@ -135,7 +169,13 @@ data class ZappedRuleEntity(
     val createdAt: Long = System.currentTimeMillis()
 )
 
-@Entity(tableName = "userscripts")
+@Entity(
+    tableName = "userscripts",
+    indices = [
+        Index(value = ["enabled", "installedAt"], name = "index_userscripts_enabled_installedAt"),
+        Index(value = ["sourceUrl"], name = "index_userscripts_sourceUrl")
+    ]
+)
 data class UserscriptEntity(
     @PrimaryKey val id: String,
     val name: String,
@@ -152,6 +192,43 @@ data class UserscriptEntity(
     val installedAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis()
 )
+
+/**
+ * Lightweight projection omitting the up-to-2MB `code` column so Room `CursorWindow` never
+ * overflows on `observeAll()` and `BrowserUiState` doesn't pin multi-MB JS sources in RAM.
+ */
+data class UserscriptSummary(
+    val id: String,
+    val name: String,
+    val namespace: String,
+    val version: String,
+    val description: String,
+    val sourceUrl: String?,
+    val matchesJson: String,
+    val excludesJson: String,
+    val runAt: String,
+    val grantsJson: String,
+    val enabled: Boolean,
+    val installedAt: Long,
+    val updatedAt: Long
+) {
+    fun toMetadataEntity(): UserscriptEntity = UserscriptEntity(
+        id = id,
+        name = name,
+        namespace = namespace,
+        version = version,
+        description = description,
+        sourceUrl = sourceUrl,
+        code = "",
+        matchesJson = matchesJson,
+        excludesJson = excludesJson,
+        runAt = runAt,
+        grantsJson = grantsJson,
+        enabled = enabled,
+        installedAt = installedAt,
+        updatedAt = updatedAt
+    )
+}
 
 @Entity(
     tableName = "userscript_storage",
@@ -177,7 +254,13 @@ data class SyncedRemoteTabEntity(
     val position: Int = 0
 )
 
-@Entity(tableName = "zen_pinned_items")
+@Entity(
+    tableName = "zen_pinned_items",
+    indices = [
+        Index(value = ["spaceId"], name = "index_zen_pinned_items_spaceId"),
+        Index(value = ["sortOrder"], name = "index_zen_pinned_items_sortOrder")
+    ]
+)
 data class ZenPinnedItemEntity(
     @PrimaryKey val id: String,
     val spaceId: String,

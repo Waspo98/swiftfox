@@ -9,6 +9,7 @@ import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -29,6 +30,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -45,6 +47,7 @@ import androidx.webkit.ProfileStore
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import app.overbay.swiftfox.features.sync.MozillaSyncCoordinator
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 private val fxaAuthOverlayGeneration = AtomicLong(0L)
@@ -65,7 +68,9 @@ fun FxAAuthWebViewOverlay(
 ) {
     val context = LocalContext.current
     var progress by remember { mutableIntStateOf(0) }
+    var canGoBack by remember { mutableStateOf(false) }
     var redirectHandled by remember { mutableStateOf(false) }
+    val destroyed = remember { AtomicBoolean(false) }
     val currentIsRedirectUrl by rememberUpdatedState(isRedirectUrl)
     val currentOnRedirectCaptured by rememberUpdatedState(onRedirectCaptured)
     val currentOnCancel by rememberUpdatedState(onCancel)
@@ -119,12 +124,21 @@ fun FxAAuthWebViewOverlay(
                 }
 
                 override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                    canGoBack = view?.canGoBack() == true
                     val target = url.orEmpty()
                     if (currentIsRedirectUrl(target) && !redirectHandled) {
                         redirectHandled = true
                         view?.stopLoading()
                         currentOnRedirectCaptured(target)
                     }
+                }
+
+                override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) {
+                    canGoBack = view?.canGoBack() == true
+                }
+
+                override fun onPageFinished(view: WebView?, url: String?) {
+                    canGoBack = view?.canGoBack() == true
                 }
 
                 override fun onRenderProcessGone(
@@ -136,6 +150,10 @@ fun FxAAuthWebViewOverlay(
                 }
             }
         }
+    }
+
+    BackHandler(enabled = canGoBack) {
+        webView.goBack()
     }
 
     LaunchedEffect(authUrl) {
@@ -158,6 +176,27 @@ fun FxAAuthWebViewOverlay(
                     }
                 }
             }
+        }
+    }
+
+    fun disposeAuthWebView(view: WebView) {
+        if (!destroyed.compareAndSet(false, true)) return
+        runCatching {
+            view.stopLoading()
+            view.onPause()
+            view.webChromeClient = null
+            view.webViewClient = WebViewClient()
+            (view.parent as? ViewGroup)?.removeView(view)
+            view.clearHistory()
+            view.clearCache(true)
+            view.destroy()
+        }
+        cleanupAuthProfileIfStillCurrent()
+    }
+
+    DisposableEffect(webView) {
+        onDispose {
+            disposeAuthWebView(webView)
         }
     }
 
@@ -204,16 +243,7 @@ fun FxAAuthWebViewOverlay(
         ) {
             AndroidView(
                 factory = { webView },
-                onRelease = { view ->
-                    runCatching {
-                        view.stopLoading()
-                        (view.parent as? ViewGroup)?.removeView(view)
-                        view.clearHistory()
-                        view.clearCache(true)
-                        view.destroy()
-                    }
-                    cleanupAuthProfileIfStillCurrent()
-                },
+                onRelease = { view -> disposeAuthWebView(view) },
                 modifier = Modifier.fillMaxSize()
             )
         }

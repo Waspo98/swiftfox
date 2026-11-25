@@ -36,10 +36,20 @@ class FilterListUpdateWorker(
         }
 
         val engine = AdblockEngine(applicationContext)
+        val appClient = (applicationContext as? app.overbay.swiftfox.SwiftfoxApp)?.let { app -> { app.httpClient } }
+        var tempClient: okhttp3.OkHttpClient? = null
+        val clientProvider: () -> okhttp3.OkHttpClient = appClient ?: {
+            tempClient ?: okhttp3.OkHttpClient.Builder()
+                .connectTimeout(15, TimeUnit.SECONDS)
+                .readTimeout(30, TimeUnit.SECONDS)
+                .followRedirects(true)
+                .build()
+                .also { tempClient = it }
+        }
         return try {
             try {
                 val db = SwiftfoxDatabase.getInstance(applicationContext)
-                val repo = FilterListRepository(applicationContext, db.filterListDao(), engine)
+                val repo = FilterListRepository(applicationContext, db.filterListDao(), engine, clientProvider)
                 repo.updateAllEnabled()
                 Result.success()
             } catch (ce: CancellationException) {
@@ -48,8 +58,12 @@ class FilterListUpdateWorker(
                 if (runAttemptCount < 3) Result.retry() else Result.failure()
             }
         } finally {
-            // Release native Rust engine handle so background worker runs never leak native heap
+            // Release native Rust engine handle and any standalone OkHttp pool
             engine.close()
+            tempClient?.let { created ->
+                runCatching { created.dispatcher.executorService.shutdown() }
+                runCatching { created.connectionPool.evictAll() }
+            }
         }
     }
 

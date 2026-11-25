@@ -113,7 +113,7 @@ object OmniboxScopedSuggestions {
                 val matches = if (trimmed.isEmpty()) {
                     state.bookmarks.take(12)
                 } else {
-                    val hostPrefix = OmniboxEngine.extractHostPrefixForDbQuery(query)
+                    val hostPrefix = OmniboxEngine.extractRawHostPrefixForDbQuery(query)
                     val dbPrefix = if (hostPrefix != null) {
                         searchBookmarksByPrefix(hostPrefix, 16)
                     } else {
@@ -155,7 +155,7 @@ object OmniboxScopedSuggestions {
                         )
                     }
                 } else {
-                    val hostPrefix = OmniboxEngine.extractHostPrefixForDbQuery(query)
+                    val hostPrefix = OmniboxEngine.extractRawHostPrefixForDbQuery(query)
                     val dbPrefix = if (hostPrefix != null) {
                         searchHistoryByPrefix(hostPrefix, 20)
                     } else {

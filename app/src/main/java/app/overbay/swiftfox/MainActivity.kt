@@ -200,10 +200,11 @@ class MainActivity : ComponentActivity() {
                         thumbnailsFlow = viewModel.thumbnails,
                         viewModel = viewModel,
                         onShareUrl = { cleanUrl, strippedCount ->
+                            val latestState = viewModel.uiState.value
                             val shareIntent = Intent(Intent.ACTION_SEND).apply {
                                 type = "text/plain"
                                 putExtra(Intent.EXTRA_TEXT, cleanUrl)
-                                state.activeTab?.title?.takeIf { it.isNotBlank() }?.let {
+                                latestState.activeTab?.title?.takeIf { it.isNotBlank() }?.let {
                                     putExtra(Intent.EXTRA_SUBJECT, it)
                                 }
                             }
@@ -213,10 +214,11 @@ class MainActivity : ComponentActivity() {
                             }
                         },
                         onCopyText = { text ->
+                            val latestState = viewModel.uiState.value
                             val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                             val clip = ClipData.newPlainText("Swiftfox Link", text)
                             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-                                (state.activeTab?.isPrivate == true || state.isPrivateView)
+                                (latestState.activeTab?.isPrivate == true || latestState.isPrivateView)
                             ) {
                                 clip.description.extras = PersistableBundle().apply {
                                     putBoolean(ClipDescription.EXTRA_IS_SENSITIVE, true)

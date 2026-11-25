@@ -42,7 +42,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Check
-import androidx.compose.material.icons.rounded.Remove
+import app.overbay.swiftfox.ui.icons.rounded.Remove
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalIconButton
@@ -147,13 +147,27 @@ import app.overbay.swiftfox.ui.theme.MonoDayPrimary
 import app.overbay.swiftfox.ui.theme.rememberReduceMotion
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.ByteArrayOutputStream
+import kotlin.coroutines.coroutineContext
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.roundToInt
+
+internal fun clearGlobalReaderImageCache() {
+    ReaderImageCache.clear()
+}
+
+private fun createByteSizedReaderImageCache(maxSizeKib: Int): LruCache<String, ImageBitmap> =
+    object : LruCache<String, ImageBitmap>(maxSizeKib) {
+        override fun sizeOf(key: String, value: ImageBitmap): Int {
+            val bytes = value.width.toLong() * value.height.toLong() * 4L
+            return (bytes / 1024L).toInt().coerceAtLeast(1)
+        }
+    }
 
 @Immutable
 private data class ReaderPalette(
@@ -184,8 +198,37 @@ private object ReaderImageCache {
     private const val MAX_IMAGE_BYTES = 8 * 1024 * 1024
     private const val MAX_BITMAP_DIM = 1440
     private const val MAX_IMAGE_REDIRECTS = 5
+    private const val GLOBAL_CACHE_SIZE_KIB = 16 * 1024
 
-    private val cache = object : LruCache<String, ImageBitmap>(12) {}
+    private val cache = createByteSizedReaderImageCache(GLOBAL_CACHE_SIZE_KIB)
+
+    @Volatile
+    private var cachedBaseClient: OkHttpClient? = null
+
+    @Volatile
+    private var cachedNoRedirectClient: OkHttpClient? = null
+
+    fun clear() {
+        cache.evictAll()
+    }
+
+    private fun noRedirectClientFor(client: OkHttpClient): OkHttpClient {
+        if (cachedBaseClient === client) {
+            cachedNoRedirectClient?.let { return it }
+        }
+        synchronized(this) {
+            if (cachedBaseClient === client) {
+                cachedNoRedirectClient?.let { return it }
+            }
+            val built = client.newBuilder()
+                .followRedirects(false)
+                .followSslRedirects(false)
+                .build()
+            cachedBaseClient = client
+            cachedNoRedirectClient = built
+            return built
+        }
+    }
 
     fun peek(
         url: String,
@@ -234,14 +277,13 @@ private object ReaderImageCache {
             privateCache?.get(url)?.let { return@withContext it }
         } else {
             cache.get(url)?.let { return@withContext it }
-            cache.get(initialTarget)?.let { return@withContext it }
+            if (initialTarget != url) {
+                cache.get(initialTarget)?.let { return@withContext it }
+            }
         }
 
         try {
-            val noRedirectClient = client.newBuilder()
-                .followRedirects(false)
-                .followSslRedirects(false)
-                .build()
+            val noRedirectClient = noRedirectClientFor(client)
             var currentUrl = initialTarget
             var hops = 0
             while (hops <= MAX_IMAGE_REDIRECTS) {
@@ -266,56 +308,69 @@ private object ReaderImageCache {
                     .get()
                     .header("Accept", "image/webp,image/png,image/jpeg,image/*;q=0.8")
                     .build()
-                noRedirectClient.newCall(request).execute().use { response ->
-                    if (response.isRedirect) {
-                        val location = response.header("Location") ?: return@withContext null
-                        val resolved = response.request.url.resolve(location)?.toString() ?: return@withContext null
-                        val nextUrl = resolveTargetUrl(resolved, httpsOnlyMode, isHostHttpsBypassed)
-                            ?: return@withContext null
-                        currentUrl = nextUrl
-                        hops++
-                        return@use
-                    }
-                    if (!response.isSuccessful) return@withContext null
-                    val body = response.body
-                    if (body.contentLength() > MAX_IMAGE_BYTES) return@withContext null
-                    val out = ByteArrayOutputStream()
-                    val buf = ByteArray(8192)
-                    var total = 0
-                    body.byteStream().use { input ->
-                        while (true) {
-                            val read = input.read(buf)
-                            if (read == -1) break
-                            total += read
-                            if (total > MAX_IMAGE_BYTES) return@withContext null
-                            out.write(buf, 0, read)
+                val call = noRedirectClient.newCall(request)
+                val cancelHandle = coroutineContext[Job]?.invokeOnCompletion { cause ->
+                    if (cause != null) call.cancel()
+                }
+                try {
+                    call.execute().use { response ->
+                        if (response.isRedirect) {
+                            val location = response.header("Location") ?: return@withContext null
+                            val resolved = response.request.url.resolve(location)?.toString() ?: return@withContext null
+                            val nextUrl = resolveTargetUrl(resolved, httpsOnlyMode, isHostHttpsBypassed)
+                                ?: return@withContext null
+                            currentUrl = nextUrl
+                            hops++
+                            return@use
                         }
-                    }
-                    val bytes = out.toByteArray()
-                    if (bytes.isEmpty()) return@withContext null
+                        if (!response.isSuccessful) return@withContext null
+                        val body = response.body
+                        if (body.contentLength() > MAX_IMAGE_BYTES) return@withContext null
+                        val out = ByteArrayOutputStream()
+                        val buf = ByteArray(8192)
+                        var total = 0
+                        body.byteStream().use { input ->
+                            while (true) {
+                                val read = input.read(buf)
+                                if (read == -1) break
+                                total += read
+                                if (total > MAX_IMAGE_BYTES) return@withContext null
+                                out.write(buf, 0, read)
+                            }
+                        }
+                        val bytes = out.toByteArray()
+                        if (bytes.isEmpty()) return@withContext null
 
-                    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-                    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@withContext null
+                        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+                        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@withContext null
 
-                    var sampleSize = 1
-                    while (bounds.outWidth / sampleSize > MAX_BITMAP_DIM ||
-                        bounds.outHeight / sampleSize > MAX_BITMAP_DIM
-                    ) {
-                        sampleSize *= 2
-                    }
+                        var sampleSize = 1
+                        while (bounds.outWidth / sampleSize > MAX_BITMAP_DIM ||
+                            bounds.outHeight / sampleSize > MAX_BITMAP_DIM
+                        ) {
+                            sampleSize *= 2
+                        }
 
-                    val decodeOpts = BitmapFactory.Options().apply { inSampleSize = sampleSize }
-                    val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, decodeOpts)
-                        ?: return@withContext null
-                    val imageBitmap = decoded.asImageBitmap()
-                    if (isPrivate) {
-                        privateCache?.put(url, imageBitmap)
-                    } else {
-                        cache.put(url, imageBitmap)
-                        cache.put(currentUrl, imageBitmap)
+                        val decodeOpts = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+                        val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, decodeOpts)
+                            ?: return@withContext null
+                        val imageBitmap = decoded.asImageBitmap()
+                        if (isPrivate) {
+                            privateCache?.put(url, imageBitmap)
+                            if (currentUrl != url) {
+                                privateCache?.put(currentUrl, imageBitmap)
+                            }
+                        } else {
+                            cache.put(url, imageBitmap)
+                            if (currentUrl != url) {
+                                cache.put(currentUrl, imageBitmap)
+                            }
+                        }
+                        return@withContext imageBitmap
                     }
-                    return@withContext imageBitmap
+                } finally {
+                    cancelHandle?.dispose()
                 }
             }
             null
@@ -345,9 +400,9 @@ fun ReaderModeOverlay(
 ) {
     var showAppearanceSheet by remember { mutableStateOf(false) }
     val context = LocalContext.current
-    val adblockEngine = remember(context) {
-        (context.applicationContext as? SwiftfoxApp)?.adblockEngine
-    }
+    val appContext = context.applicationContext as? SwiftfoxApp
+    val adblockEngine = remember(appContext) { appContext?.adblockEngine }
+    val httpClient = remember(appContext) { appContext?.httpClient ?: OkHttpClient() }
     val reduceMotion = rememberReduceMotion()
 
     val targetPalette = resolveReaderPalette(settings.readerSurfaceMode, settings)
@@ -404,10 +459,11 @@ fun ReaderModeOverlay(
     val currentIsHostHttpsBypassed by rememberUpdatedState(isHostHttpsBypassed)
     val stableIsHostHttpsBypassed = remember { { host: String -> currentIsHostHttpsBypassed(host) } }
     val privateSessionCache = remember(article.url, isPrivate) {
-        if (isPrivate) LruCache<String, ImageBitmap>(12) else null
+        if (isPrivate) createByteSizedReaderImageCache(8 * 1024) else null
     }
-    val imageEnv = remember(adblockEngine, privateSessionCache, stableIsHostHttpsBypassed) {
+    val imageEnv = remember(httpClient, adblockEngine, privateSessionCache, stableIsHostHttpsBypassed) {
         ReaderImageEnv(
+            httpClient = httpClient,
             adblockEngine = adblockEngine,
             isHostHttpsBypassed = stableIsHostHttpsBypassed,
             privateImageCache = privateSessionCache
@@ -483,22 +539,22 @@ fun ReaderModeOverlay(
                 .padding(top = innerPadding.calculateTopPadding()),
             contentAlignment = Alignment.TopCenter
         ) {
-            LazyColumn(
-                state = listState,
-                modifier = Modifier
-                    .widthIn(max = 720.dp)
-                    .fillMaxWidth()
-                    .fillMaxHeight(),
-                contentPadding = PaddingValues(
-                    start = 20.dp,
-                    end = 20.dp,
-                    top = 16.dp,
-                    bottom = 24.dp + innerPadding.calculateBottomPadding()
-                ),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
-            ) {
-                item(key = "reader_article_header", contentType = "article_header") {
-                    SelectionContainer {
+            SelectionContainer {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .widthIn(max = 720.dp)
+                        .fillMaxWidth()
+                        .fillMaxHeight(),
+                    contentPadding = PaddingValues(
+                        start = 20.dp,
+                        end = 20.dp,
+                        top = 16.dp,
+                        bottom = 24.dp + innerPadding.calculateBottomPadding()
+                    ),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    item(key = "reader_article_header", contentType = "article_header") {
                         ReaderArticleHeader(
                             article = article,
                             sourceLabel = sourceLabel,
@@ -507,31 +563,31 @@ fun ReaderModeOverlay(
                             palette = palette
                         )
                     }
-                }
 
-                items(
-                    items = article.blocks,
-                    key = { it.id },
-                    contentType = { blockContentType(it) }
-                ) { block ->
-                    ReaderBlockItem(
-                        block = block,
-                        fontFamily = fontFamily,
-                        fontSizeSp = fontSizeSp,
-                        lineHeightMultiplier = lineHeightMultiplier,
-                        palette = palette,
-                        onOpenLink = stableOpenLink,
-                        pageUrl = pageUrl,
-                        isPrivate = isPrivate,
-                        httpsOnlyMode = settings.httpsOnlyMode,
-                        adblockEnabled = settings.adblockEnabled,
-                        siteAdblockDisabled = siteAdblockDisabled,
-                        imageEnv = imageEnv
-                    )
-                }
+                    items(
+                        items = article.blocks,
+                        key = { it.id },
+                        contentType = { blockContentType(it) }
+                    ) { block ->
+                        ReaderBlockItem(
+                            block = block,
+                            fontFamily = fontFamily,
+                            fontSizeSp = fontSizeSp,
+                            lineHeightMultiplier = lineHeightMultiplier,
+                            palette = palette,
+                            onOpenLink = stableOpenLink,
+                            pageUrl = pageUrl,
+                            isPrivate = isPrivate,
+                            httpsOnlyMode = settings.httpsOnlyMode,
+                            adblockEnabled = settings.adblockEnabled,
+                            siteAdblockDisabled = siteAdblockDisabled,
+                            imageEnv = imageEnv
+                        )
+                    }
 
-                item(key = "reader_footer_spacer", contentType = "spacer") {
-                    Spacer(modifier = Modifier.height(32.dp))
+                    item(key = "reader_footer_spacer", contentType = "spacer") {
+                        Spacer(modifier = Modifier.height(32.dp))
+                    }
                 }
             }
         }
@@ -608,6 +664,7 @@ private fun ReaderArticleHeader(
 
 @Immutable
 private class ReaderImageEnv(
+    val httpClient: OkHttpClient,
     val adblockEngine: AdblockEngine?,
     val isHostHttpsBypassed: (String) -> Boolean,
     val privateImageCache: LruCache<String, ImageBitmap>?
@@ -640,17 +697,15 @@ private fun ReaderBlockItem(
             }.coerceAtMost(34)
             val headingWeight = if (block.level <= 2) FontWeight.Bold else FontWeight.SemiBold
 
-            SelectionContainer {
-                Text(
-                    text = block.text,
-                    fontFamily = fontFamily,
-                    fontSize = headingSizeSp.sp,
-                    lineHeight = (headingSizeSp * 1.28f).sp,
-                    fontWeight = headingWeight,
-                    color = palette.onBackground,
-                    modifier = Modifier.padding(top = 6.dp)
-                )
-            }
+            Text(
+                text = block.text,
+                fontFamily = fontFamily,
+                fontSize = headingSizeSp.sp,
+                lineHeight = (headingSizeSp * 1.28f).sp,
+                fontWeight = headingWeight,
+                color = palette.onBackground,
+                modifier = Modifier.padding(top = 6.dp)
+            )
         }
 
         is ReaderBlock.Paragraph -> {
@@ -663,73 +718,67 @@ private fun ReaderBlockItem(
                     onOpenLink = onOpenLink
                 )
             }
-            SelectionContainer {
-                Text(
-                    text = annotated,
-                    fontFamily = fontFamily,
-                    fontSize = fontSizeSp.sp,
-                    lineHeight = bodyLineHeightSp,
-                    color = palette.onBackground
-                )
-            }
+            Text(
+                text = annotated,
+                fontFamily = fontFamily,
+                fontSize = fontSizeSp.sp,
+                lineHeight = bodyLineHeightSp,
+                color = palette.onBackground
+            )
         }
 
         is ReaderBlock.Quote -> {
-            SelectionContainer {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(ReaderCardShape)
-                        .background(palette.surfaceContainerLow)
-                        .drawWithCache {
-                            val barWidth = 3.dp.toPx()
-                            val barInset = 10.dp.toPx()
-                            val twoBarInset = barInset * 2f
-                            val barColor = palette.accent
-                            val corner = CornerRadius(barWidth / 2f, barWidth / 2f)
-                            onDrawBehind {
-                                drawRoundRect(
-                                    color = barColor,
-                                    topLeft = Offset(0f, barInset),
-                                    size = Size(barWidth, (size.height - twoBarInset).coerceAtLeast(0f)),
-                                    cornerRadius = corner
-                                )
-                            }
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(ReaderCardShape)
+                    .background(palette.surfaceContainerLow)
+                    .drawWithCache {
+                        val barWidth = 3.dp.toPx()
+                        val barInset = 10.dp.toPx()
+                        val twoBarInset = barInset * 2f
+                        val barColor = palette.accent
+                        val corner = CornerRadius(barWidth / 2f, barWidth / 2f)
+                        onDrawBehind {
+                            drawRoundRect(
+                                color = barColor,
+                                topLeft = Offset(0f, barInset),
+                                size = Size(barWidth, (size.height - twoBarInset).coerceAtLeast(0f)),
+                                cornerRadius = corner
+                            )
                         }
-                        .padding(start = 16.dp, top = 12.dp, end = 14.dp, bottom = 12.dp)
-                ) {
-                    Text(
-                        text = block.text,
-                        fontFamily = fontFamily,
-                        fontSize = fontSizeSp.sp,
-                        lineHeight = bodyLineHeightSp,
-                        fontStyle = FontStyle.Italic,
-                        color = palette.onSurfaceVariant
-                    )
-                }
+                    }
+                    .padding(start = 16.dp, top = 12.dp, end = 14.dp, bottom = 12.dp)
+            ) {
+                Text(
+                    text = block.text,
+                    fontFamily = fontFamily,
+                    fontSize = fontSizeSp.sp,
+                    lineHeight = bodyLineHeightSp,
+                    fontStyle = FontStyle.Italic,
+                    color = palette.onSurfaceVariant
+                )
             }
         }
 
         is ReaderBlock.CodeBlock -> {
             val codeSizeSp = (fontSizeSp - 2).coerceAtLeast(12)
-            SelectionContainer {
-                Surface(
-                    shape = ReaderCardShape,
-                    color = palette.surfaceContainer,
-                    border = BorderStroke(1.dp, palette.outlineVariant.copy(alpha = 0.4f)),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(
-                        text = block.code,
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = codeSizeSp.sp,
-                        lineHeight = (codeSizeSp * 1.45f).sp,
-                        color = palette.onBackground,
-                        modifier = Modifier
-                            .horizontalScroll(rememberScrollState())
-                            .padding(14.dp)
-                    )
-                }
+            Surface(
+                shape = ReaderCardShape,
+                color = palette.surfaceContainer,
+                border = BorderStroke(1.dp, palette.outlineVariant.copy(alpha = 0.4f)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = block.code,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = codeSizeSp.sp,
+                    lineHeight = (codeSizeSp * 1.45f).sp,
+                    color = palette.onBackground,
+                    modifier = Modifier
+                        .horizontalScroll(rememberScrollState())
+                        .padding(14.dp)
+                )
             }
         }
 
@@ -749,32 +798,30 @@ private fun ReaderBlockItem(
                 1 -> "◦"
                 else -> "▪"
             }
-            SelectionContainer {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(start = startPad),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    verticalAlignment = Alignment.Top
-                ) {
-                    Text(
-                        text = marker,
-                        fontFamily = fontFamily,
-                        fontSize = fontSizeSp.sp,
-                        lineHeight = bodyLineHeightSp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = palette.accent,
-                        modifier = Modifier.widthIn(min = 20.dp)
-                    )
-                    Text(
-                        text = annotated,
-                        fontFamily = fontFamily,
-                        fontSize = fontSizeSp.sp,
-                        lineHeight = bodyLineHeightSp,
-                        color = palette.onBackground,
-                        modifier = Modifier.weight(1f)
-                    )
-                }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = startPad),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.Top
+            ) {
+                Text(
+                    text = marker,
+                    fontFamily = fontFamily,
+                    fontSize = fontSizeSp.sp,
+                    lineHeight = bodyLineHeightSp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = palette.accent,
+                    modifier = Modifier.widthIn(min = 20.dp)
+                )
+                Text(
+                    text = annotated,
+                    fontFamily = fontFamily,
+                    fontSize = fontSizeSp.sp,
+                    lineHeight = bodyLineHeightSp,
+                    color = palette.onBackground,
+                    modifier = Modifier.weight(1f)
+                )
             }
         }
 
@@ -837,11 +884,7 @@ private fun ReaderImageBlock(
     siteAdblockDisabled: Boolean,
     imageEnv: ReaderImageEnv
 ) {
-    val context = LocalContext.current
     val density = LocalDensity.current
-    val httpClient = remember(context) {
-        (context.applicationContext as? SwiftfoxApp)?.httpClient ?: OkHttpClient()
-    }
     val initialCached = remember(block.url, isPrivate, imageEnv.privateImageCache) {
         ReaderImageCache.peek(block.url, isPrivate, imageEnv.privateImageCache)
     }
@@ -857,7 +900,7 @@ private fun ReaderImageBlock(
         }
         loadFinished = false
         loadedBitmap = ReaderImageCache.load(
-            client = httpClient,
+            client = imageEnv.httpClient,
             url = block.url,
             pageUrl = pageUrl,
             isPrivate = isPrivate,
@@ -875,17 +918,15 @@ private fun ReaderImageBlock(
 
     if (loadFinished && loadedBitmap == null) {
         if (!captionText.isNullOrBlank()) {
-            SelectionContainer {
-                Text(
-                    text = captionText,
-                    fontFamily = fontFamily,
-                    fontSize = (fontSizeSp - 2).coerceAtLeast(12).sp,
-                    lineHeight = ((fontSizeSp - 2).coerceAtLeast(12) * 1.4f).sp,
-                    fontStyle = FontStyle.Italic,
-                    color = palette.onSurfaceVariant,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
+            Text(
+                text = captionText,
+                fontFamily = fontFamily,
+                fontSize = (fontSizeSp - 2).coerceAtLeast(12).sp,
+                lineHeight = ((fontSizeSp - 2).coerceAtLeast(12) * 1.4f).sp,
+                fontStyle = FontStyle.Italic,
+                color = palette.onSurfaceVariant,
+                modifier = Modifier.fillMaxWidth()
+            )
         }
         return
     }
@@ -942,17 +983,15 @@ private fun ReaderImageBlock(
         }
 
         if (!block.caption.isNullOrBlank()) {
-            SelectionContainer {
-                Text(
-                    text = block.caption,
-                    fontFamily = fontFamily,
-                    fontSize = (fontSizeSp - 2).coerceAtLeast(12).sp,
-                    lineHeight = ((fontSizeSp - 2).coerceAtLeast(12) * 1.4f).sp,
-                    fontStyle = FontStyle.Italic,
-                    color = palette.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 4.dp)
-                )
-            }
+            Text(
+                text = block.caption,
+                fontFamily = fontFamily,
+                fontSize = (fontSizeSp - 2).coerceAtLeast(12).sp,
+                lineHeight = ((fontSizeSp - 2).coerceAtLeast(12) * 1.4f).sp,
+                fontStyle = FontStyle.Italic,
+                color = palette.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 4.dp)
+            )
         }
     }
 }
@@ -997,16 +1036,14 @@ private fun ReaderTableBlock(
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         if (!block.caption.isNullOrBlank()) {
-            SelectionContainer {
-                Text(
-                    text = block.caption,
-                    fontFamily = fontFamily,
-                    fontSize = cellFontSizeSp.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = palette.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 2.dp)
-                )
-            }
+            Text(
+                text = block.caption,
+                fontFamily = fontFamily,
+                fontSize = cellFontSizeSp.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = palette.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 2.dp)
+            )
         }
 
         Surface(
@@ -1020,7 +1057,6 @@ private fun ReaderTableBlock(
                     .fillMaxWidth()
                     .horizontalScroll(rememberScrollState())
             ) {
-            SelectionContainer {
                 Column {
                     if (block.headers.isNotEmpty()) {
                         Row(
@@ -1121,7 +1157,6 @@ private fun ReaderTableBlock(
                     }
                 }
             }
-            }
         }
     }
 }
@@ -1146,56 +1181,54 @@ private fun ReaderDefinitionBlock(
         )
     }
 
-    SelectionContainer {
-        Column(
-            modifier = Modifier.fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            Text(
-                text = termAnnotated,
-                fontFamily = fontFamily,
-                fontSize = fontSizeSp.sp,
-                lineHeight = bodyLineHeightSp,
-                fontWeight = FontWeight.SemiBold,
-                color = palette.onBackground
-            )
-            block.definitions.forEach { defRuns ->
-                val defAnnotated = remember(defRuns, palette.accent, palette.surfaceContainer, fontSizeSp) {
-                    buildRunsAnnotatedString(
-                        runs = defRuns,
-                        linkColor = palette.accent,
-                        inlineCodeBackground = palette.surfaceContainer,
-                        inlineCodeFontSizeSp = (fontSizeSp * 0.88f),
-                        onOpenLink = onOpenLink
-                    )
-                }
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(start = 6.dp)
-                        .drawWithCache {
-                            val barWidth = 2.dp.toPx()
-                            val vInset = 4.dp.toPx()
-                            val twoVInset = 8.dp.toPx()
-                            val barColor = palette.outlineVariant.copy(alpha = 0.65f)
-                            onDrawBehind {
-                                drawRect(
-                                    color = barColor,
-                                    topLeft = Offset(0f, vInset),
-                                    size = Size(barWidth, (size.height - twoVInset).coerceAtLeast(0f))
-                                )
-                            }
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Text(
+            text = termAnnotated,
+            fontFamily = fontFamily,
+            fontSize = fontSizeSp.sp,
+            lineHeight = bodyLineHeightSp,
+            fontWeight = FontWeight.SemiBold,
+            color = palette.onBackground
+        )
+        block.definitions.forEach { defRuns ->
+            val defAnnotated = remember(defRuns, palette.accent, palette.surfaceContainer, fontSizeSp) {
+                buildRunsAnnotatedString(
+                    runs = defRuns,
+                    linkColor = palette.accent,
+                    inlineCodeBackground = palette.surfaceContainer,
+                    inlineCodeFontSizeSp = (fontSizeSp * 0.88f),
+                    onOpenLink = onOpenLink
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 6.dp)
+                    .drawWithCache {
+                        val barWidth = 2.dp.toPx()
+                        val vInset = 4.dp.toPx()
+                        val twoVInset = 8.dp.toPx()
+                        val barColor = palette.outlineVariant.copy(alpha = 0.65f)
+                        onDrawBehind {
+                            drawRect(
+                                color = barColor,
+                                topLeft = Offset(0f, vInset),
+                                size = Size(barWidth, (size.height - twoVInset).coerceAtLeast(0f))
+                            )
                         }
-                        .padding(start = 12.dp)
-                ) {
-                    Text(
-                        text = defAnnotated,
-                        fontFamily = fontFamily,
-                        fontSize = fontSizeSp.sp,
-                        lineHeight = bodyLineHeightSp,
-                        color = palette.onSurfaceVariant
-                    )
-                }
+                    }
+                    .padding(start = 12.dp)
+            ) {
+                Text(
+                    text = defAnnotated,
+                    fontFamily = fontFamily,
+                    fontSize = fontSizeSp.sp,
+                    lineHeight = bodyLineHeightSp,
+                    color = palette.onSurfaceVariant
+                )
             }
         }
     }

@@ -16,18 +16,14 @@ data class ImportedBookmark(
  */
 object ChromeBookmarkHtmlCodec {
 
-    private val tokenRegex = Regex(
-        """<H3\b[^>]*>.*?</H3>|<A\b[^>]*>.*?</A>|<DL\b[^>]*>|</DL>""",
-        setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
-    )
-    private val h3Regex = Regex("""<H3\b[^>]*>(.*?)</H3>""", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
-    private val anchorRegex = Regex("""<A\b([^>]*)>(.*?)</A>""", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
-    private val dlOpenRegex = Regex("""<DL\b[^>]*>""", RegexOption.IGNORE_CASE)
-    private val dlCloseRegex = Regex("""</DL>""", RegexOption.IGNORE_CASE)
     private val hrefAttrRegex = Regex("""\bHREF\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""", RegexOption.IGNORE_CASE)
     private val addDateAttrRegex = Regex("""\bADD_DATE\s*=\s*(?:"(\d+)"|'(\d+)'|(\d+))""", RegexOption.IGNORE_CASE)
     private val entityRegex = Regex("""&(#x?[0-9a-fA-F]+|[a-zA-Z]+);""")
 
+    /**
+     * Linear single-pass Netscape HTML bookmark parser. Avoids `DOT_MATCHES_ALL` regex
+     * catastrophic backtracking (`O(N^2)`) on multi-MB exports or unclosed `<A>`/`<H3>` tags.
+     */
     fun parse(html: String): List<ImportedBookmark> {
         if (html.isBlank()) return emptyList()
 
@@ -36,10 +32,23 @@ object ChromeBookmarkHtmlCodec {
         var pendingFolderName: String? = null
         var seenRootDl = false
 
-        for (match in tokenRegex.findAll(html)) {
-            val token = match.value
+        val len = html.length
+        var idx = 0
+        while (idx < len) {
+            val lt = html.indexOf('<', idx)
+            if (lt < 0 || lt + 2 >= len) break
+            // Skip HTML comments <!-- ... -->
+            if (html.startsWith("<!--", lt)) {
+                val endComment = html.indexOf("-->", lt + 4)
+                idx = if (endComment >= 0) endComment + 3 else len
+                continue
+            }
+            val gt = findTagEnd(html, lt + 1)
+            if (gt < 0) break
+
+            val tagHeader = html.substring(lt + 1, gt).trim()
             when {
-                dlOpenRegex.matches(token) -> {
+                matchesTagName(tagHeader, "DL") -> {
                     if (!seenRootDl) {
                         seenRootDl = true
                         pendingFolderName = null
@@ -47,27 +56,35 @@ object ChromeBookmarkHtmlCodec {
                         folderStack.addLast(pendingFolderName ?: "Bookmarks")
                         pendingFolderName = null
                     }
+                    idx = gt + 1
                 }
 
-                dlCloseRegex.matches(token) -> {
+                matchesClosingTagName(tagHeader, "DL") -> {
                     pendingFolderName = null
                     if (folderStack.isNotEmpty()) {
                         folderStack.removeLast()
                     }
+                    idx = gt + 1
                 }
 
-                token.startsWith("<H3", ignoreCase = true) -> {
-                    val rawName = h3Regex.find(token)?.groupValues?.getOrNull(1).orEmpty()
-                    val cleaned = unescapeHtml(rawName).trim()
+                matchesTagName(tagHeader, "H3") -> {
+                    val contentStart = gt + 1
+                    val closeIdx = findClosingTagOrNextBlock(html, contentStart, "H3")
+                    val rawName = html.substring(contentStart, closeIdx.first)
+                    val cleaned = unescapeHtml(stripTags(rawName)).trim()
                     pendingFolderName = cleaned.takeIf { it.isNotEmpty() }
+                    idx = closeIdx.second
                 }
 
-                else -> {
+                matchesTagName(tagHeader, "A") -> {
                     // Stray <H3> without an immediately following <DL> must not attach to a later <DL>
                     pendingFolderName = null
-                    val anchorMatch = anchorRegex.find(token) ?: continue
-                    val attrs = anchorMatch.groupValues[1]
-                    val rawTitle = anchorMatch.groupValues[2]
+                    val attrs = tagHeader.substring(1).trim()
+                    val contentStart = gt + 1
+                    val closeIdx = findClosingTagOrNextBlock(html, contentStart, "A")
+                    val rawTitle = html.substring(contentStart, closeIdx.first)
+                    idx = closeIdx.second
+
                     val hrefMatch = hrefAttrRegex.find(attrs) ?: continue
                     val rawHref = hrefMatch.groupValues.drop(1).firstOrNull { it.isNotEmpty() }.orEmpty()
                     val url = unescapeHtml(rawHref).trim()
@@ -86,7 +103,7 @@ object ChromeBookmarkHtmlCodec {
                         else -> System.currentTimeMillis()
                     }
 
-                    val title = unescapeHtml(rawTitle).trim().ifBlank { url }
+                    val title = unescapeHtml(stripTags(rawTitle)).trim().ifBlank { url }
                     val folderPath = buildFolderPath(folderStack)
                     results += ImportedBookmark(
                         title = title,
@@ -95,10 +112,91 @@ object ChromeBookmarkHtmlCodec {
                         addedAtMs = addedAtMs
                     )
                 }
+
+                else -> {
+                    idx = gt + 1
+                }
             }
         }
 
         return results
+    }
+
+    private fun findTagEnd(html: String, start: Int): Int {
+        var i = start
+        var quote: Char = '\u0000'
+        while (i < html.length) {
+            val ch = html[i]
+            if (quote != '\u0000') {
+                if (ch == quote) quote = '\u0000'
+            } else {
+                if (ch == '"' || ch == '\'') {
+                    quote = ch
+                } else if (ch == '>') {
+                    return i
+                }
+            }
+            i++
+        }
+        return -1
+    }
+
+    private fun matchesTagName(header: String, name: String): Boolean {
+        if (!header.startsWith(name, ignoreCase = true)) return false
+        if (header.length == name.length) return true
+        val next = header[name.length]
+        return next.isWhitespace() || next == '/'
+    }
+
+    private fun matchesClosingTagName(header: String, name: String): Boolean {
+        if (!header.startsWith('/')) return false
+        val rest = header.substring(1).trimStart()
+        return matchesTagName(rest, name)
+    }
+
+    /**
+     * Finds the matching `</tag>` or stops safely if a structural sibling (`<DT`, `<DL`, `</DL`, `<H3`, `<A`)
+     * appears first due to unclosed HTML, preventing O(N^2) scanning and bookmark swallowing.
+     */
+    private fun findClosingTagOrNextBlock(html: String, fromIndex: Int, tag: String): Pair<Int, Int> {
+        var i = fromIndex
+        val len = html.length
+        while (i < len) {
+            val lt = html.indexOf('<', i)
+            if (lt < 0) return len to len
+            val gt = findTagEnd(html, lt + 1)
+            if (gt < 0) return lt to len
+            val hdr = html.substring(lt + 1, gt).trim()
+            if (matchesClosingTagName(hdr, tag)) {
+                return lt to (gt + 1)
+            }
+            if (matchesTagName(hdr, "DT") ||
+                matchesTagName(hdr, "DL") ||
+                matchesClosingTagName(hdr, "DL") ||
+                matchesTagName(hdr, "H3") ||
+                matchesTagName(hdr, "A")
+            ) {
+                return lt to lt
+            }
+            i = gt + 1
+        }
+        return len to len
+    }
+
+    private fun stripTags(raw: String): String {
+        if (!raw.contains('<')) return raw
+        val sb = StringBuilder(raw.length)
+        var inTag = false
+        for (ch in raw) {
+            if (ch == '<') {
+                inTag = true
+            } else if (ch == '>' && inTag) {
+                inTag = false
+            } else if (!inTag) {
+                sb.append(ch)
+            }
+        }
+        return sb.toString()
     }
 
     fun export(bookmarks: List<BookmarkEntity>): String {
@@ -122,7 +220,7 @@ object ChromeBookmarkHtmlCodec {
             current.bookmarks += bm
         }
 
-        val sb = StringBuilder()
+        val sb = StringBuilder(bookmarks.size * 128 + 256)
         sb.appendLine("<!DOCTYPE NETSCAPE-Bookmark-file-1>")
         sb.appendLine("<!-- This is an automatically generated file.")
         sb.appendLine("     It will be read and overwritten.")

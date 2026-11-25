@@ -43,7 +43,11 @@ class SwiftfoxChromeClient(
     private val callbacks: WebChromeCallbacks
 ) : WebChromeClient() {
 
+    private var lastReportedProgress: Int = -1
+
     override fun onProgressChanged(view: WebView?, newProgress: Int) {
+        if (newProgress == lastReportedProgress && newProgress in 1..99) return
+        lastReportedProgress = newProgress
         callbacks.onProgressChanged(tabId, newProgress)
     }
 

@@ -22,7 +22,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Check
-import androidx.compose.material.icons.rounded.DragIndicator
+import app.overbay.swiftfox.ui.icons.rounded.DragIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -243,7 +243,8 @@ fun <T> rememberDragReorderController(
     sourceItems: List<T>,
     keyOf: (T) -> String,
     axis: DragAxis,
-    onCommitOrder: (List<String>) -> Unit
+    onCommitOrder: (List<String>) -> Unit,
+    enabled: Boolean = true
 ): DragReorderController<T> {
     val latestCommit by rememberUpdatedState(onCommitOrder)
     val latestKeyOf by rememberUpdatedState(keyOf)
@@ -253,11 +254,13 @@ fun <T> rememberDragReorderController(
             axis = axis,
             onCommitOrder = { latestCommit(it) }
         ).apply {
-            syncFromSource(sourceItems)
+            if (enabled) syncFromSource(sourceItems)
         }
     }
-    LaunchedEffect(sourceItems) {
-        controller.syncFromSource(sourceItems)
+    LaunchedEffect(sourceItems, enabled) {
+        if (enabled) {
+            controller.syncFromSource(sourceItems)
+        }
     }
     return controller
 }
@@ -270,40 +273,37 @@ fun <T> rememberDragReorderController(
 fun <T> Modifier.dragReorderContainer(
     enabled: Boolean,
     controller: DragReorderController<T>
-): Modifier = composed {
-    val haptic = LocalHapticFeedback.current
-    var containerOriginInRoot by remember { mutableStateOf(Offset.Zero) }
+): Modifier {
+    if (!enabled) return this
+    return composed {
+        val haptic = LocalHapticFeedback.current
+        var containerOriginInRoot by remember { mutableStateOf(Offset.Zero) }
 
-    this
-        .onGloballyPositioned { coords ->
-            if (coords.isAttached) {
-                containerOriginInRoot = coords.positionInRoot()
-            }
-        }
-        .then(
-            if (enabled) {
-                Modifier.pointerInput(controller, enabled) {
-                    detectDragGestures(
-                        onDragStart = { localOffset ->
-                            val hitKey = controller.findKeyAt(containerOriginInRoot + localOffset)
-                            if (hitKey != null) {
-                                controller.startDrag(hitKey, haptic)
-                            }
-                        },
-                        onDragEnd = { controller.endDrag() },
-                        onDragCancel = { controller.endDrag() },
-                        onDrag = { change, dragAmount ->
-                            if (controller.draggingKey != null) {
-                                change.consume()
-                                controller.onDragDelta(dragAmount, haptic)
-                            }
-                        }
-                    )
+        this
+            .onGloballyPositioned { coords ->
+                if (coords.isAttached) {
+                    containerOriginInRoot = coords.positionInRoot()
                 }
-            } else {
-                Modifier
             }
-        )
+            .pointerInput(controller) {
+                detectDragGestures(
+                    onDragStart = { localOffset ->
+                        val hitKey = controller.findKeyAt(containerOriginInRoot + localOffset)
+                        if (hitKey != null) {
+                            controller.startDrag(hitKey, haptic)
+                        }
+                    },
+                    onDragEnd = { controller.endDrag() },
+                    onDragCancel = { controller.endDrag() },
+                    onDrag = { change, dragAmount ->
+                        if (controller.draggingKey != null) {
+                            change.consume()
+                            controller.onDragDelta(dragAmount, haptic)
+                        }
+                    }
+                )
+            }
+    }
 }
 
 /**
@@ -317,48 +317,52 @@ fun <T> Modifier.dragReorderItem(
     enabled: Boolean,
     controller: DragReorderController<T>,
     handlePointerInput: Boolean = true
-): Modifier = composed {
-    val haptic = LocalHapticFeedback.current
-    val reduceMotion = rememberReduceMotion()
-    val isDragging = enabled && controller.draggingKey == key
-    val scale by animateFloatAsState(
-        targetValue = if (isDragging) 1.06f else 1f,
-        animationSpec = if (reduceMotion) snap() else spring(stiffness = Spring.StiffnessMediumLow),
-        label = "drag_item_scale"
-    )
-    val translation = if (isDragging) controller.dragOffset else Offset.Zero
-
-    this
-        .zIndex(if (isDragging) 12f else 0f)
-        .onGloballyPositioned { coords ->
-            if (coords.isAttached) {
-                controller.updateSlotBounds(key, coords.boundsInRoot())
-            }
-        }
-        .then(
-            if (enabled && handlePointerInput) {
-                Modifier.pointerInput(key, enabled) {
-                    detectDragGestures(
-                        onDragStart = { controller.startDrag(key, haptic) },
-                        onDragEnd = { controller.endDrag() },
-                        onDragCancel = { controller.endDrag() },
-                        onDrag = { change, dragAmount ->
-                            change.consume()
-                            controller.onDragDelta(key, dragAmount, haptic)
-                        }
-                    )
-                }
-            } else {
-                Modifier
-            }
+): Modifier {
+    if (!enabled) return this
+    return composed {
+        val haptic = LocalHapticFeedback.current
+        val reduceMotion = rememberReduceMotion()
+        val isDragging = controller.draggingKey == key
+        val scaleState = animateFloatAsState(
+            targetValue = if (isDragging) 1.06f else 1f,
+            animationSpec = if (reduceMotion) snap() else spring(stiffness = Spring.StiffnessMediumLow),
+            label = "drag_item_scale"
         )
-        .graphicsLayer {
-            translationX = translation.x
-            translationY = translation.y
-            scaleX = scale
-            scaleY = scale
-            alpha = if (isDragging) 0.94f else 1f
-        }
+
+        this
+            .zIndex(if (isDragging) 12f else 0f)
+            .onGloballyPositioned { coords ->
+                if (coords.isAttached) {
+                    controller.updateSlotBounds(key, coords.boundsInRoot())
+                }
+            }
+            .then(
+                if (handlePointerInput) {
+                    Modifier.pointerInput(key, controller) {
+                        detectDragGestures(
+                            onDragStart = { controller.startDrag(key, haptic) },
+                            onDragEnd = { controller.endDrag() },
+                            onDragCancel = { controller.endDrag() },
+                            onDrag = { change, dragAmount ->
+                                change.consume()
+                                controller.onDragDelta(key, dragAmount, haptic)
+                            }
+                        )
+                    }
+                } else {
+                    Modifier
+                }
+            )
+            .graphicsLayer {
+                val offset = if (isDragging) controller.dragOffset else Offset.Zero
+                val s = scaleState.value
+                translationX = offset.x
+                translationY = offset.y
+                scaleX = s
+                scaleY = s
+                alpha = if (isDragging) 0.94f else 1f
+            }
+    }
 }
 
 /**

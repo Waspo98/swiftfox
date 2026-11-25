@@ -22,7 +22,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.PhotoLibrary
+import app.overbay.swiftfox.ui.icons.rounded.PhotoLibrary
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -79,7 +79,7 @@ fun CustomIconPickerSheet(
     val scope = rememberCoroutineScope()
 
     val parsedInitial = remember(currentIconSpec) { CustomIconSpec.parse(currentIconSpec) }
-    var activeTab by remember {
+    var activeTab by remember(currentIconSpec) {
         mutableStateOf(
             when (parsedInitial) {
                 is CustomIconSpec.Emoji -> IconPickerTab.EMOJI
@@ -88,7 +88,7 @@ fun CustomIconPickerSheet(
             }
         )
     }
-    var emojiInput by remember {
+    var emojiInput by remember(currentIconSpec) {
         mutableStateOf(
             (parsedInitial as? CustomIconSpec.Emoji)?.text.orEmpty()
         )

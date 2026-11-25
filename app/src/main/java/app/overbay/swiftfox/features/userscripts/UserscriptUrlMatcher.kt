@@ -63,6 +63,60 @@ object UserscriptUrlMatcher {
         return matches.any { patternMatches(it, trimmedUrl) }
     }
 
+    /**
+     * Conservative origin pre-filter for registering `@run-at document-start` userscripts:
+     * returns true if any pattern in [matches] could match some path on [originUrl]'s
+     * `(scheme, host, port)` (for example a sub-route wildcard pattern when currently at the
+     * origin root). Exact path and exclude checks still run inside the JS guard.
+     */
+    fun canMatchOrigin(originUrl: String, matches: List<String>): Boolean {
+        val trimmedUrl = originUrl.trim()
+        if (!isHttpOrHttps(trimmedUrl) || matches.isEmpty()) return false
+        val urlParts = parseUrlParts(trimmedUrl) ?: return false
+        return matches.any { rawPattern ->
+            val pattern = rawPattern.trim()
+            if (pattern.isEmpty()) return@any false
+            if (pattern == "<all_urls>") return@any true
+            if (pattern.startsWith("/") && !pattern.startsWith("//")) return@any true
+
+            val strict = parseStrictMatchPattern(pattern)
+            if (strict != null) {
+                val schemeOk = strict.scheme == "*" || strict.scheme == urlParts.scheme
+                if (!schemeOk) return@any false
+                val hostOk = when {
+                    strict.host == "*" -> true
+                    strict.host.startsWith("*.") -> {
+                        val base = strict.host.removePrefix("*.")
+                        urlParts.host == base || urlParts.host.endsWith(".$base")
+                    }
+                    else -> urlParts.host == strict.host
+                }
+                if (!hostOk) return@any false
+                if (strict.port != null && strict.port != "*") {
+                    val effectivePort = urlParts.port ?: defaultPortFor(urlParts.scheme)
+                    if (strict.port != effectivePort) return@any false
+                }
+                return@any true
+            }
+
+            val schemeSep = pattern.indexOf("://")
+            if (schemeSep > 0) {
+                val patScheme = pattern.substring(0, schemeSep).lowercase(java.util.Locale.ROOT)
+                if (!wildcardSegmentMatches(patScheme, urlParts.scheme, starReplacement = "[^:/]*")) {
+                    return@any false
+                }
+                val patRest = pattern.substring(schemeSep + 3)
+                val slashIdx = patRest.indexOf('/')
+                val urlAuthority = if (urlParts.port != null) "${urlParts.host}:${urlParts.port}" else urlParts.host
+                if (slashIdx >= 0) {
+                    val patAuthority = patRest.substring(0, slashIdx).lowercase(java.util.Locale.ROOT)
+                    return@any wildcardSegmentMatches(patAuthority, urlAuthority, starReplacement = "[^/]*")
+                }
+            }
+            true
+        }
+    }
+
     fun compileJsCheck(pattern: String): JsUrlCheck? {
         val trimmed = pattern.trim()
         if (trimmed.isEmpty()) return null

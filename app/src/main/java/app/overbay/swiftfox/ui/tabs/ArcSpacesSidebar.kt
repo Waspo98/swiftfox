@@ -41,23 +41,23 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.VolumeUp
+import app.overbay.swiftfox.ui.icons.automirrored.VolumeUp
 import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.ChevronLeft
-import androidx.compose.material.icons.rounded.ChevronRight
+import app.overbay.swiftfox.ui.icons.rounded.ChevronLeft
+import app.overbay.swiftfox.ui.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Close
-import androidx.compose.material.icons.rounded.DeleteOutline
-import androidx.compose.material.icons.rounded.DesktopWindows
-import androidx.compose.material.icons.rounded.DragIndicator
+import app.overbay.swiftfox.ui.icons.rounded.DeleteOutline
+import app.overbay.swiftfox.ui.icons.rounded.DesktopWindows
+import app.overbay.swiftfox.ui.icons.rounded.DragIndicator
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Lock
-import androidx.compose.material.icons.rounded.Palette
-import androidx.compose.material.icons.rounded.PushPin
+import app.overbay.swiftfox.ui.icons.rounded.Palette
+import app.overbay.swiftfox.ui.icons.rounded.PushPin
 import androidx.compose.material.icons.rounded.Refresh
-import androidx.compose.material.icons.rounded.Shield
-import androidx.compose.material.icons.rounded.StarOutline
-import androidx.compose.material.icons.rounded.SwapVert
-import androidx.compose.material.icons.rounded.Tab
+import app.overbay.swiftfox.ui.icons.rounded.Shield
+import app.overbay.swiftfox.ui.icons.rounded.StarOutline
+import app.overbay.swiftfox.ui.icons.rounded.SwapVert
+import app.overbay.swiftfox.ui.icons.rounded.Tab
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -77,6 +77,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
@@ -172,7 +173,7 @@ fun ArcSpacesSidebar(
 
     val expandedWidth = if (state.windowState.windowWidthDp < 780) 232.dp else 264.dp
     val targetWidth = if (expanded) expandedWidth else 72.dp
-    val animatedWidth by animateDpAsState(
+    val animatedWidthState = animateDpAsState(
         targetValue = targetWidth,
         animationSpec = if (reduceMotion) snap() else tween(260, easing = EmphasizedDecelerateEasing),
         label = "arc_sidebar_width"
@@ -186,7 +187,18 @@ fun ArcSpacesSidebar(
             .fillMaxHeight()
     } else {
         modifier
-            .width(animatedWidth)
+            .layout { measurable, constraints ->
+                val widthPx = animatedWidthState.value.roundToPx().coerceIn(
+                    constraints.minWidth,
+                    constraints.maxWidth
+                )
+                val placeable = measurable.measure(
+                    constraints.copy(minWidth = widthPx, maxWidth = widthPx)
+                )
+                layout(widthPx, placeable.height) {
+                    placeable.placeRelative(0, 0)
+                }
+            }
             .fillMaxHeight()
             .clipToBounds()
     }
@@ -781,40 +793,73 @@ private fun ColumnScope.ArcExpandedSidebarContent(
     val activeSpace = state.activeSpace
 
     // Drag-and-drop reorder controllers per section (active only in Reorder Mode)
-    val essentials = state.activeSpaceEssentials
-    val localPinnedTabs = state.visiblePinnedTabs
-    val zenPinned = state.activeSpaceZenPinned
-    val regularTabs = state.visibleRegularTabs
+    val essentials = remember(state.essentials, state.activeSpaceId, state.isPrivateView) {
+        state.activeSpaceEssentials
+    }
+    val localPinnedTabs = remember(state.tabs, state.activeSpaceId, state.isPrivateView) {
+        state.visiblePinnedTabs
+    }
+    val zenPinned = remember(state.zenPinnedItems, state.activeSpaceId, state.isPrivateView) {
+        state.activeSpaceZenPinned
+    }
+    val regularTabs = remember(state.tabs, state.activeSpaceId, state.isPrivateView) {
+        state.visibleRegularTabs
+    }
+    val tabByEssentialId = remember(state.tabs) {
+        buildMap {
+            for (tab in state.tabs) {
+                val essId = tab.essentialId
+                if (!tab.isPrivate && essId != null && !containsKey(essId)) {
+                    put(essId, tab)
+                }
+            }
+        }
+    }
+    val tabByZenPinnedId = remember(state.tabs) {
+        buildMap {
+            for (tab in state.tabs) {
+                val zenId = tab.zenPinnedId
+                if (!tab.isPrivate && zenId != null && !containsKey(zenId)) {
+                    put(zenId, tab)
+                }
+            }
+        }
+    }
 
     val spacesReorder = rememberDragReorderController(
         sourceItems = state.spaces,
         keyOf = { it.id },
         axis = DragAxis.HORIZONTAL,
-        onCommitOrder = itemCallbacks.onReorderSpaces
+        onCommitOrder = itemCallbacks.onReorderSpaces,
+        enabled = reorderMode == SidebarReorderMode.SPACES
     )
     val essentialsReorder = rememberDragReorderController(
         sourceItems = essentials,
         keyOf = { it.id },
         axis = DragAxis.BOTH,
-        onCommitOrder = itemCallbacks.onReorderEssentials
+        onCommitOrder = itemCallbacks.onReorderEssentials,
+        enabled = reorderMode == SidebarReorderMode.ESSENTIALS
     )
     val pinnedTabsReorder = rememberDragReorderController(
         sourceItems = localPinnedTabs,
         keyOf = { it.id },
         axis = DragAxis.VERTICAL,
-        onCommitOrder = { ids -> itemCallbacks.onReorderTabs(ids, true) }
+        onCommitOrder = { ids -> itemCallbacks.onReorderTabs(ids, true) },
+        enabled = reorderMode == SidebarReorderMode.PINNED_TABS
     )
     val zenPinnedReorder = rememberDragReorderController(
         sourceItems = zenPinned,
         keyOf = { it.id },
         axis = DragAxis.VERTICAL,
-        onCommitOrder = itemCallbacks.onReorderZenPinned
+        onCommitOrder = itemCallbacks.onReorderZenPinned,
+        enabled = reorderMode == SidebarReorderMode.ZEN_PINNED
     )
     val openTabsReorder = rememberDragReorderController(
         sourceItems = regularTabs,
         keyOf = { it.id },
         axis = DragAxis.VERTICAL,
-        onCommitOrder = { ids -> itemCallbacks.onReorderTabs(ids, false) }
+        onCommitOrder = { ids -> itemCallbacks.onReorderTabs(ids, false) },
+        enabled = reorderMode == SidebarReorderMode.OPEN_TABS
     )
 
     // 1. Header: emblem + active Space title + collapse/close button
@@ -916,7 +961,7 @@ private fun ColumnScope.ArcExpandedSidebarContent(
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             rowItems.forEach { ess ->
-                                val boundTab = state.tabForEssential(ess.id)
+                                val boundTab = tabByEssentialId[ess.id]
                                 val isEssLoaded = boundTab != null
                                 val isEssActive = boundTab != null && boundTab.id == state.activeTabId
                                 SidebarEssentialTile(
@@ -990,7 +1035,7 @@ private fun ColumnScope.ArcExpandedSidebarContent(
                 contentType = { "sidebar_zen_pinned_row" }
             ) { item ->
                 val isReorderingZen = reorderMode == SidebarReorderMode.ZEN_PINNED
-                val boundTab = state.tabForZenPinned(item.id)
+                val boundTab = tabByZenPinnedId[item.id]
                 SidebarZenPinnedRow(
                     item = item,
                     boundTab = boundTab,
@@ -1134,8 +1179,8 @@ private fun ColumnScope.ArcExpandedSidebarContent(
     val displayedSpaces = if (isReorderingSpaces) spacesReorder.items.toList() else state.spaces
     val reduceMotion = rememberReduceMotion()
     val footerListState = rememberLazyListState()
-    val footerCanScrollBackward by remember(footerListState) { derivedStateOf { footerListState.canScrollBackward } }
-    val footerCanScrollForward by remember(footerListState) { derivedStateOf { footerListState.canScrollForward } }
+    val footerCanScrollBackwardState = remember(footerListState) { derivedStateOf { footerListState.canScrollBackward } }
+    val footerCanScrollForwardState = remember(footerListState) { derivedStateOf { footerListState.canScrollForward } }
 
     LaunchedEffect(state.activeSpaceId, state.isPrivateView, displayedSpaces.size, isReorderingSpaces) {
         if (isReorderingSpaces) return@LaunchedEffect
@@ -1165,8 +1210,8 @@ private fun ColumnScope.ArcExpandedSidebarContent(
         modifier = Modifier
             .fillMaxWidth()
             .horizontalFadingEdges(
-                showStartFade = !isReorderingSpaces && footerCanScrollBackward,
-                showEndFade = !isReorderingSpaces && footerCanScrollForward,
+                showStartFadeProvider = { !isReorderingSpaces && footerCanScrollBackwardState.value },
+                showEndFadeProvider = { !isReorderingSpaces && footerCanScrollForwardState.value },
                 startFadeWidth = 14.dp,
                 endFadeWidth = 22.dp
             ),
@@ -1792,6 +1837,36 @@ private fun ColumnScope.ArcCollapsedSidebarRail(
 
     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
 
+    val railEssentials = remember(state.essentials, state.activeSpaceId, state.isPrivateView) {
+        state.activeSpaceEssentials
+    }
+    val railZenPinned = remember(state.zenPinnedItems, state.activeSpaceId, state.isPrivateView) {
+        state.activeSpaceZenPinned
+    }
+    val railVisibleTabs = remember(state.tabs, state.activeSpaceId, state.isPrivateView) {
+        state.visibleTabs
+    }
+    val railTabByEssentialId = remember(state.tabs) {
+        buildMap {
+            for (tab in state.tabs) {
+                val essId = tab.essentialId
+                if (!tab.isPrivate && essId != null && !containsKey(essId)) {
+                    put(essId, tab)
+                }
+            }
+        }
+    }
+    val railTabByZenPinnedId = remember(state.tabs) {
+        buildMap {
+            for (tab in state.tabs) {
+                val zenId = tab.zenPinnedId
+                if (!tab.isPrivate && zenId != null && !containsKey(zenId)) {
+                    put(zenId, tab)
+                }
+            }
+        }
+    }
+
     LazyColumn(
         modifier = Modifier
             .weight(1f)
@@ -1799,13 +1874,13 @@ private fun ColumnScope.ArcCollapsedSidebarRail(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        if (!state.isPrivateView && state.activeSpaceEssentials.isNotEmpty()) {
+        if (!state.isPrivateView && railEssentials.isNotEmpty()) {
             items(
-                items = state.activeSpaceEssentials,
+                items = railEssentials,
                 key = { "rail_ess_${it.id}" },
                 contentType = { "sidebar_ess_collapsed" }
             ) { ess ->
-                val boundTab = state.tabForEssential(ess.id)
+                val boundTab = railTabByEssentialId[ess.id]
                 SidebarEssentialTile(
                     essential = ess,
                     isLoaded = boundTab != null,
@@ -1820,13 +1895,13 @@ private fun ColumnScope.ArcCollapsedSidebarRail(
                 )
             }
         }
-        if (!state.isPrivateView && state.activeSpaceZenPinned.isNotEmpty()) {
+        if (!state.isPrivateView && railZenPinned.isNotEmpty()) {
             items(
-                items = state.activeSpaceZenPinned,
+                items = railZenPinned,
                 key = { "rail_zen_${it.id}" },
                 contentType = { "sidebar_zen_collapsed" }
             ) { item ->
-                val boundTab = state.tabForZenPinned(item.id)
+                val boundTab = railTabByZenPinnedId[item.id]
                 val isLoaded = boundTab != null
                 val isActive = boundTab != null && boundTab.id == state.activeTabId
                 Surface(
@@ -1887,7 +1962,7 @@ private fun ColumnScope.ArcCollapsedSidebarRail(
             }
         }
         items(
-            items = state.visibleTabs,
+            items = railVisibleTabs,
             key = { it.id },
             contentType = { "sidebar_tab_collapsed" }
         ) { tab ->

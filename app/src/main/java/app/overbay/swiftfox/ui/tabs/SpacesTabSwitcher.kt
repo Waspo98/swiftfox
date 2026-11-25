@@ -36,19 +36,19 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
-import androidx.compose.material.icons.automirrored.rounded.VolumeUp
+import app.overbay.swiftfox.ui.icons.automirrored.VolumeUp
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Close
-import androidx.compose.material.icons.rounded.DeleteOutline
-import androidx.compose.material.icons.rounded.DesktopWindows
-import androidx.compose.material.icons.rounded.Devices
+import app.overbay.swiftfox.ui.icons.rounded.DeleteOutline
+import app.overbay.swiftfox.ui.icons.rounded.DesktopWindows
+import app.overbay.swiftfox.ui.icons.rounded.Devices
 import androidx.compose.material.icons.rounded.Edit
-import androidx.compose.material.icons.rounded.Palette
-import androidx.compose.material.icons.rounded.PushPin
+import app.overbay.swiftfox.ui.icons.rounded.Palette
+import app.overbay.swiftfox.ui.icons.rounded.PushPin
 import androidx.compose.material.icons.rounded.Refresh
-import androidx.compose.material.icons.rounded.Shield
-import androidx.compose.material.icons.rounded.StarOutline
-import androidx.compose.material.icons.rounded.SwapVert
+import app.overbay.swiftfox.ui.icons.rounded.Shield
+import app.overbay.swiftfox.ui.icons.rounded.StarOutline
+import app.overbay.swiftfox.ui.icons.rounded.SwapVert
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
@@ -164,8 +164,31 @@ fun SpacesTabSwitcher(
         sourceItems = state.spaces,
         keyOf = { it.id },
         axis = DragAxis.HORIZONTAL,
-        onCommitOrder = itemCallbacks.onReorderSpaces
+        onCommitOrder = itemCallbacks.onReorderSpaces,
+        enabled = isReorderingSpaces
     )
+    val spaceTabCounts = remember(state.tabs, state.essentials, state.spaces) {
+        state.spaces.associate { space -> space.id to state.tabSwitcherCountForSpace(space.id) }
+    }
+    val zenPinned = remember(state.zenPinnedItems, state.activeSpaceId, state.isPrivateView) {
+        state.activeSpaceZenPinned
+    }
+    val tabByZenPinnedId = remember(state.tabs) {
+        buildMap {
+            for (tab in state.tabs) {
+                val zenId = tab.zenPinnedId
+                if (!tab.isPrivate && zenId != null && !containsKey(zenId)) {
+                    put(zenId, tab)
+                }
+            }
+        }
+    }
+    val tabs = remember(state.tabs, state.essentials, state.activeSpaceId, state.isPrivateView) {
+        state.tabSwitcherTabs
+    }
+    val canCloseAll = remember(isReorderingSpaces, state.tabs, state.essentials, state.activeSpaceId, state.isPrivateView) {
+        !isReorderingSpaces && WorkspaceTabResolver.hasAnythingToCloseAll(state)
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -320,7 +343,7 @@ fun SpacesTabSwitcher(
                 onLongPressSpace = { actionSpace = it },
                 horizontalPadding = 16.dp,
                 iconSize = 17.dp,
-                tabCountForSpace = { spaceId -> state.tabSwitcherCountForSpace(spaceId) },
+                tabCountForSpace = { spaceId -> spaceTabCounts[spaceId] ?: 0 },
                 showThemeDot = true,
                 showLockIndicator = true,
                 isReorderMode = isReorderingSpaces,
@@ -329,7 +352,6 @@ fun SpacesTabSwitcher(
             )
 
             // Zen Browser synced pinned items for active Space with web favicons
-            val zenPinned = state.activeSpaceZenPinned
             if (!state.isPrivateView && zenPinned.isNotEmpty()) {
                 Spacer(Modifier.height(10.dp))
                 LazyRow(
@@ -342,13 +364,19 @@ fun SpacesTabSwitcher(
                         key = { it.id },
                         contentType = { "zen_pinned_pill" }
                     ) { item ->
-                        val boundTab = state.tabForZenPinned(item.id)
+                        val boundTab = tabByZenPinnedId[item.id]
                         CompactZenPinnedPill(
                             item = item,
                             isLoaded = boundTab != null,
                             isActive = boundTab != null && boundTab.id == state.activeTabId,
                             isPlayingMedia = boundTab?.isPlayingMedia == true,
-                            onClick = { itemCallbacks.onActivateZenPinned(item.id) },
+                            onClick = {
+                                if (boundTab != null) {
+                                    onSelectTab(boundTab.id)
+                                } else {
+                                    itemCallbacks.onActivateZenPinned(item.id)
+                                }
+                            },
                             onLongClick = { actionZenPinned = item }
                         )
                     }
@@ -356,9 +384,6 @@ fun SpacesTabSwitcher(
             }
 
             // Visual tab card grid (open Essentials render right alongside regular tabs as standard cards)
-            val tabs = state.tabSwitcherTabs
-            val canCloseAll = !isReorderingSpaces &&
-                WorkspaceTabResolver.hasAnythingToCloseAll(state)
             if (tabs.isNotEmpty() || canCloseAll) {
                 Spacer(Modifier.height(10.dp))
                 WorkspaceTabsHeaderRow(
@@ -451,11 +476,7 @@ fun SpacesTabSwitcher(
                                 thumbnail = if (isLoaded) thumbnails.bitmaps[tab.id] else null,
                                 onSelect = {
                                     if (!isCardDismissing) {
-                                        if (isPinnedTab) {
-                                            itemCallbacks.onActivatePinnedTab(tab.id)
-                                        } else {
-                                            onSelectTab(tab.id)
-                                        }
+                                        onSelectTab(tab.id)
                                     }
                                 },
                                 onLongPress = { if (!isCardDismissing) actionTab = tab },
@@ -1135,6 +1156,9 @@ private fun SwipeToDismissTabCard(
                                         }
                                     } finally {
                                         invokeDismissOnce()
+                                        if (currentStaysInGrid) {
+                                            isDismissing = false
+                                        }
                                     }
                                 }
                             } else {

@@ -9,6 +9,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 adblock = { version = "=0.10.1", default-features = false, features = ["embedded-domain-resolver", "full-regex-handling"] }
+base64 = "0.22"
 rmp = "<0.8.15"
 jni = "0.21"
 serde = { version = "1", features = ["derive"] }
@@ -16,6 +17,6 @@ serde_json = "1"
 
 [profile.release]
 opt-level = 3
-lto = "thin"
+lto = true
 codegen-units = 1
 strip = "symbols"

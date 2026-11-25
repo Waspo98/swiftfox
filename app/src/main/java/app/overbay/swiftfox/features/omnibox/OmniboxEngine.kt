@@ -212,6 +212,9 @@ object OmniboxEngine {
     @Volatile
     private var configuredClient: OkHttpClient? = null
 
+    @Volatile
+    private var configuredClientProvider: (() -> OkHttpClient)? = null
+
     private val fallbackHttpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .connectTimeout(3, TimeUnit.SECONDS)
@@ -226,8 +229,24 @@ object OmniboxEngine {
             .build()
     }
 
+    fun configureHttpClientProvider(provider: () -> OkHttpClient) {
+        configuredClientProvider = provider
+    }
+
     private val httpClient: OkHttpClient
-        get() = configuredClient ?: fallbackHttpClient
+        get() {
+            configuredClient?.let { return it }
+            val provider = configuredClientProvider
+            if (provider != null) {
+                val built = provider().newBuilder()
+                    .connectTimeout(3, TimeUnit.SECONDS)
+                    .readTimeout(3, TimeUnit.SECONDS)
+                    .build()
+                configuredClient = built
+                return built
+            }
+            return fallbackHttpClient
+        }
 
     fun detectBang(input: String): ResolvedBang? {
         val trimmed = input.trimStart()
@@ -349,19 +368,56 @@ object OmniboxEngine {
     }
 
     fun extractHost(url: String): String {
-        val trimmed = url.trim()
-        if (trimmed.isBlank() || trimmed.equals(NEW_TAB_URL, ignoreCase = true)) return ""
-        val fromUri = runCatching { URI(trimmed).host }.getOrNull()
-        if (!fromUri.isNullOrBlank()) {
-            return normalizeHost(fromUri)
+        var start = 0
+        var end = url.length
+        while (start < end && url[start].isWhitespace()) start++
+        while (end > start && url[end - 1].isWhitespace()) end--
+        if (end <= start) return ""
+        if (end - start == NEW_TAB_URL.length && url.regionMatches(start, NEW_TAB_URL, 0, NEW_TAB_URL.length, ignoreCase = true)) {
+            return ""
         }
-        // Tolerant fallback for URLs containing unencoded spaces, brackets, backslashes, or non-ASCII chars
-        val authority = authorityExtractRegex.find(trimmed)?.groupValues?.getOrNull(1) ?: return ""
-        val hostPort = authority.substringAfterLast('@')
-        val rawHost = if (hostPort.startsWith("[")) {
-            hostPort.substringBefore(']') + "]"
+        val schemeSep = url.indexOf("://", start)
+        if (schemeSep <= start || schemeSep >= end) return ""
+        for (i in start until schemeSep) {
+            val sc = url[i]
+            val validSchemeChar = (sc in 'a'..'z') || (sc in 'A'..'Z') ||
+                (i > start && ((sc in '0'..'9') || sc == '+' || sc == '.' || sc == '-'))
+            if (!validSchemeChar) return ""
+        }
+        val authStart = schemeSep + 3
+        if (authStart >= end) return ""
+        var authEnd = end
+        for (i in authStart until end) {
+            val c = url[i]
+            if (c == '/' || c == '?' || c == '#' || c == '\\') {
+                authEnd = i
+                break
+            }
+        }
+        if (authEnd <= authStart) return ""
+        var hostStart = authStart
+        for (i in authEnd - 1 downTo authStart) {
+            if (url[i] == '@') {
+                hostStart = i + 1
+                break
+            }
+        }
+        if (hostStart >= authEnd) return ""
+        val rawHost = if (url[hostStart] == '[') {
+            val closeBracket = url.indexOf(']', hostStart + 1)
+            if (closeBracket <= hostStart + 1 || closeBracket >= authEnd) return ""
+            url.substring(hostStart + 1, closeBracket)
         } else {
-            hostPort.substringBefore(':')
+            var colonIdx = -1
+            for (i in hostStart until authEnd) {
+                if (url[i] == ':') {
+                    colonIdx = i
+                    break
+                }
+            }
+            val hostEnd = if (colonIdx >= 0) colonIdx else authEnd
+            if (hostEnd <= hostStart) return ""
+            url.substring(hostStart, hostEnd)
         }
         return normalizeHost(rawHost)
     }
@@ -454,7 +510,7 @@ object OmniboxEngine {
      * Extracts a clean lowercase host/URL prefix from omnibox input suitable for dedicated
      * Room `LIKE` prefix queries so article title matches never crowd out domain completions.
      */
-    fun extractHostPrefixForDbQuery(rawQuery: String): String? {
+    fun extractRawHostPrefixForDbQuery(rawQuery: String): String? {
         val trimmed = rawQuery.trim()
         if (trimmed.isEmpty() || trimmed.any { it.isWhitespace() }) return null
         if (trimmed.startsWith("!") || trimmed.startsWith("@")) return null
@@ -472,6 +528,11 @@ object OmniboxEngine {
             else -> afterScheme
         }
         if (normalized.isEmpty()) return null
+        return normalized
+    }
+
+    fun extractHostPrefixForDbQuery(rawQuery: String): String? {
+        val normalized = extractRawHostPrefixForDbQuery(rawQuery) ?: return null
         return escapeSqlLikePrefix(normalized)
     }
 
@@ -758,6 +819,7 @@ object OmniboxEngine {
     }
 
     private fun parseStrictIpv4Octets(host: String): IntArray? {
+        if (host.isEmpty() || host[0] !in '0'..'9') return null
         val m = ipv4StrictHostRegex.matchEntire(host) ?: return null
         val octets = IntArray(4)
         for (i in 0..3) {

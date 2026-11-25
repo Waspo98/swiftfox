@@ -6,7 +6,11 @@ import app.overbay.swiftfox.data.db.UserscriptStorageDao
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.coroutineContext
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -22,14 +26,54 @@ import java.util.concurrent.TimeUnit
 class UserscriptRepository internal constructor(
     private val scriptDao: UserscriptDao,
     private val storageDao: UserscriptStorageDao,
-    private val client: OkHttpClient,
+    private val clientProvider: () -> OkHttpClient,
     private val ioDispatcher: CoroutineDispatcher
 ) {
     constructor(
         scriptDao: UserscriptDao,
         storageDao: UserscriptStorageDao,
-        client: OkHttpClient = defaultHttpClient()
-    ) : this(scriptDao, storageDao, client, Dispatchers.IO)
+        client: OkHttpClient,
+        ioDispatcher: CoroutineDispatcher = Dispatchers.IO
+    ) : this(scriptDao, storageDao, { client }, ioDispatcher)
+
+    constructor(
+        scriptDao: UserscriptDao,
+        storageDao: UserscriptStorageDao,
+        clientProvider: () -> OkHttpClient = { defaultHttpClient() }
+    ) : this(scriptDao, storageDao, clientProvider, Dispatchers.IO)
+
+    private data class CompiledUserscript(
+        val entity: UserscriptEntity,
+        val runAt: UserscriptRunAt,
+        val matches: List<String>,
+        val excludes: List<String>
+    )
+
+    private val cacheMutex = Mutex()
+
+    @Volatile
+    private var cachedEnabledScripts: List<CompiledUserscript>? = null
+
+    fun invalidateRuntimeCache() {
+        cachedEnabledScripts = null
+    }
+
+    private suspend fun getCompiledEnabledScripts(): List<CompiledUserscript> {
+        cachedEnabledScripts?.let { return it }
+        return cacheMutex.withLock {
+            cachedEnabledScripts?.let { return@withLock it }
+            val loaded = scriptDao.getEnabled().map { script ->
+                CompiledUserscript(
+                    entity = script,
+                    runAt = UserscriptRunAt.fromHeader(script.runAt),
+                    matches = UserscriptParser.decodeStringList(script.matchesJson),
+                    excludes = UserscriptParser.decodeStringList(script.excludesJson)
+                )
+            }
+            cachedEnabledScripts = loaded
+            loaded
+        }
+    }
 
     suspend fun installFromUrl(url: String): Result<UserscriptEntity> {
         val trimmedUrl = url.trim()
@@ -46,11 +90,17 @@ class UserscriptRepository internal constructor(
                     .get()
                     .header("Accept", "text/javascript, application/javascript, text/plain, */*")
                     .build()
-                client.newCall(request).execute().use { response ->
-                    if (!response.isSuccessful) {
-                        throw IllegalStateException("HTTP ${response.code}: ${response.message}")
+                val call = clientProvider().newCall(request)
+                val cancelHandle = coroutineContext[Job]?.invokeOnCompletion { call.cancel() }
+                try {
+                    call.execute().use { response ->
+                        if (!response.isSuccessful) {
+                            throw IllegalStateException("HTTP ${response.code}: ${response.message}")
+                        }
+                        readBoundedText(response.body, MAX_USERSCRIPT_BYTES)
                     }
-                    readBoundedText(response.body, MAX_USERSCRIPT_BYTES)
+                } finally {
+                    cancelHandle?.dispose()
                 }
             }
             val derivedName = httpUrl.pathSegments
@@ -82,7 +132,7 @@ class UserscriptRepository internal constructor(
             val meta = UserscriptParser.parse(code, fallbackName = fallbackName)
             val normalizedSourceUrl = sourceUrl?.trim()?.takeIf { it.isNotEmpty() }
             val existing = if (normalizedSourceUrl != null) {
-                scriptDao.getAll().firstOrNull { it.sourceUrl == normalizedSourceUrl }
+                scriptDao.findBySourceUrl(normalizedSourceUrl)
             } else {
                 null
             }
@@ -104,6 +154,7 @@ class UserscriptRepository internal constructor(
                 updatedAt = now
             )
             scriptDao.upsert(entity)
+            invalidateRuntimeCache()
             Result.success(entity)
         } catch (e: CancellationException) {
             throw e
@@ -136,6 +187,7 @@ class UserscriptRepository internal constructor(
                 updatedAt = System.currentTimeMillis()
             )
             scriptDao.upsert(updated)
+            invalidateRuntimeCache()
             Result.success(updated)
         } catch (e: CancellationException) {
             throw e
@@ -145,21 +197,17 @@ class UserscriptRepository internal constructor(
     }
 
     suspend fun setEnabled(id: String, enabled: Boolean) {
-        val existing = scriptDao.getById(id) ?: return
-        if (existing.enabled != enabled) {
-            scriptDao.upsert(
-                existing.copy(
-                    enabled = enabled,
-                    updatedAt = System.currentTimeMillis()
-                )
-            )
-        }
+        scriptDao.updateEnabled(id = id, enabled = enabled, updatedAt = System.currentTimeMillis())
+        invalidateRuntimeCache()
     }
 
     suspend fun deleteScript(id: String) {
         scriptDao.deleteById(id)
         storageDao.deleteAllForScript(id)
+        invalidateRuntimeCache()
     }
+
+    suspend fun getScriptById(id: String): UserscriptEntity? = scriptDao.getById(id)
 
     suspend fun matchingScriptsFor(
         url: String,
@@ -167,20 +215,55 @@ class UserscriptRepository internal constructor(
     ): List<Pair<UserscriptEntity, Map<String, String>>> {
         if (!UserscriptUrlMatcher.isHttpOrHttps(url)) return emptyList()
 
-        val enabledScripts = scriptDao.getEnabled()
+        val enabledScripts = getCompiledEnabledScripts()
         if (enabledScripts.isEmpty()) return emptyList()
 
-        val matched = enabledScripts.filter { script ->
-            if (UserscriptRunAt.fromHeader(script.runAt) != runAt) return@filter false
-            val matches = UserscriptParser.decodeStringList(script.matchesJson)
-            val excludes = UserscriptParser.decodeStringList(script.excludesJson)
-            UserscriptUrlMatcher.matches(url, matches, excludes)
+        val matched = enabledScripts.filter { compiled ->
+            compiled.runAt == runAt &&
+                UserscriptUrlMatcher.matches(url, compiled.matches, compiled.excludes)
         }
         if (matched.isEmpty()) return emptyList()
 
-        return matched.map { script ->
-            val storageMap = storageDao.getAllForScript(script.id)
-                .associate { it.storageKey to it.valueJson }
+        return attachBatchedStorage(matched.map { it.entity })
+    }
+
+    /**
+     * Returns all enabled `DOCUMENT_START` scripts that could match any URL on [originUrl]'s
+     * scheme + host so same-origin client/link navigations (`/` -> `/r/android`) still execute
+     * path-scoped `@run-at document-start` userscripts at true `document-start` via their
+     * built-in runtime URL guard.
+     */
+    suspend fun originCandidateDocumentStartScriptsFor(
+        originUrl: String
+    ): List<Pair<UserscriptEntity, Map<String, String>>> {
+        if (!UserscriptUrlMatcher.isHttpOrHttps(originUrl)) return emptyList()
+
+        val enabledScripts = getCompiledEnabledScripts()
+        if (enabledScripts.isEmpty()) return emptyList()
+
+        val matched = enabledScripts.filter { compiled ->
+            compiled.runAt == UserscriptRunAt.DOCUMENT_START &&
+                UserscriptUrlMatcher.canMatchOrigin(originUrl, compiled.matches)
+        }
+        if (matched.isEmpty()) return emptyList()
+
+        return attachBatchedStorage(matched.map { it.entity })
+    }
+
+    private suspend fun attachBatchedStorage(
+        scripts: List<UserscriptEntity>
+    ): List<Pair<UserscriptEntity, Map<String, String>>> {
+        if (scripts.isEmpty()) return emptyList()
+        val allStorage = if (scripts.size == 1) {
+            storageDao.getAllForScript(scripts[0].id)
+        } else {
+            storageDao.getAllForScripts(scripts.map { it.id })
+        }
+        val byScript = allStorage.groupBy { it.scriptId }
+        return scripts.map { script ->
+            val storageMap = byScript[script.id]
+                ?.associate { it.storageKey to it.valueJson }
+                ?: emptyMap()
             script to storageMap
         }
     }

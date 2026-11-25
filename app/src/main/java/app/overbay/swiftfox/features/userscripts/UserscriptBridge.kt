@@ -56,22 +56,44 @@ class UserscriptBridge internal constructor(
     private val scope: CoroutineScope,
     private val scriptDao: UserscriptDao,
     private val storageDao: UserscriptStorageDao,
-    private val client: OkHttpClient,
+    private val clientProvider: () -> OkHttpClient,
     private val ioDispatcher: CoroutineDispatcher,
     private val mainDispatcher: CoroutineDispatcher = ioDispatcher
 ) {
+    internal constructor(
+        context: Context?,
+        scope: CoroutineScope,
+        scriptDao: UserscriptDao,
+        storageDao: UserscriptStorageDao,
+        client: OkHttpClient,
+        ioDispatcher: CoroutineDispatcher,
+        mainDispatcher: CoroutineDispatcher = ioDispatcher
+    ) : this(context, scope, scriptDao, storageDao, { client }, ioDispatcher, mainDispatcher)
+
     constructor(
         context: Context?,
         scope: CoroutineScope,
         scriptDao: UserscriptDao,
         storageDao: UserscriptStorageDao,
-        client: OkHttpClient = defaultHttpClient()
-    ) : this(context, scope, scriptDao, storageDao, client, Dispatchers.IO, Dispatchers.Main)
+        client: OkHttpClient
+    ) : this(context, scope, scriptDao, storageDao, { client }, Dispatchers.IO, Dispatchers.Main)
+
+    constructor(
+        context: Context?,
+        scope: CoroutineScope,
+        scriptDao: UserscriptDao,
+        storageDao: UserscriptStorageDao,
+        clientProvider: () -> OkHttpClient = { defaultHttpClient() }
+    ) : this(context, scope, scriptDao, storageDao, clientProvider, Dispatchers.IO, Dispatchers.Main)
+
+    private val client: OkHttpClient
+        get() = clientProvider()
 
     private val json = Json { ignoreUnknownKeys = true }
     private val activeCalls = ConcurrentHashMap<String, Call>()
     private val abortedKeys: MutableSet<String> = ConcurrentHashMap.newKeySet()
     private val storageLocks = ConcurrentHashMap<String, Mutex>()
+    private val connectsCache = ConcurrentHashMap<String, Pair<Long, List<String>>>()
 
     private val gmShimJs: String by lazy {
         val ctx = context ?: return@lazy ""
@@ -301,6 +323,29 @@ class UserscriptBridge internal constructor(
         activeCalls.remove(callKey)?.cancel()
     }
 
+    fun cancelCallsForTab(tabId: String) {
+        if (tabId.isBlank()) return
+        val prefix = "$tabId:"
+        val matchingKeys = activeCalls.keys.filter { it.startsWith(prefix) }
+        for (key in matchingKeys) {
+            abortedKeys.add(key)
+            activeCalls.remove(key)?.cancel()
+        }
+    }
+
+    private fun cachedConnectsFor(script: UserscriptEntity): List<String> {
+        val cached = connectsCache[script.id]
+        if (cached != null && cached.first == script.updatedAt) {
+            return cached.second
+        }
+        val connects = UserscriptParser.parse(script.code, fallbackName = script.name).connects
+        if (connectsCache.size > 128) {
+            connectsCache.clear()
+        }
+        connectsCache[script.id] = script.updatedAt to connects
+        return connects
+    }
+
     fun handleXmlHttpRequest(
         scriptId: String,
         reqId: String,
@@ -398,8 +443,8 @@ class UserscriptBridge internal constructor(
                 return@launch
             }
 
-            val parsedMeta = UserscriptParser.parse(script.code, fallbackName = script.name)
-            if (!isTargetHostPermitted(httpUrl.host, pageUrl, parsedMeta.connects)) {
+            val connects = cachedConnectsFor(script)
+            if (!isTargetHostPermitted(httpUrl.host, pageUrl, connects)) {
                 dispatchResolveXhr(
                     bridgeToken = bridgeToken,
                     runtimeKey = runtimeKey,
@@ -476,15 +521,12 @@ class UserscriptBridge internal constructor(
                 else -> null
             }
 
-            val configuredClient = client.newBuilder()
-                .callTimeout(timeoutMs, TimeUnit.MILLISECONDS)
-                .connectTimeout(timeoutMs, TimeUnit.MILLISECONDS)
-                .readTimeout(timeoutMs, TimeUnit.MILLISECONDS)
-                .writeTimeout(timeoutMs, TimeUnit.MILLISECONDS)
+            val baseHopClient = client.newBuilder()
                 .followRedirects(false)
                 .followSslRedirects(false)
-                .dns(buildGuardedDns(pageUrl, parsedMeta.connects))
+                .dns(buildGuardedDns(pageUrl, connects))
                 .build()
+            val startNano = System.nanoTime()
 
             var currentCall: Call? = null
             var currentUrl: HttpUrl = httpUrl
@@ -508,6 +550,18 @@ class UserscriptBridge internal constructor(
                         return@launch
                     }
 
+                    val elapsedMs = ((System.nanoTime() - startNano) / 1_000_000L).coerceAtLeast(0L)
+                    val remainingMs = timeoutMs - elapsedMs
+                    if (remainingMs <= 0L) {
+                        throw SocketTimeoutException("Request timed out")
+                    }
+                    val hopClient = baseHopClient.newBuilder()
+                        .callTimeout(remainingMs, TimeUnit.MILLISECONDS)
+                        .connectTimeout(remainingMs, TimeUnit.MILLISECONDS)
+                        .readTimeout(remainingMs, TimeUnit.MILLISECONDS)
+                        .writeTimeout(remainingMs, TimeUnit.MILLISECONDS)
+                        .build()
+
                     val requestBuilder = Request.Builder()
                         .url(currentUrl)
                         .method(currentMethod, currentBody)
@@ -519,7 +573,7 @@ class UserscriptBridge internal constructor(
                         runCatching { requestBuilder.addHeader(headerName, headerValue) }
                     }
 
-                    val call = configuredClient.newCall(requestBuilder.build())
+                    val call = hopClient.newCall(requestBuilder.build())
                     currentCall = call
                     activeCalls[callKey] = call
 
@@ -535,7 +589,7 @@ class UserscriptBridge internal constructor(
                             if (resolved == null || (resolved.scheme != "http" && resolved.scheme != "https")) {
                                 throw IOException("Invalid redirect destination")
                             }
-                            if (!isTargetHostPermitted(resolved.host, pageUrl, parsedMeta.connects)) {
+                            if (!isTargetHostPermitted(resolved.host, pageUrl, connects)) {
                                 throw IOException("Redirect blocked by @connect / local network policy")
                             }
                             val sameOrigin = resolved.scheme == currentUrl.scheme &&

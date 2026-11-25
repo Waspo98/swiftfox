@@ -160,7 +160,8 @@ fun SiteIconBadge(
     val reduceMotion = rememberReduceMotion()
     val spec = remember(customIcon) { CustomIconSpec.parse(customIcon) }
 
-    val hostKey = remember(url) { FaviconRepository.cacheKeyForUrl(url) }
+    val scope = remember(url) { FaviconRepository.resolveScope(url) }
+    val hostKey = scope?.let { it.pathKey ?: it.authorityKey }
     var customBitmap by remember(spec, repo) {
         mutableStateOf(
             if (spec is CustomIconSpec.LocalImage) repo?.getCachedCustomImage(spec.fileName) else null
@@ -169,19 +170,27 @@ fun SiteIconBadge(
     var faviconBitmap by remember(hostKey, privateTabId, repo) {
         mutableStateOf<Bitmap?>(
             if (spec == CustomIconSpec.None && repo != null) {
-                repo.getCachedFavicon(url, privateTabId)
+                repo.getCachedFaviconForScope(scope, privateTabId)
             } else {
                 null
             }
         )
     }
+    val hadInitialFaviconHit = remember(hostKey, privateTabId, repo) { faviconBitmap != null }
 
     LaunchedEffect(spec, repo) {
         if (spec is CustomIconSpec.LocalImage && repo != null) {
             if (customBitmap == null) {
                 customBitmap = repo.loadCustomImage(spec.fileName)
             }
+            val watchKey = "img:${CustomIconSpec.sanitizeImageFileName(spec.fileName)}"
+            var lastRev = repo.keyRevision(watchKey)
             repo.revision.collect {
+                val nextRev = repo.keyRevision(watchKey)
+                if (nextRev != 0L && nextRev == lastRev && customBitmap != null) {
+                    return@collect
+                }
+                lastRev = nextRev
                 val cached = repo.getCachedCustomImage(spec.fileName)
                 if (cached != null) {
                     customBitmap = cached
@@ -194,10 +203,11 @@ fun SiteIconBadge(
         }
     }
 
-    // Fetch website favicon once per target without tying cancellation to global cache revisions
+    // Single coroutine per website favicon badge: fetches on miss and filters global cache
+    // revisions by per-key revision so unrelated domain updates skip map lookups.
     LaunchedEffect(spec, hostKey, url, privateTabId, repo) {
         if (spec != CustomIconSpec.None || repo == null) return@LaunchedEffect
-        val cached = repo.getCachedFavicon(url, privateTabId)
+        val cached = repo.getCachedFaviconForScope(scope, privateTabId)
         if (cached != null) {
             faviconBitmap = cached
         } else if (privateTabId == null && hostKey != null) {
@@ -206,16 +216,20 @@ fun SiteIconBadge(
                 faviconBitmap = fetched
             }
         }
-    }
 
-    // Observe cache updates (WebView onReceivedIcon, private tab icon updates, or cache clears)
-    // without cancelling in-flight fetches or recomposing unrelated badges.
-    LaunchedEffect(spec, hostKey, privateTabId, repo) {
-        if (spec != CustomIconSpec.None || repo == null) return@LaunchedEffect
+        val watchKey = privateTabId ?: scope?.primaryKey
+        var lastKeyRev = if (watchKey != null) repo.keyRevision(watchKey) else -1L
         repo.revision.collect {
-            val cached = repo.getCachedFavicon(url, privateTabId)
-            if (cached !== faviconBitmap) {
-                faviconBitmap = cached
+            if (watchKey != null) {
+                val currentKeyRev = repo.keyRevision(watchKey)
+                if (currentKeyRev != 0L && currentKeyRev == lastKeyRev) {
+                    return@collect
+                }
+                lastKeyRev = currentKeyRev
+            }
+            val nextCached = repo.getCachedFaviconForScope(scope, privateTabId)
+            if (nextCached !== faviconBitmap) {
+                faviconBitmap = nextCached
             }
         }
     }
@@ -266,38 +280,60 @@ fun SiteIconBadge(
             }
             CustomIconSpec.None -> {
                 val img = remember(faviconBitmap) { faviconBitmap?.asImageBitmap() }
-                Crossfade(
-                    targetState = img,
-                    animationSpec = if (reduceMotion) snap() else tween(160),
-                    label = "favicon_crossfade"
-                ) { loadedImg ->
-                    if (loadedImg != null) {
-                        Box(
-                            modifier = Modifier.fillMaxSize(),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Image(
-                                bitmap = loadedImg,
-                                contentDescription = null,
-                                contentScale = ContentScale.Fit,
-                                filterQuality = FilterQuality.High,
-                                modifier = Modifier
-                                    .size(iconSize)
-                                    .clip(RoundedCornerShape(iconSize * 0.22f))
-                            )
-                        }
+                if ((hadInitialFaviconHit && img != null) || reduceMotion) {
+                    if (img != null) {
+                        Image(
+                            bitmap = img,
+                            contentDescription = null,
+                            contentScale = ContentScale.Fit,
+                            filterQuality = FilterQuality.High,
+                            modifier = Modifier
+                                .size(iconSize)
+                                .clip(RoundedCornerShape(iconSize * 0.22f))
+                        )
                     } else {
-                        Box(
-                            modifier = Modifier.fillMaxSize(),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            MonogramOrVectorFallback(
-                                fallbackLabel = fallbackLabel,
-                                fallbackVector = fallbackVector,
-                                tint = tint,
-                                iconSize = iconSize,
-                                monogramFontSize = monogramFontSize
-                            )
+                        MonogramOrVectorFallback(
+                            fallbackLabel = fallbackLabel,
+                            fallbackVector = fallbackVector,
+                            tint = tint,
+                            iconSize = iconSize,
+                            monogramFontSize = monogramFontSize
+                        )
+                    }
+                } else {
+                    Crossfade(
+                        targetState = img,
+                        animationSpec = tween(160),
+                        label = "favicon_crossfade"
+                    ) { loadedImg ->
+                        if (loadedImg != null) {
+                            Box(
+                                modifier = Modifier.fillMaxSize(),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Image(
+                                    bitmap = loadedImg,
+                                    contentDescription = null,
+                                    contentScale = ContentScale.Fit,
+                                    filterQuality = FilterQuality.High,
+                                    modifier = Modifier
+                                        .size(iconSize)
+                                        .clip(RoundedCornerShape(iconSize * 0.22f))
+                                )
+                            }
+                        } else {
+                            Box(
+                                modifier = Modifier.fillMaxSize(),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                MonogramOrVectorFallback(
+                                    fallbackLabel = fallbackLabel,
+                                    fallbackVector = fallbackVector,
+                                    tint = tint,
+                                    iconSize = iconSize,
+                                    monogramFontSize = monogramFontSize
+                                )
+                            }
                         }
                     }
                 }

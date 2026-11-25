@@ -100,8 +100,16 @@ class MozillaSyncCoordinator(
     private val db: SwiftfoxDatabase,
     private val prefs: PreferencesRepository,
     private val scope: CoroutineScope,
-    private val httpClient: OkHttpClient
+    private val httpClientProvider: () -> OkHttpClient
 ) {
+    constructor(
+        context: Context,
+        db: SwiftfoxDatabase,
+        prefs: PreferencesRepository,
+        scope: CoroutineScope,
+        httpClient: OkHttpClient
+    ) : this(context, db, prefs, scope, { httpClient })
+
     private val _status = MutableStateFlow(SyncStatusSnapshot())
     val status: StateFlow<SyncStatusSnapshot> = _status.asStateFlow()
 
@@ -111,7 +119,7 @@ class MozillaSyncCoordinator(
     private val historyMirrorMutex = Mutex()
     private val pendingDeletedBookmarkGuids: MutableSet<String> =
         java.util.concurrent.ConcurrentHashMap.newKeySet()
-    private val zenClient = Sync15SpacesClient(httpClient)
+    private val zenClient = Sync15SpacesClient(httpClientProvider)
     private val crashReporter = NoOpCrashReporter()
     private val initComplete = CompletableDeferred<Unit>()
     private val authGeneration = AtomicLong(0L)
@@ -160,6 +168,7 @@ class MozillaSyncCoordinator(
                     updateConnectedFromProfile(profile)
                     val gen = authGeneration.get()
                     scope.launch {
+                        prefs.setSyncHasConnectedAccount(true)
                         val settings = prefs.settingsFlow.first()
                         if (authGeneration.get() == gen && accountManager?.connectedAccount() != null) {
                             SwiftfoxSyncWorker.schedulePeriodic(context, settings.syncPeriodicIntervalMinutes)
@@ -167,6 +176,9 @@ class MozillaSyncCoordinator(
                     }
                 }
             } else {
+                scope.launch {
+                    prefs.setSyncHasConnectedAccount(false)
+                }
                 _status.update {
                     it.copy(accountState = SyncAccountState.SignedOut, isSyncing = false)
                 }
@@ -179,6 +191,7 @@ class MozillaSyncCoordinator(
             val profile = accountManager?.accountProfile()
             updateConnectedFromProfile(profile)
             scope.launch {
+                prefs.setSyncHasConnectedAccount(true)
                 val freshProfile = runCatching { account.getProfile(ignoreCache = false) }.getOrNull()
                 if (authGeneration.get() != gen || accountManager?.connectedAccount() == null) return@launch
                 if (freshProfile != null) {
@@ -238,10 +251,12 @@ class MozillaSyncCoordinator(
             pendingAuthCompletion?.complete(
                 Result.failure(IOException("Mozilla Account signed out"))
             )
+            zenClient.invalidateAuthCache()
             SwiftfoxSyncWorker.cancel(context)
             // During explicit signOut(), wait until local Places/Room/profile teardown finishes
             // before exposing SignedOut UI so rapid re-sign-in cannot race with cleanup.
             if (!isSigningOut.get()) {
+                scope.launch { prefs.setSyncHasConnectedAccount(false) }
                 _status.update {
                     SyncStatusSnapshot(
                         accountState = SyncAccountState.SignedOut,
@@ -287,6 +302,16 @@ class MozillaSyncCoordinator(
         }
     }
 
+    /**
+     * Checks whether Mozilla FxA state preferences exist on disk without loading JNA/megazord,
+     * ensuring existing signed-in users upgrading from older versions still initialize eagerly.
+     */
+    fun hasPersistedAccountHint(): Boolean =
+        runCatching {
+            val sharedPrefsDir = File(context.applicationInfo.dataDir, "shared_prefs")
+            File(sharedPrefsDir, "mozilla_fxa_state_machine_prefs.xml").isFile
+        }.getOrDefault(false)
+
     fun initialize() {
         if (!initialized.compareAndSet(false, true)) return
         scope.launch(Dispatchers.IO) {
@@ -297,7 +322,7 @@ class MozillaSyncCoordinator(
                         logLevel = Log.Priority.WARN
                     )
                 )
-                RustHttpConfig.setClient(lazy { MozOkHttpClient(httpClient, context) })
+                RustHttpConfig.setClient(lazy { MozOkHttpClient(httpClientProvider(), context) })
 
                 val bStore = PlacesBookmarksStorage(context)
                 val hStore = PlacesHistoryStorage(context, crashReporter)
@@ -380,6 +405,7 @@ class MozillaSyncCoordinator(
     }
 
     private suspend fun awaitInitialized() {
+        initialize()
         if (!initComplete.isCompleted) {
             withTimeoutOrNull(15_000L) { initComplete.await() }
         }
@@ -516,6 +542,11 @@ class MozillaSyncCoordinator(
                     _status.update { it.copy(isSyncing = true, lastSyncError = null) }
                     val settings = prefs.settingsFlow.first()
 
+                    // Wait for any pre-existing automatic startup "Immediate" WorkManager sync
+                    // BEFORE pushing new local rows into Places so ExistingWorkPolicy.KEEP never
+                    // drops our post-push sync pass.
+                    awaitActiveMozillaImmediateWorkIfAny()
+
                     // 1. Pre-sync local push into Places / RemoteTabs
                     if (settings.syncBookmarksEnabled) {
                         bookmarkMirrorMutex.withLock {
@@ -646,6 +677,18 @@ class MozillaSyncCoordinator(
                 isOrchestratedSync = false
                 if (_status.value.isSyncing) {
                     _status.update { it.copy(isSyncing = false) }
+                }
+            }
+        }
+    }
+
+    private suspend fun awaitActiveMozillaImmediateWorkIfAny() {
+        val wm = WorkManager.getInstance(context.applicationContext)
+        val initialInfos = wm.getWorkInfosForUniqueWorkFlow(MOZILLA_IMMEDIATE_WORK_NAME).first()
+        if (initialInfos.any { it.state == WorkInfo.State.RUNNING }) {
+            withTimeoutOrNull(15_000L) {
+                wm.getWorkInfosForUniqueWorkFlow(MOZILLA_IMMEDIATE_WORK_NAME).first { infos ->
+                    infos.none { it.state == WorkInfo.State.RUNNING }
                 }
             }
         }
@@ -871,6 +914,8 @@ class MozillaSyncCoordinator(
                             prefs.setSyncLastTimestampMs(0L)
                             prefs.setSyncLocalHistorySeeded(false)
                             prefs.setSyncZenSeparateEssentials(null)
+                            prefs.setSyncHasConnectedAccount(false)
+                            zenClient.invalidateAuthCache()
                             clearIsolatedFxAAuthProfile()
 
                             _status.update {
@@ -928,9 +973,31 @@ class MozillaSyncCoordinator(
             bookmarkMirrorMutex.withLock {
                 if (authGeneration.get() != gen || accountManager?.connectedAccount() == null) return@withLock
                 val folderCache = mutableMapOf<String, String>()
+                val pendingUpdates = ArrayList<Pair<BookmarkEntity, String>>(minOf(entities.size, 64))
+
+                suspend fun flushChunk() {
+                    if (pendingUpdates.isEmpty()) return
+                    val toVerify = pendingUpdates.toList()
+                    pendingUpdates.clear()
+                    val cancelledGuids = mutableListOf<String>()
+                    db.withTransaction {
+                        val validUpserts = ArrayList<BookmarkEntity>(toVerify.size)
+                        for ((updatedEntity, createdGuid) in toVerify) {
+                            if (db.bookmarkDao().findById(updatedEntity.id) == null) {
+                                cancelledGuids += createdGuid
+                            } else {
+                                validUpserts += updatedEntity
+                            }
+                        }
+                        if (validUpserts.isNotEmpty()) {
+                            db.bookmarkDao().upsertAll(validUpserts)
+                        }
+                    }
+                    cancelledGuids.forEach { guid -> runCatching { store.deleteNode(guid) } }
+                }
+
                 for (entity in entities) {
                     if (authGeneration.get() != gen) break
-                    // Skip if user already deleted this bookmark before the mirror coroutine ran
                     val stillPresent = db.bookmarkDao().findById(entity.id) ?: continue
                     if (stillPresent.syncGuid != null) continue
                     val parentGuid = folderCache.getOrPut(stillPresent.folder) {
@@ -943,20 +1010,17 @@ class MozillaSyncCoordinator(
                         position = null
                     ).getOrNull() ?: continue
                     if (authGeneration.get() != gen) break
-                    // Re-verify row wasn't deleted during Places write to avoid resurrection,
-                    // then persist immediately so a concurrent user delete before batch end
-                    // sees syncGuid and is never resurrected by a deferred chunk flush.
-                    if (db.bookmarkDao().findById(stillPresent.id) == null) {
-                        runCatching { store.deleteNode(createdGuid) }
-                        continue
+                    pendingUpdates += stillPresent.copy(
+                        syncGuid = createdGuid,
+                        parentGuid = parentGuid,
+                        updatedAt = System.currentTimeMillis()
+                    ) to createdGuid
+                    if (pendingUpdates.size >= 64) {
+                        flushChunk()
                     }
-                    db.bookmarkDao().upsert(
-                        stillPresent.copy(
-                            syncGuid = createdGuid,
-                            parentGuid = parentGuid,
-                            updatedAt = System.currentTimeMillis()
-                        )
-                    )
+                }
+                if (authGeneration.get() == gen) {
+                    flushChunk()
                 }
             }
         }
@@ -1073,9 +1137,12 @@ class MozillaSyncCoordinator(
         val allBookmarks = db.bookmarkDao().getAll()
         val claimedGuids = allBookmarks.mapNotNullTo(mutableSetOf()) { it.syncGuid }
         val localUnsynced = allBookmarks.filter { it.syncGuid == null }
+        if (localUnsynced.isEmpty()) return
         val folderCache = mutableMapOf<String, String>()
+        data class StagedPush(val entity: BookmarkEntity, val guid: String, val createdNew: Boolean)
+        val staged = ArrayList<StagedPush>(localUnsynced.size)
+
         for (bm in localUnsynced) {
-            // Skip if user deleted the bookmark right before pushing
             val currentRow = db.bookmarkDao().findById(bm.id) ?: continue
             if (currentRow.syncGuid != null) continue
             val existingRemote = store.getBookmarksWithUrl(currentRow.url).getOrNull()
@@ -1083,32 +1150,43 @@ class MozillaSyncCoordinator(
                 .firstOrNull { it.guid !in claimedGuids }
             val resolvedParentGuid: String
             val guid: String?
+            val createdNew: Boolean
             if (existingRemote != null) {
                 guid = existingRemote.guid
                 resolvedParentGuid = existingRemote.parentGuid ?: BookmarkRoot.Mobile.id
+                createdNew = false
             } else {
                 resolvedParentGuid = folderCache.getOrPut(currentRow.folder) {
                     ensurePlacesFolderPath(store, currentRow.folder)
                 }
                 guid = store.addItem(resolvedParentGuid, currentRow.url, currentRow.title, null).getOrNull()
+                createdNew = true
             }
             if (guid != null) {
-                // Re-verify row wasn't deleted while adding to Places to prevent resurrection
-                if (db.bookmarkDao().findById(currentRow.id) == null) {
-                    if (existingRemote == null) {
-                        runCatching { store.deleteNode(guid) }
-                    }
-                    continue
-                }
                 claimedGuids += guid
-                db.bookmarkDao().upsert(
-                    currentRow.copy(
-                        syncGuid = guid,
-                        parentGuid = resolvedParentGuid
-                    )
+                staged += StagedPush(
+                    entity = currentRow.copy(syncGuid = guid, parentGuid = resolvedParentGuid),
+                    guid = guid,
+                    createdNew = createdNew
                 )
             }
         }
+        if (staged.isEmpty()) return
+        val rollbackGuids = mutableListOf<String>()
+        db.withTransaction {
+            val validUpserts = ArrayList<BookmarkEntity>(staged.size)
+            for (item in staged) {
+                if (db.bookmarkDao().findById(item.entity.id) == null) {
+                    if (item.createdNew) rollbackGuids += item.guid
+                } else {
+                    validUpserts += item.entity
+                }
+            }
+            if (validUpserts.isNotEmpty()) {
+                db.bookmarkDao().upsertAll(validUpserts)
+            }
+        }
+        rollbackGuids.forEach { guid -> runCatching { store.deleteNode(guid) } }
     }
 
     private suspend fun pushRecentLocalHistoryToPlaces() {
@@ -1291,11 +1369,12 @@ class MozillaSyncCoordinator(
                 db.bookmarkDao().upsertAll(upserts)
             }
             // Delete only bookmarks previously synced that were removed remotely
-            for (existing in existingAll) {
+            val idsToDelete = existingAll.mapNotNull { existing ->
                 val sg = existing.syncGuid
-                if (sg != null && sg !in seenGuids) {
-                    db.bookmarkDao().deleteById(existing.id)
-                }
+                if (sg != null && sg !in seenGuids) existing.id else null
+            }
+            for (chunk in idsToDelete.chunked(400)) {
+                db.bookmarkDao().deleteByIds(chunk)
             }
             seenGuids.size
         }
@@ -1307,7 +1386,12 @@ class MozillaSyncCoordinator(
         val httpVisits = visits.filter { it.url.startsWith("http://") || it.url.startsWith("https://") }
         if (httpVisits.isEmpty()) return 0
 
-        val distinctUrls = httpVisits.map { it.url }.distinct()
+        val visitCountsInWindow = HashMap<String, Int>(httpVisits.size)
+        for (v in httpVisits) {
+            visitCountsInWindow[v.url] = (visitCountsInWindow[v.url] ?: 0) + 1
+        }
+
+        val distinctUrls = visitCountsInWindow.keys.toList()
         val existing = buildMap {
             for (chunk in distinctUrls.chunked(200)) {
                 db.historyDao().findByUrls(chunk).forEach { put(it.url, it) }
@@ -1321,10 +1405,11 @@ class MozillaSyncCoordinator(
                 ?: prev?.title
                 ?: OmniboxEngine.extractHost(v.url)
             val visitTime = maxOf(v.visitTime, prev?.lastVisitedAt ?: 0L)
+            val remoteWindowCount = visitCountsInWindow[v.url] ?: 1
             deduped[v.url] = HistoryEntity(
                 url = v.url,
                 title = resolvedTitle,
-                visitCount = maxOf(1, prev?.visitCount ?: 1),
+                visitCount = maxOf(remoteWindowCount, prev?.visitCount ?: 0).coerceAtLeast(1),
                 lastVisitedAt = visitTime
             )
         }

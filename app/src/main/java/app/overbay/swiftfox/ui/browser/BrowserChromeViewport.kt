@@ -168,6 +168,8 @@ internal fun ExitingTabThumbnailFallback(
 internal interface FrameCallbackScheduler {
     fun postOnNextFrame(action: Runnable)
     fun cancelFrameCallback(action: Runnable)
+    fun postDelayedSettler(delayMs: Long, action: Runnable): Boolean = false
+    fun cancelDelayedSettler(action: Runnable) {}
 }
 
 internal class ToolbarCollapseBridge(
@@ -192,10 +194,34 @@ internal class ToolbarCollapseBridge(
     var snapJob: Job? = null
 
     private var flingSettleJob: Job? = null
+    private var flingSettleHost: FrameCallbackScheduler? = null
+    private var settleEnabledProvider: (() -> Boolean)? = null
+    private var settleForceExpandedProvider: (() -> Boolean)? = null
+    private var settleHostActiveProvider: (() -> Boolean)? = null
+    private var settleAnimateCallback: ((Float) -> Unit)? = null
+    private val flingSettleRunnable = Runnable {
+        flingSettleHost = null
+        val hostActive = settleHostActiveProvider?.invoke() ?: false
+        if (hostActive && !isUserDragging && snapJob?.isActive != true) {
+            val current = controller.collapseProgress
+            if (current > 0.001f && current < 0.999f) {
+                val settledTarget = controller.resolveSettledSnapTarget(
+                    enabled = settleEnabledProvider?.invoke() ?: false,
+                    forceExpanded = settleForceExpandedProvider?.invoke() ?: true
+                )
+                settleAnimateCallback?.invoke(settledTarget)
+            }
+        }
+    }
+
     private var pendingFlingProgress: Float? = null
     private var pendingFlingRunnable: Runnable? = null
     private var pendingFlingHost: FrameCallbackScheduler? = null
     private var pendingFlingIsSnap: Boolean = false
+    private var snapshotFlushQueuedOnFrame: Boolean = false
+    private val resetSnapshotFlushGuard = Runnable {
+        snapshotFlushQueuedOnFrame = false
+    }
 
     fun effectiveTravelDistancePx(): Float = when {
         topBarHeightPx > 0 -> topBarHeightPx.toFloat()
@@ -227,6 +253,8 @@ internal class ToolbarCollapseBridge(
     fun cancelFlingWork() {
         flingSettleJob?.cancel()
         flingSettleJob = null
+        flingSettleHost?.cancelDelayedSettler(flingSettleRunnable)
+        flingSettleHost = null
         val runnable = pendingFlingRunnable
         val host = pendingFlingHost
         pendingFlingRunnable = null
@@ -330,19 +358,20 @@ internal class ToolbarCollapseBridge(
 
         flingSettleJob?.cancel()
         flingSettleJob = null
+        flingSettleHost?.cancelDelayedSettler(flingSettleRunnable)
+        flingSettleHost = null
         if (next > 0.001f && next < 0.999f) {
-            flingSettleJob = coroutineScope.launch {
-                delay(settleDelayMs)
-                flingSettleJob = null
-                if (isHostActive() && !isUserDragging && snapJob?.isActive != true) {
-                    val current = controller.collapseProgress
-                    if (current > 0.001f && current < 0.999f) {
-                        val settledTarget = controller.resolveSettledSnapTarget(
-                            enabled = isEnabledProvider(),
-                            forceExpanded = isForceExpandedProvider()
-                        )
-                        onAnimateCollapseTo(settledTarget)
-                    }
+            settleEnabledProvider = isEnabledProvider
+            settleForceExpandedProvider = isForceExpandedProvider
+            settleHostActiveProvider = isHostActive
+            settleAnimateCallback = onAnimateCollapseTo
+            if (host.postDelayedSettler(settleDelayMs, flingSettleRunnable)) {
+                flingSettleHost = host
+            } else {
+                flingSettleJob = coroutineScope.launch {
+                    delay(settleDelayMs)
+                    flingSettleJob = null
+                    flingSettleRunnable.run()
                 }
             }
         }
@@ -384,9 +413,16 @@ internal class ToolbarCollapseBridge(
             expandedViewport = expandedViewport
         )
         if (changed) {
-            // Flush Compose layer observers synchronously so topBar/bottomBar RenderNodes update
-            // on the exact same VSync frame as WebView.translationY (preventing 1-frame overlap).
-            Snapshot.sendApplyNotifications()
+            // Flush Compose layer observers synchronously (coalesced to at most once per VSync frame
+            // when driven by a live WebViewContainer) so topBar/bottomBar RenderNodes update cleanly.
+            val container = activeWebContainer
+            if (container == null) {
+                Snapshot.sendApplyNotifications()
+            } else if (!snapshotFlushQueuedOnFrame) {
+                snapshotFlushQueuedOnFrame = true
+                Snapshot.sendApplyNotifications()
+                container.postOnNextFrame(resetSnapshotFlushGuard)
+            }
         }
     }
 }
@@ -578,6 +614,16 @@ internal class WebViewContainer(context: Context) : FrameLayout(context), FrameC
         removeCallbacks(action)
     }
 
+    override fun postDelayedSettler(delayMs: Long, action: Runnable): Boolean {
+        removeCallbacks(action)
+        postDelayed(action, delayMs)
+        return true
+    }
+
+    override fun cancelDelayedSettler(action: Runnable) {
+        removeCallbacks(action)
+    }
+
     private var topBarHeightPx: Int = 0
     private var bottomBarHeightPx: Int = 0
     var currentCollapseProgress: Float = 0f
@@ -592,18 +638,33 @@ internal class WebViewContainer(context: Context) : FrameLayout(context), FrameC
     var onPullToRefreshProgress: ((pullPx: Float, isDragging: Boolean) -> Unit)? = null
     var onPullToRefreshTrigger: (() -> Unit)? = null
 
-    private val density = context.resources.displayMetrics.density
-    private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
-    val minFlingVelocityPx = ViewConfiguration.get(context).scaledMinimumFlingVelocity.toFloat()
-    private val maxFlingVelocityPx = ViewConfiguration.get(context).scaledMaximumFlingVelocity.toFloat()
+    private var density = context.resources.displayMetrics.density
+    private var touchSlop = ViewConfiguration.get(context).scaledTouchSlop
+    var minFlingVelocityPx = ViewConfiguration.get(context).scaledMinimumFlingVelocity.toFloat()
+        private set
+    private var maxFlingVelocityPx = ViewConfiguration.get(context).scaledMaximumFlingVelocity.toFloat()
 
-    private val gestureState = VerticalDragGestureState(touchSlop)
+    private var gestureState = VerticalDragGestureState(touchSlop)
     private val pullToRefreshController = PullToRefreshController(
         triggerDistancePx = 72f * density,
         showDeadzonePx = 8f * density
     )
     private var pullClaimedTouch: Boolean = false
     private var velocityTracker: VelocityTracker? = null
+
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration?) {
+        super.onConfigurationChanged(newConfig)
+        val newDensity = resources.displayMetrics.density
+        if (newDensity != density) {
+            density = newDensity
+            val vc = ViewConfiguration.get(context)
+            touchSlop = vc.scaledTouchSlop
+            minFlingVelocityPx = vc.scaledMinimumFlingVelocity.toFloat()
+            maxFlingVelocityPx = vc.scaledMaximumFlingVelocity.toFloat()
+            gestureState = VerticalDragGestureState(touchSlop)
+            pullToRefreshController.updateDensityMetrics(72f * newDensity, 8f * newDensity)
+        }
+    }
 
     fun clearGestureCallbacks() {
         cancelActivePullToRefresh()

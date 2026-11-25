@@ -36,17 +36,37 @@ sealed class ZenFetchResult {
  * Sync Storage Server Hawk credentials via Mozilla's Token Server.
  */
 class Sync15SpacesClient(
-    httpClient: OkHttpClient
+    httpClientProvider: () -> OkHttpClient
 ) {
+    constructor(httpClient: OkHttpClient) : this({ httpClient })
+
     // Dedicated client that shares connection pool/dispatcher but never follows HTTP/SSL redirects
     // so Bearer/Hawk credentials and X-KeyID can never leak across redirect boundaries.
-    private val noRedirectClient: OkHttpClient = httpClient.newBuilder()
-        .followRedirects(false)
-        .followSslRedirects(false)
-        .build()
+    private val noRedirectClient: OkHttpClient by lazy {
+        httpClientProvider().newBuilder()
+            .followRedirects(false)
+            .followSslRedirects(false)
+            .build()
+    }
     private val json = Json { ignoreUnknownKeys = true }
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
     private val userAgent = "Swiftfox/${BuildConfig.VERSION_NAME} (Android)"
+
+    private data class CachedAuthContext(
+        val cacheKey: String,
+        val createdAtNano: Long,
+        val session: TokenServerSession,
+        val keyRing: CollectionKeyRing?
+    )
+
+    private val authCacheLock = Any()
+    private var cachedAuth: CachedAuthContext? = null
+
+    fun invalidateAuthCache() {
+        synchronized(authCacheLock) {
+            cachedAuth = null
+        }
+    }
 
     private class TokenServerSession(
         val apiEndpoint: String,
@@ -79,19 +99,45 @@ class Sync15SpacesClient(
             headers.entries.firstOrNull { it.key.equals(name, ignoreCase = true) }?.value
     }
 
+    private suspend fun getOrFetchSessionAndKeys(
+        kid: String,
+        fxaAccessToken: String,
+        syncKeyBase64: String,
+        tokenServerUrl: String
+    ): Pair<TokenServerSession, CollectionKeyRing?> {
+        val nowNano = System.nanoTime()
+        val key = "$kid|${fxaAccessToken.hashCode()}|${syncKeyBase64.hashCode()}|$tokenServerUrl"
+        synchronized(authCacheLock) {
+            val hit = cachedAuth
+            if (hit != null && hit.cacheKey == key && (nowNano - hit.createdAtNano) in 0L until AUTH_CACHE_TTL_NANOS) {
+                return hit.session to hit.keyRing
+            }
+        }
+        val session = exchangeTokenServerCreds(kid, fxaAccessToken, tokenServerUrl)
+        val keyRing = fetchCollectionKeys(session, SyncCrypto.fromKSyncBase64(syncKeyBase64))
+        synchronized(authCacheLock) {
+            cachedAuth = CachedAuthContext(
+                cacheKey = key,
+                createdAtNano = System.nanoTime(),
+                session = session,
+                keyRing = keyRing
+            )
+        }
+        return session to keyRing
+    }
+
     suspend fun fetchZenSnapshot(
         kid: String,
         fxaAccessToken: String,
         syncKeyBase64: String,
         tokenServerUrl: String
     ): ZenFetchResult = withContext(Dispatchers.IO) {
-        val session = exchangeTokenServerCreds(kid, fxaAccessToken, tokenServerUrl)
+        val (session, cachedKeyRing) = getOrFetchSessionAndKeys(kid, fxaAccessToken, syncKeyBase64, tokenServerUrl)
         val collections = fetchInfoCollections(session)
         if (!collections.containsKey(ZenSpacesCodec.SPACES_COLLECTION)) {
             return@withContext ZenFetchResult.CollectionAbsent
         }
-        val keyRing = fetchCollectionKeys(session, SyncCrypto.fromKSyncBase64(syncKeyBase64))
-            ?: return@withContext ZenFetchResult.CollectionAbsent
+        val keyRing = cachedKeyRing ?: return@withContext ZenFetchResult.CollectionAbsent
 
         val prefsState = if (collections.containsKey(ZenSpacesCodec.PREFS_COLLECTION)) {
             val (prefsRecords, _) = fetchCollectionWithLastModified(
@@ -118,7 +164,10 @@ class Sync15SpacesClient(
             collection = ZenSpacesCodec.SPACES_COLLECTION,
             limit = 2500
         )
-        val decryptResult = decryptBsoList(spaceRecords, keyRing.keysFor(ZenSpacesCodec.SPACES_COLLECTION))
+        val sortedSpaceRecords = spaceRecords.sortedBy {
+            (it["modified"] as? JsonPrimitive)?.content?.toDoubleOrNull() ?: 0.0
+        }
+        val decryptResult = decryptBsoList(sortedSpaceRecords, keyRing.keysFor(ZenSpacesCodec.SPACES_COLLECTION))
         if ("layout" in decryptResult.failedIds) {
             throw SyncCryptoException("Could not decrypt Zen Spaces layout record")
         }
@@ -147,8 +196,8 @@ class Sync15SpacesClient(
                     cleanUrl.startsWith("https://", ignoreCase = true)
             ) { "Only http:// and https:// URLs can be sent to Zen Space" }
 
-            val session = exchangeTokenServerCreds(kid, fxaAccessToken, tokenServerUrl)
-            val keyRing = fetchCollectionKeys(session, SyncCrypto.fromKSyncBase64(syncKeyBase64))
+            val (session, cachedKeyRing) = getOrFetchSessionAndKeys(kid, fxaAccessToken, syncKeyBase64, tokenServerUrl)
+            val keyRing = cachedKeyRing
                 ?: throw IOException("Sync encryption keys are not initialized on this account")
             val keys = keyRing.keysFor(ZenSpacesCodec.SPACES_COLLECTION)
 
@@ -503,6 +552,9 @@ class Sync15SpacesClient(
             }
         }
         if (resp.code !in 200..299 && resp.code !in allowCodes) {
+            if (resp.code == 401) {
+                invalidateAuthCache()
+            }
             throw IOException("Sync storage HTTP ${resp.code} on $path")
         }
         return resp
@@ -527,7 +579,25 @@ class Sync15SpacesClient(
                 for (name in response.headers.names()) {
                     response.header(name)?.let { headers[name] = it }
                 }
-                val body = response.body.string()
+                val contentLen = response.body.contentLength()
+                if (contentLen > MAX_SYNC_RESPONSE_BYTES) {
+                    throw IOException("Sync response exceeds safety size limit")
+                }
+                val body = response.body.byteStream().use { stream ->
+                    val out = java.io.ByteArrayOutputStream()
+                    val buf = ByteArray(16 * 1024)
+                    var total = 0
+                    while (true) {
+                        val read = stream.read(buf)
+                        if (read == -1) break
+                        total += read
+                        if (total > MAX_SYNC_RESPONSE_BYTES) {
+                            throw IOException("Sync response exceeds safety size limit")
+                        }
+                        out.write(buf, 0, read)
+                    }
+                    out.toString(Charsets.UTF_8.name())
+                }
                 return HttpResult(response.code, body, headers)
             }
         } finally {
@@ -537,6 +607,8 @@ class Sync15SpacesClient(
 
     companion object {
         private const val SYNC_15_TOKEN_SUFFIX = "/1.0/sync/1.5"
+        private const val AUTH_CACHE_TTL_NANOS = 4L * 60L * 1_000_000_000L
+        private const val MAX_SYNC_RESPONSE_BYTES = 32 * 1024 * 1024
         private val HAWK_TS_REGEX = Regex("""\bts\s*=\s*"?(\d+)"?""", RegexOption.IGNORE_CASE)
 
         /**

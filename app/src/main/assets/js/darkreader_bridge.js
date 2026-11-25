@@ -1,6 +1,13 @@
-(function (runtimeKey, bridgeToken, createAmoledController) {
+(function (runtimeKey, bridgeToken, createAmoledController, injectedDarkReader) {
   if (!runtimeKey || !bridgeToken || Object.prototype.hasOwnProperty.call(window, runtimeKey)) {
     return;
+  }
+
+  function resolveDarkReader() {
+    if (injectedDarkReader && typeof injectedDarkReader.enable === 'function') {
+      return injectedDarkReader;
+    }
+    return typeof DarkReader !== 'undefined' ? DarkReader : undefined;
   }
 
   var PREPAINT_STYLE_ID = 'swiftfox-prepaint-dark';
@@ -227,6 +234,8 @@
   }
 
   function enableDarkReader(config) {
+    var dr = resolveDarkReader();
+    if (!dr || typeof dr.enable !== 'function') return;
     var brightness = typeof config.brightness === 'number' ? config.brightness : 100;
     var contrast = typeof config.contrast === 'number' ? config.contrast : 100;
     var sepia = typeof config.sepia === 'number' ? config.sepia : 0;
@@ -234,10 +243,10 @@
     // without rewriting injected stylesheets when background/brightness/contrast/sepia change.
     // Disable first whenever updating an already-active instance so AMOLED & sliders apply live.
     teardownAmoledVarOverride();
-    if (isDarkReaderActive()) {
-      DarkReader.disable();
+    if (isDarkReaderActive() && typeof dr.disable === 'function') {
+      dr.disable();
     }
-    DarkReader.enable({
+    dr.enable({
       mode: 1,
       brightness: brightness,
       contrast: contrast,
@@ -297,15 +306,17 @@
 
   function disableDarkReaderSafe() {
     teardownAmoledVarOverride();
-    if (typeof DarkReader !== 'undefined' && typeof DarkReader.disable === 'function') {
-      DarkReader.disable();
+    var dr = resolveDarkReader();
+    if (dr && typeof dr.disable === 'function') {
+      dr.disable();
     }
   }
 
   function isDarkReaderActive() {
-    return typeof DarkReader !== 'undefined' &&
-      typeof DarkReader.isEnabled === 'function' &&
-      DarkReader.isEnabled();
+    var dr = resolveDarkReader();
+    return !!dr &&
+      typeof dr.isEnabled === 'function' &&
+      dr.isEnabled();
   }
 
   function teardownNativeDarkObserver() {
@@ -480,14 +491,15 @@
       if (!config || typeof config !== 'object') return;
       lastConfig = config;
 
-      if (typeof DarkReader === 'undefined' || typeof DarkReader.enable !== 'function') {
+      var dr = resolveDarkReader();
+      if (!dr || typeof dr.enable !== 'function') {
         clearPrepaintStyle();
         return;
       }
 
-      if (!fetchMethodSet && typeof DarkReader.setFetchMethod === 'function' &&
+      if (!fetchMethodSet && typeof dr.setFetchMethod === 'function' &&
           typeof window.fetch === 'function') {
-        DarkReader.setFetchMethod(window.fetch.bind(window));
+        dr.setFetchMethod(window.fetch.bind(window));
         fetchMethodSet = true;
       }
 

@@ -29,6 +29,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
@@ -109,7 +110,7 @@ fun <T> SwiftfoxSegmentedControl(
                     else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.42f)
                 }
 
-                val containerColor by animateColorAsState(
+                val containerColorState = animateColorAsState(
                     targetValue = targetContainer,
                     animationSpec = if (reduceMotion) snap() else tween(durationMillis = 160),
                     label = "segmentContainer"
@@ -134,7 +135,12 @@ fun <T> SwiftfoxSegmentedControl(
                         )
                         .padding(3.dp)
                         .clip(RoundedCornerShape(14.dp))
-                        .background(containerColor)
+                        .drawBehind {
+                            val bg = containerColorState.value
+                            if (bg.alpha > 0f) {
+                                drawRect(bg)
+                            }
+                        }
                         .padding(
                             horizontal = if (isDense) 6.dp else 10.dp,
                             vertical = 8.dp

@@ -24,14 +24,15 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.coroutineContext
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.IOException
@@ -42,37 +43,57 @@ import java.util.Locale
 import java.util.UUID
 
 class DownloadCoordinator(
-    private val context: Context,
+    context: Context,
     private val downloadRecordDao: DownloadRecordDao,
-    private val httpClient: OkHttpClient
+    private val httpClientProvider: () -> OkHttpClient,
+    private val downloadScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 ) {
+    constructor(
+        context: Context,
+        downloadRecordDao: DownloadRecordDao,
+        httpClient: OkHttpClient,
+        downloadScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    ) : this(context, downloadRecordDao, { httpClient }, downloadScope)
 
+    private val appContext: Context = context.applicationContext ?: context
+
+    private val noRedirectClient: OkHttpClient by lazy {
+        httpClientProvider().newBuilder()
+            .followRedirects(false)
+            .followSslRedirects(false)
+            .build()
+    }
+
+    @Volatile
     private var completionReceiverRegistered = false
 
     fun registerCompletionReceiver(scope: CoroutineScope) {
         if (completionReceiverRegistered) return
-        val receiver = object : BroadcastReceiver() {
-            override fun onReceive(ctx: Context?, intent: Intent?) {
-                if (intent?.action != DownloadManager.ACTION_DOWNLOAD_COMPLETE) return
-                val completedId = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L)
-                if (completedId <= 0L) return
-                scope.launch {
-                    refreshStatusForSystemId(completedId)
+        synchronized(this) {
+            if (completionReceiverRegistered) return
+            val receiver = object : BroadcastReceiver() {
+                override fun onReceive(ctx: Context?, intent: Intent?) {
+                    if (intent?.action != DownloadManager.ACTION_DOWNLOAD_COMPLETE) return
+                    val completedId = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L)
+                    if (completedId <= 0L) return
+                    scope.launch {
+                        refreshStatusForSystemId(completedId)
+                    }
                 }
             }
+            val registered = runCatching {
+                ContextCompat.registerReceiver(
+                    appContext,
+                    receiver,
+                    IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE),
+                    ContextCompat.RECEIVER_EXPORTED
+                )
+                true
+            }.onFailure { err ->
+                Log.w("DownloadCoordinator", "Failed to register download receiver: ${err.message}")
+            }.getOrDefault(false)
+            completionReceiverRegistered = registered
         }
-        val registered = runCatching {
-            ContextCompat.registerReceiver(
-                context,
-                receiver,
-                IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE),
-                ContextCompat.RECEIVER_EXPORTED
-            )
-            true
-        }.onFailure { err ->
-            Log.w("DownloadCoordinator", "Failed to register download receiver: ${err.message}")
-        }.getOrDefault(false)
-        completionReceiverRegistered = registered
     }
 
     private fun cookiesForProfile(
@@ -101,7 +122,7 @@ class DownloadCoordinator(
 
     private fun queryInsertedDisplayName(uri: Uri, fallback: String): String {
         return runCatching {
-            context.contentResolver.query(
+            appContext.contentResolver.query(
                 uri,
                 arrayOf(MediaStore.Downloads.DISPLAY_NAME),
                 null,
@@ -122,40 +143,92 @@ class DownloadCoordinator(
         isPrivate: Boolean = false
     ): Result<DownloadRecordEntity> {
         return try {
+            val parsedCheck = url.toHttpUrlOrNull()
+                ?: throw IOException("Unsupported download URL")
+            if (parsedCheck.scheme != "http" && parsedCheck.scheme != "https") {
+                throw IOException("Unsupported download scheme")
+            }
+
             // ProfileStore.getInstance() requires the Main thread on Android WebView multi-profile.
-            val cookies = withContext(Dispatchers.Main) {
+            val initialCookies = withContext(Dispatchers.Main) {
                 cookiesForProfile(url, profileName, isPrivate)
             }
-            val record = withContext(Dispatchers.IO) {
-                val safeMime = normalizeMimeType(mimeType)
-                val fileName = sanitizeFileName(
-                    extractContentDispositionFileName(contentDisposition)
-                        ?: URLUtil.guessFileName(url, contentDisposition, safeMime)
+            val safeMime = normalizeMimeType(mimeType)
+            val fileName = sanitizeFileName(
+                extractContentDispositionFileName(contentDisposition)
+                    ?: URLUtil.guessFileName(url, contentDisposition, safeMime)
+            )
+
+            // Use isolated OkHttp streaming for Private tabs (never persisted in system DownloadManager)
+            // and isolated container profiles (so per-hop container cookies stay strictly scoped).
+            // Standard default-profile downloads use native Android DownloadManager with Cookie header!
+            val requiresIsolatedStream = isPrivate || profileName != BrowserSession.DEFAULT_PROFILE_NAME
+            if (requiresIsolatedStream) {
+                val initialEntity = DownloadRecordEntity(
+                    id = UUID.randomUUID().toString(),
+                    fileName = fileName,
+                    url = if (isPrivate) "" else url.take(512),
+                    mimeType = safeMime,
+                    systemDownloadId = -1L,
+                    status = "Downloading"
                 )
-
-                if (isPrivate || !cookies.isNullOrBlank()) {
-                    return@withContext downloadViaOkHttp(
-                        url = url,
-                        initialFileName = fileName,
-                        contentDisposition = contentDisposition,
-                        fallbackMime = safeMime,
-                        userAgent = userAgent,
-                        cookies = cookies,
-                        isPrivate = isPrivate
-                    )
+                if (!isPrivate) {
+                    withContext(Dispatchers.IO) {
+                        downloadRecordDao.upsert(initialEntity)
+                    }
                 }
+                downloadScope.launch {
+                    try {
+                        val completed = downloadViaOkHttp(
+                            recordId = initialEntity.id,
+                            createdAt = initialEntity.createdAt,
+                            url = url,
+                            initialFileName = fileName,
+                            contentDisposition = contentDisposition,
+                            fallbackMime = safeMime,
+                            userAgent = userAgent,
+                            initialCookies = initialCookies,
+                            profileName = profileName,
+                            isPrivate = isPrivate
+                        )
+                        if (!isPrivate) {
+                            downloadRecordDao.upsert(completed)
+                        }
+                    } catch (ce: CancellationException) {
+                        throw ce
+                    } catch (err: Throwable) {
+                        Log.w("DownloadCoordinator", "Isolated download failed: ${err.message}")
+                        if (!isPrivate) {
+                            runCatching {
+                                downloadRecordDao.upsert(initialEntity.copy(status = "Failed"))
+                            }
+                        }
+                    }
+                }
+                return Result.success(initialEntity)
+            }
 
+            val record = withContext(Dispatchers.IO) {
                 val request = DownloadManager.Request(Uri.parse(url)).apply {
                     setTitle(fileName)
                     setDescription("Downloading with Swiftfox")
                     setMimeType(safeMime)
                     if (userAgent.isNotBlank()) {
-                        addRequestHeader("User-Agent", userAgent)
+                        val safeUa = sanitizeHeaderValue(userAgent)
+                        if (safeUa.isNotEmpty()) {
+                            addRequestHeader("User-Agent", safeUa)
+                        }
+                    }
+                    if (!initialCookies.isNullOrBlank()) {
+                        val safeCookies = sanitizeHeaderValue(initialCookies)
+                        if (safeCookies.isNotEmpty()) {
+                            addRequestHeader("Cookie", safeCookies)
+                        }
                     }
                     setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
                     setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
                 }
-                val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+                val dm = appContext.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
                 val downloadId = dm.enqueue(request)
                 val immediateStatus = queryDownloadManagerStatus(dm, downloadId) ?: "Downloading"
                 val entity = DownloadRecordEntity(
@@ -186,30 +259,32 @@ class DownloadCoordinator(
     }
 
     private suspend fun downloadViaOkHttp(
+        recordId: String,
+        createdAt: Long,
         url: String,
         initialFileName: String,
         contentDisposition: String?,
         fallbackMime: String,
         userAgent: String,
-        cookies: String?,
+        initialCookies: String?,
+        profileName: String,
         isPrivate: Boolean
     ): DownloadRecordEntity {
         val initialParsed = url.toHttpUrlOrNull()
             ?: throw IOException("Unsupported download URL")
-        val initialScheme = initialParsed.scheme.lowercase(Locale.ROOT)
-        val initialHost = initialParsed.host.lowercase(Locale.ROOT)
-        val initialPort = initialParsed.port
-        val noRedirectClient = httpClient.newBuilder()
-            .followRedirects(false)
-            .followSslRedirects(false)
-            .build()
 
         var currentUrl = initialParsed
         var hops = 0
         while (hops <= 5) {
-            val isSameOrigin = currentUrl.scheme.lowercase(Locale.ROOT) == initialScheme &&
-                currentUrl.host.lowercase(Locale.ROOT) == initialHost &&
-                currentUrl.port == initialPort
+            // Query the profile's RFC 6265 CookieManager per redirect hop on Main thread so parent-domain
+            // cookies (e.g. `.example.com` -> `cdn.example.com`) work while cross-site redirects stay isolated.
+            val hopCookies = if (hops == 0) {
+                initialCookies
+            } else {
+                withContext(Dispatchers.Main) {
+                    cookiesForProfile(currentUrl.toString(), profileName, isPrivate)
+                }
+            }
             val reqBuilder = Request.Builder()
                 .url(currentUrl)
                 .get()
@@ -219,8 +294,8 @@ class DownloadCoordinator(
                     reqBuilder.header("User-Agent", safeUa)
                 }
             }
-            if (!cookies.isNullOrBlank() && isSameOrigin) {
-                val safeCookies = sanitizeHeaderValue(cookies)
+            if (!hopCookies.isNullOrBlank()) {
+                val safeCookies = sanitizeHeaderValue(hopCookies)
                 if (safeCookies.isNotEmpty()) {
                     reqBuilder.header("Cookie", safeCookies)
                 }
@@ -267,13 +342,13 @@ class DownloadCoordinator(
                         put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
                         put(MediaStore.Downloads.IS_PENDING, 1)
                     }
-                    val resolver = context.contentResolver
+                    val resolver = appContext.contentResolver
                     val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
                         ?: throw IOException("Could not create MediaStore Downloads entry")
                     try {
                         resolver.openOutputStream(uri)?.use { out ->
                             body.byteStream().use { input ->
-                                val buffer = ByteArray(8192)
+                                val buffer = ByteArray(16 * 1024)
                                 while (true) {
                                     coroutineContext.ensureActive()
                                     val read = input.read(buffer)
@@ -295,18 +370,15 @@ class DownloadCoordinator(
                     }
 
                     val actualDisplayName = queryInsertedDisplayName(uri, resolvedName)
-                    val entity = DownloadRecordEntity(
-                        id = UUID.randomUUID().toString(),
+                    return DownloadRecordEntity(
+                        id = recordId,
                         fileName = actualDisplayName,
                         url = if (isPrivate) "" else currentUrl.toString().take(512),
                         mimeType = resolvedMime,
                         systemDownloadId = -1L,
-                        status = "Saved to Downloads"
+                        status = "Saved to Downloads",
+                        createdAt = createdAt
                     )
-                    if (!isPrivate) {
-                        downloadRecordDao.upsert(entity)
-                    }
-                    return entity
                 }
             } finally {
                 cancelHandle?.dispose()
@@ -323,36 +395,106 @@ class DownloadCoordinator(
         isPrivate: Boolean = false
     ): Result<DownloadRecordEntity> = withContext(Dispatchers.IO) {
         try {
-            val (resolvedMime, bytes) = decodeDataOrBase64Payload(base64Payload, mimeType)
-            val safeMime = normalizeMimeType(resolvedMime)
+            val trimmed = base64Payload.trim()
+            if (trimmed.length > (MAX_DATA_DOWNLOAD_BYTES * 4L / 3L) + 1024L) {
+                throw IOException("Download exceeds maximum supported size")
+            }
+
+            // Stream plain base64 payloads (>64 KB) directly through Base64.getMimeDecoder()
+            // into MediaStore without materializing a second 25 MB decoded ByteArray in heap.
+            val streamableBase64Slice: Pair<String, String>? = run {
+                if (trimmed.length <= 65_536) return@run null
+                if (trimmed.startsWith("data:", ignoreCase = true)) {
+                    val commaIdx = trimmed.indexOf(',')
+                    if (commaIdx <= 4) throw IllegalArgumentException("Malformed data URI payload")
+                    val meta = trimmed.substring(5, commaIdx)
+                    val isBase64 = meta.split(';').any { it.trim().equals("base64", ignoreCase = true) }
+                    val dataPart = trimmed.substring(commaIdx + 1)
+                    if (isBase64 && !dataPart.contains('%')) {
+                        val resolvedMime = meta.substringBefore(';').trim().ifBlank { mimeType }
+                        resolvedMime to dataPart
+                    } else {
+                        null
+                    }
+                } else {
+                    val base64Idx = trimmed.indexOf(";base64,", ignoreCase = true)
+                    val clean = if (base64Idx >= 0) trimmed.substring(base64Idx + 8) else trimmed.substringAfter("base64,", trimmed)
+                    mimeType to clean
+                }
+            }
+
+            val safeMime: String
             val safeName = sanitizeFileName(
                 fileName.ifBlank { "swiftfox_download_${System.currentTimeMillis()}" }
             )
+            val resolver = appContext.contentResolver
+            val uri: Uri
 
-            val values = ContentValues().apply {
-                put(MediaStore.Downloads.DISPLAY_NAME, safeName)
-                put(MediaStore.Downloads.MIME_TYPE, safeMime)
-                put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
-                put(MediaStore.Downloads.IS_PENDING, 1)
-            }
-            val resolver = context.contentResolver
-            val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-                ?: error("Could not create MediaStore Downloads entry")
+            if (streamableBase64Slice != null) {
+                safeMime = normalizeMimeType(streamableBase64Slice.first)
+                val values = ContentValues().apply {
+                    put(MediaStore.Downloads.DISPLAY_NAME, safeName)
+                    put(MediaStore.Downloads.MIME_TYPE, safeMime)
+                    put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                    put(MediaStore.Downloads.IS_PENDING, 1)
+                }
+                uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                    ?: error("Could not create MediaStore Downloads entry")
+                try {
+                    val asciiBytes = streamableBase64Slice.second.toByteArray(StandardCharsets.ISO_8859_1)
+                    resolver.openOutputStream(uri)?.use { out ->
+                        Base64.getMimeDecoder().wrap(ByteArrayInputStream(asciiBytes)).use { decodedIn ->
+                            val buf = ByteArray(16 * 1024)
+                            var total = 0
+                            while (true) {
+                                coroutineContext.ensureActive()
+                                val read = decodedIn.read(buf)
+                                if (read == -1) break
+                                total += read
+                                if (total > MAX_DATA_DOWNLOAD_BYTES) {
+                                    throw IOException("Download exceeds maximum supported size")
+                                }
+                                out.write(buf, 0, read)
+                            }
+                        }
+                    } ?: error("Could not open Downloads output stream")
 
-            try {
-                resolver.openOutputStream(uri)?.use { stream ->
-                    stream.write(bytes)
-                } ?: error("Could not open Downloads output stream")
+                    values.clear()
+                    values.put(MediaStore.Downloads.IS_PENDING, 0)
+                    resolver.update(uri, values, null, null)
+                } catch (e: CancellationException) {
+                    runCatching { resolver.delete(uri, null, null) }
+                    throw e
+                } catch (t: Throwable) {
+                    runCatching { resolver.delete(uri, null, null) }
+                    throw t
+                }
+            } else {
+                val (resolvedMime, bytes) = decodeDataOrBase64Payload(trimmed, mimeType)
+                safeMime = normalizeMimeType(resolvedMime)
+                val values = ContentValues().apply {
+                    put(MediaStore.Downloads.DISPLAY_NAME, safeName)
+                    put(MediaStore.Downloads.MIME_TYPE, safeMime)
+                    put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                    put(MediaStore.Downloads.IS_PENDING, 1)
+                }
+                uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                    ?: error("Could not create MediaStore Downloads entry")
+                try {
+                    resolver.openOutputStream(uri)?.use { stream ->
+                        stream.write(bytes)
+                    } ?: error("Could not open Downloads output stream")
 
-                values.clear()
-                values.put(MediaStore.Downloads.IS_PENDING, 0)
-                resolver.update(uri, values, null, null)
-            } catch (e: CancellationException) {
-                runCatching { resolver.delete(uri, null, null) }
-                throw e
-            } catch (t: Throwable) {
-                runCatching { resolver.delete(uri, null, null) }
-                throw t
+                    values.clear()
+                    values.put(MediaStore.Downloads.IS_PENDING, 0)
+                    resolver.update(uri, values, null, null)
+                } catch (e: CancellationException) {
+                    runCatching { resolver.delete(uri, null, null) }
+                    throw e
+                } catch (t: Throwable) {
+                    runCatching { resolver.delete(uri, null, null) }
+                    throw t
+                }
             }
 
             val actualDisplayName = queryInsertedDisplayName(uri, safeName)
@@ -375,15 +517,38 @@ class DownloadCoordinator(
         }
     }
 
+    suspend fun reconcileActiveSystemDownloads() = withContext(Dispatchers.IO) {
+        try {
+            val active = downloadRecordDao.getActiveSystemDownloads()
+            if (active.isEmpty()) return@withContext
+            val dm = appContext.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+            val statusById = queryDownloadManagerStatusesBatch(dm, active.map { it.systemDownloadId })
+            val updates = active.mapNotNull { rec ->
+                val newStatus = statusById[rec.systemDownloadId]
+                if (newStatus != null && newStatus != rec.status) rec.copy(status = newStatus) else null
+            }
+            if (updates.isNotEmpty()) {
+                downloadRecordDao.upsertAll(updates)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            Log.w("DownloadCoordinator", "Failed reconciling active downloads: ${t.message}")
+        }
+    }
+
     suspend fun refreshAllStatuses() = withContext(Dispatchers.IO) {
         try {
-            val records = downloadRecordDao.observeAll().first()
-            val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-            records.filter { it.systemDownloadId > 0L }.forEach { rec ->
-                val newStatus = queryDownloadManagerStatus(dm, rec.systemDownloadId)
-                if (newStatus != null && newStatus != rec.status) {
-                    downloadRecordDao.upsert(rec.copy(status = newStatus))
-                }
+            val systemRecords = downloadRecordDao.getAll().filter { it.systemDownloadId > 0L }
+            if (systemRecords.isEmpty()) return@withContext
+            val dm = appContext.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+            val statusById = queryDownloadManagerStatusesBatch(dm, systemRecords.map { it.systemDownloadId })
+            val updates = systemRecords.mapNotNull { rec ->
+                val newStatus = statusById[rec.systemDownloadId]
+                if (newStatus != null && newStatus != rec.status) rec.copy(status = newStatus) else null
+            }
+            if (updates.isNotEmpty()) {
+                downloadRecordDao.upsertAll(updates)
             }
         } catch (e: CancellationException) {
             throw e
@@ -394,10 +559,9 @@ class DownloadCoordinator(
 
     private suspend fun refreshStatusForSystemId(systemId: Long) = withContext(Dispatchers.IO) {
         try {
-            val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+            val match = downloadRecordDao.findBySystemId(systemId) ?: return@withContext
+            val dm = appContext.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
             val newStatus = queryDownloadManagerStatus(dm, systemId) ?: return@withContext
-            val records = downloadRecordDao.observeAll().first()
-            val match = records.firstOrNull { it.systemDownloadId == systemId } ?: return@withContext
             if (match.status != newStatus) {
                 downloadRecordDao.upsert(match.copy(status = newStatus))
             }
@@ -408,22 +572,45 @@ class DownloadCoordinator(
         }
     }
 
+    private fun queryDownloadManagerStatusesBatch(dm: DownloadManager, ids: List<Long>): Map<Long, String> {
+        if (ids.isEmpty()) return emptyMap()
+        val out = HashMap<Long, String>(ids.size)
+        for (chunk in ids.distinct().chunked(200)) {
+            val query = DownloadManager.Query().setFilterById(*chunk.toLongArray())
+            dm.query(query)?.use { cursor ->
+                val idCol = cursor.getColumnIndex(DownloadManager.COLUMN_ID)
+                val statusCol = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS)
+                if (idCol < 0 || statusCol < 0) return@use
+                while (cursor.moveToNext()) {
+                    val id = cursor.getLong(idCol)
+                    val mapped = mapDownloadManagerStatus(cursor.getInt(statusCol))
+                    if (mapped != null) {
+                        out[id] = mapped
+                    }
+                }
+            }
+        }
+        return out
+    }
+
     private fun queryDownloadManagerStatus(dm: DownloadManager, systemId: Long): String? {
         val query = DownloadManager.Query().setFilterById(systemId)
         dm.query(query)?.use { cursor ->
             if (!cursor.moveToFirst()) return null
             val col = cursor.getColumnIndex(DownloadManager.COLUMN_STATUS)
             if (col < 0) return null
-            return when (cursor.getInt(col)) {
-                DownloadManager.STATUS_SUCCESSFUL -> "Completed"
-                DownloadManager.STATUS_FAILED -> "Failed"
-                DownloadManager.STATUS_PAUSED -> "Paused"
-                DownloadManager.STATUS_RUNNING -> "Downloading"
-                DownloadManager.STATUS_PENDING -> "Queued"
-                else -> null
-            }
+            return mapDownloadManagerStatus(cursor.getInt(col))
         }
         return null
+    }
+
+    private fun mapDownloadManagerStatus(statusCode: Int): String? = when (statusCode) {
+        DownloadManager.STATUS_SUCCESSFUL -> "Completed"
+        DownloadManager.STATUS_FAILED -> "Failed"
+        DownloadManager.STATUS_PAUSED -> "Paused"
+        DownloadManager.STATUS_RUNNING -> "Downloading"
+        DownloadManager.STATUS_PENDING -> "Queued"
+        else -> null
     }
 
     suspend fun deleteRecord(record: DownloadRecordEntity) = withContext(Dispatchers.IO) {
@@ -435,7 +622,7 @@ class DownloadCoordinator(
     }
 
     fun createOpenIntent(record: DownloadRecordEntity): Intent? {
-        val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+        val dm = appContext.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
         var uri: Uri? = null
         var resolvedMime = record.mimeType.ifBlank { "*/*" }
 
@@ -456,7 +643,7 @@ class DownloadCoordinator(
             val file = File(downloadsDir, record.fileName)
             if (file.exists()) {
                 uri = runCatching {
-                    FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+                    FileProvider.getUriForFile(appContext, "${appContext.packageName}.fileprovider", file)
                 }.getOrNull()
             }
         }
@@ -473,7 +660,7 @@ class DownloadCoordinator(
             val projection = arrayOf(MediaStore.Downloads._ID)
             val selection = "${MediaStore.Downloads.DISPLAY_NAME} = ?"
             val sort = "${MediaStore.Downloads.DATE_ADDED} DESC"
-            context.contentResolver.query(
+            appContext.contentResolver.query(
                 MediaStore.Downloads.EXTERNAL_CONTENT_URI,
                 projection,
                 selection,
@@ -504,6 +691,8 @@ class DownloadCoordinator(
             """(?:^|;)\s*filename\s*=\s*([^;\s"]+)""",
             RegexOption.IGNORE_CASE
         )
+        private val UNESCAPED_QUOTE_REGEX = Regex("""\\(.)""")
+        private val UNSAFE_FILENAME_CHARS_REGEX = Regex("""[\u0000-\u001F\u007F:*?"<>|]""")
 
         internal fun sanitizeHeaderValue(raw: String): String =
             raw.trim().filter { ch -> ch == '\t' || ch in '\u0020'..'\u007E' }
@@ -529,7 +718,7 @@ class DownloadCoordinator(
             val quotedMatch = QUOTED_FILENAME_REGEX.find(contentDisposition)
             if (quotedMatch != null) {
                 val unescaped = quotedMatch.groupValues[1]
-                    .replace(Regex("""\\(.)"""), "$1")
+                    .replace(UNESCAPED_QUOTE_REGEX, "$1")
                     .trim()
                 if (unescaped.isNotBlank()) return unescaped
             }
@@ -546,7 +735,7 @@ class DownloadCoordinator(
                 .replace('\\', '_')
                 .replace('/', '_')
                 .replace("..", "_")
-                .replace(Regex("""[\u0000-\u001F\u007F:*?"<>|]"""), "_")
+                .replace(UNSAFE_FILENAME_CHARS_REGEX, "_")
                 .trim()
                 .trim('.')
                 .takeIf { candidate -> candidate.isNotBlank() && candidate.any { it != '_' && it != '.' } }

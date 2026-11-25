@@ -12,12 +12,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.ClearAll
+import app.overbay.swiftfox.ui.icons.rounded.ClearAll
 import androidx.compose.material.icons.rounded.Close
-import androidx.compose.material.icons.rounded.DeleteSweep
-import androidx.compose.material.icons.rounded.LayersClear
-import androidx.compose.material.icons.rounded.PushPin
-import androidx.compose.material.icons.rounded.Shield
+import app.overbay.swiftfox.ui.icons.rounded.DeleteSweep
+import app.overbay.swiftfox.ui.icons.rounded.LayersClear
+import app.overbay.swiftfox.ui.icons.rounded.PushPin
+import app.overbay.swiftfox.ui.icons.rounded.Shield
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon

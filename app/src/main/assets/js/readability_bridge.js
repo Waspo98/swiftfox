@@ -100,6 +100,8 @@
         return false;
       }
 
+      var hasPw = hasVisiblePasswordInput();
+      var minParaChars = hasPw ? 800 : 420;
       var paragraphs = document.querySelectorAll('p');
       var paragraphLength = 0;
       var paragraphCount = 0;
@@ -116,9 +118,13 @@
         if (pText.length > 0) {
           paragraphLength += pText.length;
           paragraphCount++;
+          if (paragraphCount >= 2 && paragraphLength >= minParaChars) {
+            return true;
+          }
         }
       }
 
+      var minContainerChars = hasPw ? 800 : 600;
       var containers = document.querySelectorAll('article, main');
       var maxContainerLength = 0;
       var articleLength = 0;
@@ -127,6 +133,9 @@
         var elText = (el.textContent || '').trim();
         if (elText.length > maxContainerLength) {
           maxContainerLength = elText.length;
+          if (maxContainerLength >= minContainerChars) {
+            return true;
+          }
         }
         if (el.tagName === 'ARTICLE' &&
             !(el.parentElement && el.parentElement.closest && el.parentElement.closest('article'))) {
@@ -134,7 +143,7 @@
         }
       }
 
-      if (hasVisiblePasswordInput() && paragraphLength < 800 && maxContainerLength < 800) {
+      if (hasPw && paragraphLength < 800 && maxContainerLength < 800) {
         return false;
       }
 
@@ -201,7 +210,18 @@
         return null;
       }
 
-      var wordCount = plainText.split(/\s+/).filter(Boolean).length;
+      var wordCount = 0;
+      var inWord = false;
+      for (var w = 0; w < plainText.length; w++) {
+        var code = plainText.charCodeAt(w);
+        var isWs = code <= 32 && (code === 32 || code === 10 || code === 13 || code === 9 || code === 12);
+        if (isWs || (code > 127 && /\s/.test(plainText.charAt(w)))) {
+          inWord = false;
+        } else if (!inWord) {
+          inWord = true;
+          wordCount++;
+        }
+      }
       if (wordCount === 0) {
         return null;
       }

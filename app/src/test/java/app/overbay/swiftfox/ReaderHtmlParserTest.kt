@@ -419,4 +419,40 @@ class ReaderHtmlParserTest {
             paragraph.runs.joinToString("") { it.text }
         )
     }
+
+    @Test
+    fun resolvesRelativeLinksAndImagesAgainstArticleBaseUrl() {
+        val html = """
+            <p>
+              Read the <a href="/docs/guide">Guide</a>,
+              <a href="../about">About</a>, or
+              <a href="javascript:alert(1)">Unsafe</a>.
+            </p>
+            <figure>
+              <img src="/assets/diagram.webp" alt="Diagram" />
+            </figure>
+            <p>
+              <img src="" srcset="../img/chart-1x.png 1x, ../img/chart-2x.png 2x" alt="Chart" />
+            </p>
+        """.trimIndent()
+
+        val blocks = ReaderHtmlParser.parse(
+            html = html,
+            baseUrl = "https://overbay.app/blog/2026/perf-post.html"
+        )
+        val paragraph = blocks.filterIsInstance<ReaderBlock.Paragraph>().single()
+        val links = paragraph.runs.filter { it.linkUrl != null }.associate { it.text to it.linkUrl }
+        assertEquals("https://overbay.app/docs/guide", links["Guide"])
+        assertEquals("https://overbay.app/blog/about", links["About"])
+        assertTrue(paragraph.runs.none { it.linkUrl?.startsWith("javascript") == true })
+
+        val images = blocks.filterIsInstance<ReaderBlock.Image>()
+        assertEquals(
+            listOf(
+                "https://overbay.app/assets/diagram.webp",
+                "https://overbay.app/blog/img/chart-1x.png"
+            ),
+            images.map { it.url }
+        )
+    }
 }

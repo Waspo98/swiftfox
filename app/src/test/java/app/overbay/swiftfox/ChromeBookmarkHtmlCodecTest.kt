@@ -103,4 +103,41 @@ class ChromeBookmarkHtmlCodecTest {
         assertEquals("Wikipedia & More", reimported["https://en.wikipedia.org/wiki/Main_Page"]?.title)
         assertEquals("Bookmarks", reimported["https://login.overbay.app"]?.folder)
     }
+
+    @Test
+    fun parsesMalformedUnclosedTagsAndLargeBookmarkExportsLinearly() {
+        val malformed = """
+            <!DOCTYPE NETSCAPE-Bookmark-file-1>
+            </DL></DL>
+            <DL><p>
+                <DT><h3 add_date='1700000000'>Single Quoted Folder</h3>
+                <DL><p>
+                    <DT><a href='https://example.org/one' add_date='1700000010'>One
+                    <DT><a href="https://example.org/two">Two</A>
+                </DL>
+                <DT><H3>Unclosed HeadingWithoutEndTag
+            </DL>
+        """.trimIndent()
+
+        val malformedParsed = ChromeBookmarkHtmlCodec.parse(malformed)
+        assertEquals(2, malformedParsed.size)
+        assertEquals("https://example.org/one", malformedParsed[0].url)
+        assertEquals("One", malformedParsed[0].title)
+        assertEquals("Single Quoted Folder", malformedParsed[0].folder)
+        assertEquals("https://example.org/two", malformedParsed[1].url)
+        assertEquals("Two", malformedParsed[1].title)
+
+        val largeInput = (1..1500).map { i ->
+            BookmarkEntity(
+                id = "bm-$i",
+                title = "Bookmark #$i & Notes",
+                url = "https://docs.overbay.app/page/$i",
+                folder = "Engineering / Subfolder ${i % 12}",
+                createdAt = 1710000000_000L + i * 1000L
+            )
+        }
+        val exported = ChromeBookmarkHtmlCodec.export(largeInput)
+        val parsedLarge = ChromeBookmarkHtmlCodec.parse(exported)
+        assertEquals(1500, parsedLarge.size)
+    }
 }

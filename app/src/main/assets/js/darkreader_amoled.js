@@ -110,22 +110,24 @@
     if (!styleObj || typeof rawSet !== 'function') return;
     var propNames = [];
     for (var i = 0; i < styleObj.length; i++) {
-      propNames.push(styleObj[i]);
+      var propName = styleObj[i];
+      if (propName && propName.indexOf('--darkreader-') === 0) {
+        propNames.push(propName);
+      }
     }
     for (var j = 0; j < propNames.length; j++) {
       var name = propNames[j];
-      if (name && name.indexOf('--darkreader-') === 0) {
-        var cur = styleObj.getPropertyValue(name);
-        var normalized = normalizeAmoledVarValue(name, cur, config);
-        if (normalized !== cur) {
-          rawSet.call(styleObj, name, normalized);
-        }
+      var cur = styleObj.getPropertyValue(name);
+      var normalized = normalizeAmoledVarValue(name, cur, config);
+      if (normalized !== cur) {
+        rawSet.call(styleObj, name, normalized);
       }
     }
   }
 
   return function createAmoledController(getConfig, isDarkReaderActive, observeWindowLoad) {
     var amoledHeadObserver = null;
+    var amoledObservingRootFallback = false;
     var amoledSweepScheduled = false;
     var amoledLoadListenerAttached = false;
     var hookedVarStyleObj = null;
@@ -233,6 +235,7 @@
 
     function teardown() {
       amoledSweepScheduled = false;
+      amoledObservingRootFallback = false;
       if (amoledHeadObserver) {
         try { amoledHeadObserver.disconnect(); } catch (e) {}
         amoledHeadObserver = null;
@@ -253,17 +256,30 @@
       teardown();
       if (!config || !config.amoled) return;
       patchVariablesRule(config);
-      var headOrRoot = document.head || document.documentElement;
+      var head = document.head;
+      var headOrRoot = head || document.documentElement;
       if (typeof MutationObserver === 'function' && headOrRoot) {
         try {
+          amoledObservingRootFallback = !head;
           amoledHeadObserver = new MutationObserver(function () {
+            if (amoledObservingRootFallback && document.head && amoledHeadObserver) {
+              try {
+                amoledHeadObserver.disconnect();
+                amoledObservingRootFallback = false;
+                amoledHeadObserver.observe(document.head, {
+                  childList: true,
+                  subtree: false
+                });
+              } catch (e) {}
+            }
             scheduleSweep();
           });
           amoledHeadObserver.observe(headOrRoot, {
             childList: true,
-            subtree: !document.head
+            subtree: !head
           });
         } catch (e) {
+          amoledObservingRootFallback = false;
           amoledHeadObserver = null;
         }
       }

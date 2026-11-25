@@ -108,6 +108,7 @@
 
   var MIN_FRAME_DIM_PX = 24;
 
+  var darkReaderInstance = null;
   var fetchMethodSet = false;
   var lastConfig = null;
   var appliedSignature = null;
@@ -117,6 +118,13 @@
   var domListenerAttached = false;
   var mediaQueryListenerAttached = false;
   var mediaQueryRecheckTimer = null;
+
+  function resolveDarkReader() {
+    if (darkReaderInstance && typeof darkReaderInstance.enable === 'function') {
+      return darkReaderInstance;
+    }
+    return typeof DarkReader !== 'undefined' ? DarkReader : undefined;
+  }
 
   var amoledCtrl = typeof createAmoledController === 'function'
     ? createAmoledController(function () { return lastConfig; }, isDarkReaderActive, true)
@@ -148,15 +156,17 @@
   }
 
   function isDarkReaderActive() {
-    return typeof DarkReader !== 'undefined' &&
-      typeof DarkReader.isEnabled === 'function' &&
-      DarkReader.isEnabled();
+    var dr = resolveDarkReader();
+    return !!dr &&
+      typeof dr.isEnabled === 'function' &&
+      dr.isEnabled();
   }
 
   function disableDarkReaderSafe() {
     amoledCtrl.teardown();
-    if (typeof DarkReader !== 'undefined' && typeof DarkReader.disable === 'function') {
-      DarkReader.disable();
+    var dr = resolveDarkReader();
+    if (dr && typeof dr.disable === 'function') {
+      dr.disable();
     }
   }
 
@@ -409,14 +419,18 @@
 
     try {
       if (typeof ensureDarkReaderLoaded === 'function') {
-        ensureDarkReaderLoaded();
+        var loaded = ensureDarkReaderLoaded();
+        if (loaded && typeof loaded.enable === 'function') {
+          darkReaderInstance = loaded;
+        }
       }
-      if (typeof DarkReader === 'undefined' || typeof DarkReader.enable !== 'function') {
+      var dr = resolveDarkReader();
+      if (!dr || typeof dr.enable !== 'function') {
         return;
       }
-      if (!fetchMethodSet && typeof DarkReader.setFetchMethod === 'function' &&
+      if (!fetchMethodSet && typeof dr.setFetchMethod === 'function' &&
           typeof window.fetch === 'function') {
-        DarkReader.setFetchMethod(window.fetch.bind(window));
+        dr.setFetchMethod(window.fetch.bind(window));
         fetchMethodSet = true;
       }
 
@@ -425,10 +439,10 @@
       var sepia = typeof config.sepia === 'number' ? config.sepia : 0;
 
       amoledCtrl.teardown();
-      if (isDarkReaderActive()) {
-        DarkReader.disable();
+      if (isDarkReaderActive() && typeof dr.disable === 'function') {
+        dr.disable();
       }
-      DarkReader.enable({
+      dr.enable({
         mode: 1,
         brightness: brightness,
         contrast: contrast,

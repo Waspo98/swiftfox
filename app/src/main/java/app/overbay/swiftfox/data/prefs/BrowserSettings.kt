@@ -208,6 +208,7 @@ data class BrowserSettings(
     val syncLastTimestampMs: Long = 0L,
     val syncLocalHistorySeeded: Boolean = false,
     val syncZenSeparateEssentials: Boolean? = null,
+    val syncHasConnectedAccount: Boolean = false,
     val hasSeededDefaults: Boolean = false,
     val hasClearedLegacyWebDarkOverrides: Boolean = false
 ) {

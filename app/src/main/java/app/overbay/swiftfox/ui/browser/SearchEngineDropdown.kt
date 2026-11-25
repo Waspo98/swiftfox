@@ -13,13 +13,13 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Bookmark
+import app.overbay.swiftfox.ui.icons.rounded.Bookmark
 import androidx.compose.material.icons.rounded.Check
-import androidx.compose.material.icons.rounded.History
+import app.overbay.swiftfox.ui.icons.rounded.History
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
-import androidx.compose.material.icons.rounded.Public
+import app.overbay.swiftfox.ui.icons.rounded.Public
 import androidx.compose.material.icons.rounded.Settings
-import androidx.compose.material.icons.rounded.Tab
+import app.overbay.swiftfox.ui.icons.rounded.Tab
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider

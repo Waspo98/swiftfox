@@ -26,12 +26,13 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.Code
-import androidx.compose.material.icons.rounded.DeleteOutline
+import app.overbay.swiftfox.ui.icons.rounded.Code
+import app.overbay.swiftfox.ui.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Edit
-import androidx.compose.material.icons.rounded.FileOpen
-import androidx.compose.material.icons.rounded.Link
+import app.overbay.swiftfox.ui.icons.rounded.FileOpen
+import app.overbay.swiftfox.ui.icons.rounded.Link
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -46,6 +47,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -93,7 +95,8 @@ fun UserscriptsOverlay(
     onSaveScriptCode: (existingId: String?, code: String) -> Unit,
     onDeleteScript: (String) -> Unit,
     userscriptsEnabled: Boolean = true,
-    onEnableUserscripts: () -> Unit = {}
+    onEnableUserscripts: () -> Unit = {},
+    onLoadScriptCode: suspend (String) -> String? = { null }
 ) {
     var showInstallUrlDialog by rememberSaveable { mutableStateOf(false) }
     var installUrlDraft by rememberSaveable { mutableStateOf("") }
@@ -101,6 +104,18 @@ fun UserscriptsOverlay(
     var showEditorDialog by remember { mutableStateOf(false) }
     var editingScriptId by remember { mutableStateOf<String?>(null) }
     var codeDraft by remember { mutableStateOf("") }
+    var isLoadingCode by remember { mutableStateOf(false) }
+
+    LaunchedEffect(showEditorDialog, editingScriptId) {
+        val targetId = editingScriptId
+        if (showEditorDialog && targetId != null && isLoadingCode) {
+            val loaded = onLoadScriptCode(targetId)
+            if (showEditorDialog && editingScriptId == targetId) {
+                codeDraft = loaded.orEmpty()
+                isLoadingCode = false
+            }
+        }
+    }
 
     var pendingDeleteId by rememberSaveable { mutableStateOf<String?>(null) }
     val pendingDeleteScript = remember(scripts, pendingDeleteId) {
@@ -194,6 +209,7 @@ fun UserscriptsOverlay(
                     emphasized = true,
                     onClick = {
                         editingScriptId = null
+                        isLoadingCode = false
                         codeDraft = NEW_USERSCRIPT_TEMPLATE
                         showEditorDialog = true
                     }
@@ -259,7 +275,13 @@ fun UserscriptsOverlay(
                             onToggle = { enabled -> onToggleScript(script.id, enabled) },
                             onEdit = {
                                 editingScriptId = script.id
-                                codeDraft = script.code
+                                if (script.code.isNotEmpty()) {
+                                    codeDraft = script.code
+                                    isLoadingCode = false
+                                } else {
+                                    codeDraft = ""
+                                    isLoadingCode = true
+                                }
                                 showEditorDialog = true
                             },
                             onDelete = { pendingDeleteId = script.id }
@@ -343,11 +365,22 @@ fun UserscriptsOverlay(
     }
 
     if (showEditorDialog) {
-        val parsedPreview = remember(codeDraft) {
-            UserscriptParser.parse(codeDraft, fallbackName = "Custom Userscript")
+        val headerSlice = remember(codeDraft) {
+            val endIdx = codeDraft.indexOf("==/UserScript==")
+            if (endIdx >= 0) {
+                codeDraft.substring(0, minOf(codeDraft.length, endIdx + 24))
+            } else {
+                codeDraft.take(8192)
+            }
+        }
+        val parsedPreview = remember(headerSlice) {
+            UserscriptParser.parse(headerSlice, fallbackName = "Custom Userscript")
         }
         AlertDialog(
-            onDismissRequest = { showEditorDialog = false },
+            onDismissRequest = {
+                isLoadingCode = false
+                showEditorDialog = false
+            },
             properties = DialogProperties(usePlatformDefaultWidth = false),
             modifier = Modifier
                 .widthIn(max = 560.dp)
@@ -362,38 +395,49 @@ fun UserscriptsOverlay(
                 )
             },
             text = {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Text(
-                        text = "${parsedPreview.name} · ${parsedPreview.runAt.headerValue} · ${parsedPreview.matches.size} @match",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.primary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    if (parsedPreview.unsupportedDirectives.isNotEmpty()) {
+                if (isLoadingCode) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 160.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 2.5.dp)
+                    }
+                } else {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
                         Text(
-                            text = "Note: ${parsedPreview.unsupportedDirectives.joinToString(", ")} directives are not supported and will be ignored.",
+                            text = "${parsedPreview.name} · ${parsedPreview.runAt.headerValue} · ${parsedPreview.matches.size} @match",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error
+                            color = MaterialTheme.colorScheme.primary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        if (parsedPreview.unsupportedDirectives.isNotEmpty()) {
+                            Text(
+                                text = "Note: ${parsedPreview.unsupportedDirectives.joinToString(", ")} directives are not supported and will be ignored.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+                        OutlinedTextField(
+                            value = codeDraft,
+                            onValueChange = { codeDraft = it },
+                            placeholder = { Text("// ==UserScript== ...") },
+                            shape = RoundedCornerShape(16.dp),
+                            minLines = 8,
+                            maxLines = 14,
+                            textStyle = MaterialTheme.typography.bodySmall.copy(
+                                fontFamily = FontFamily.Monospace
+                            ),
+                            modifier = Modifier.fillMaxWidth()
                         )
                     }
-                    OutlinedTextField(
-                        value = codeDraft,
-                        onValueChange = { codeDraft = it },
-                        placeholder = { Text("// ==UserScript== ...") },
-                        shape = RoundedCornerShape(16.dp),
-                        minLines = 8,
-                        maxLines = 14,
-                        textStyle = MaterialTheme.typography.bodySmall.copy(
-                            fontFamily = FontFamily.Monospace
-                        ),
-                        modifier = Modifier.fillMaxWidth()
-                    )
                 }
             },
             confirmButton = {
@@ -404,7 +448,7 @@ fun UserscriptsOverlay(
                         showEditorDialog = false
                         onSaveScriptCode(targetId, savedCode)
                     },
-                    enabled = codeDraft.isNotBlank(),
+                    enabled = !isLoadingCode && codeDraft.isNotBlank(),
                     modifier = Modifier.heightIn(min = 48.dp)
                 ) {
                     Text("Save")
@@ -412,7 +456,10 @@ fun UserscriptsOverlay(
             },
             dismissButton = {
                 TextButton(
-                    onClick = { showEditorDialog = false },
+                    onClick = {
+                        isLoadingCode = false
+                        showEditorDialog = false
+                    },
                     modifier = Modifier.heightIn(min = 48.dp)
                 ) {
                     Text("Cancel")

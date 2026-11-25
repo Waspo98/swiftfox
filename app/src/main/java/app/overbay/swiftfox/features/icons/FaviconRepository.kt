@@ -11,6 +11,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -18,6 +19,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.coroutineContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
@@ -196,18 +198,31 @@ internal data class FaviconProbeTargets(
  */
 class FaviconRepository(
     private val context: Context,
-    baseHttpClient: OkHttpClient,
+    baseHttpClientProvider: () -> OkHttpClient,
     private val repoScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 ) {
-    private val httpClient: OkHttpClient = baseHttpClient.newBuilder()
-        .connectTimeout(4, TimeUnit.SECONDS)
-        .readTimeout(5, TimeUnit.SECONDS)
-        .writeTimeout(4, TimeUnit.SECONDS)
-        .followRedirects(true)
-        .build()
+    constructor(
+        context: Context,
+        baseHttpClient: OkHttpClient,
+        repoScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    ) : this(context, { baseHttpClient }, repoScope)
 
-    private val faviconCacheDir: File = File(context.cacheDir, "favicons").apply { mkdirs() }
-    private val customIconsDir: File = File(context.filesDir, "custom_icons").apply { mkdirs() }
+    private val httpClient: OkHttpClient by lazy {
+        baseHttpClientProvider().newBuilder()
+            .callTimeout(8, TimeUnit.SECONDS)
+            .connectTimeout(4, TimeUnit.SECONDS)
+            .readTimeout(5, TimeUnit.SECONDS)
+            .writeTimeout(4, TimeUnit.SECONDS)
+            .followRedirects(true)
+            .build()
+    }
+
+    private val faviconCacheDir: File by lazy {
+        File(context.cacheDir, "favicons").apply { mkdirs() }
+    }
+    private val customIconsDir: File by lazy {
+        File(context.filesDir, "custom_icons").apply { mkdirs() }
+    }
 
     private val memoryCache = object : LruCache<String, Bitmap>(MAX_MEMORY_CACHE_KB) {
         override fun sizeOf(key: String, value: Bitmap): Int =
@@ -217,12 +232,13 @@ class FaviconRepository(
     private data class WebViewAuthorityBaseline(
         val pathKey: String?,
         val samplePixels: IntArray,
-        val bitmap: Bitmap
+        val bitmap: Bitmap?
     )
 
     // Strictly isolated in-memory store for Private tabs (zero disk trace, zero normal-cache fallthrough)
     private val privateTabIcons = PrivateTabIconStore<Bitmap>()
     private val publicWebViewBaselines = LruCache<String, WebViewAuthorityBaseline>(32)
+    private val keyRevisions = ConcurrentHashMap<String, Long>()
     private val fetchGate = FaviconFetchGate<Bitmap>(
         fetchScope = repoScope,
         fetchDispatcher = Dispatchers.IO,
@@ -232,8 +248,25 @@ class FaviconRepository(
     private val _revision = MutableStateFlow(0L)
     val revision: StateFlow<Long> = _revision.asStateFlow()
 
-    fun getCachedFavicon(url: String, privateTabId: String? = null): Bitmap? {
-        val scope = resolveScope(url)
+    fun keyRevision(cacheKey: String): Long = keyRevisions[cacheKey] ?: 0L
+
+    fun trimMemory(evictAll: Boolean) {
+        synchronized(publicWebViewBaselines) {
+            publicWebViewBaselines.evictAll()
+        }
+        synchronized(memoryCache) {
+            if (evictAll) {
+                memoryCache.evictAll()
+            } else {
+                memoryCache.trimToSize(MAX_MEMORY_CACHE_KB / 2)
+            }
+        }
+    }
+
+    fun getCachedFavicon(url: String, privateTabId: String? = null): Bitmap? =
+        getCachedFaviconForScope(resolveScope(url), privateTabId)
+
+    internal fun getCachedFaviconForScope(scope: FaviconScope?, privateTabId: String? = null): Bitmap? {
         if (privateTabId != null) {
             return privateTabIcons.get(privateTabId, scope?.primaryKey)
         }
@@ -352,42 +385,71 @@ class FaviconRepository(
         aliasUrl: String? = null
     ) {
         if (bitmap.isRecycled || bitmap.width <= 0 || bitmap.height <= 0) return
+        val scope = resolveScope(url)
+        if (!isPrivate && scope == null) return
+
+        // Fast short-circuit before copying a full-resolution WebView bitmap on the Main thread
+        // when we already hold a strictly higher-res icon in memory for a root/LAN key.
+        if (!isPrivate && scope != null && aliasUrl.isNullOrBlank()) {
+            val directKey = if (scope.isSubpathScoped || scope.pathKey == null) scope.primaryKey else null
+            if (directKey != null) {
+                val targetDim = minOf(maxOf(bitmap.width, bitmap.height), FAVICON_MAX_PX)
+                val existing = synchronized(memoryCache) { memoryCache.get(hostKey(directKey)) }
+                if (existing != null && existing.width > targetDim && existing.width >= 48) {
+                    return
+                }
+            }
+        }
+
         val safeCopy = runCatching { bitmap.copy(Bitmap.Config.ARGB_8888, false) }.getOrNull()
             ?: return
-        val normalized = withContext(Dispatchers.Default) {
-            val scaled = scaleBitmapIfNeeded(safeCopy, FAVICON_MAX_PX)
-            if (scaled != null && scaled !== safeCopy) {
+        withContext(Dispatchers.Default) {
+            val normalized = scaleBitmapIfNeeded(safeCopy, FAVICON_MAX_PX)
+            if (normalized != null && normalized !== safeCopy) {
                 safeCopy.recycle()
             }
-            scaled
-        } ?: run {
-            if (!safeCopy.isRecycled) safeCopy.recycle()
-            return
-        }
-        val scope = resolveScope(url)
-        if (isPrivate) {
-            if (!tabId.isNullOrBlank()) {
-                privateTabIcons.put(tabId, scope?.primaryKey, normalized)
-                bumpRevision()
+            if (normalized == null) {
+                if (!safeCopy.isRecycled) safeCopy.recycle()
+                return@withContext
             }
-            return
-        }
-        if (scope == null) return
+            if (isPrivate) {
+                if (!tabId.isNullOrBlank()) {
+                    privateTabIcons.put(tabId, scope?.primaryKey, normalized)
+                    bumpRevision(tabId)
+                } else if (!normalized.isRecycled) {
+                    normalized.recycle()
+                }
+                return@withContext
+            }
+            val nonNullScope = scope ?: run {
+                if (!normalized.isRecycled) normalized.recycle()
+                return@withContext
+            }
 
-        val targetKey = resolveWebViewWriteKey(scope, normalized)
-        recordBitmapForKey(targetKey, normalized)
+            val targetKey = resolveWebViewWriteKey(nonNullScope, normalized)
+            val storedPrimary = recordBitmapForKey(targetKey, normalized)
+            var storedAlias = false
 
-        if (!aliasUrl.isNullOrBlank()) {
-            val aliasScope = resolveScope(aliasUrl)
-            val aliasAlreadyCached = aliasScope != null && hasCachedIconForKey(aliasScope.primaryKey)
-            if (shouldWriteAliasFavicon(
-                    scope = scope,
-                    aliasScope = aliasScope,
-                    targetKey = targetKey,
-                    aliasAlreadyCached = aliasAlreadyCached
-                )
-            ) {
-                recordBitmapForKey(aliasScope!!.primaryKey, normalized)
+            if (!aliasUrl.isNullOrBlank()) {
+                val aliasScope = resolveScope(aliasUrl)
+                val aliasAlreadyCached = aliasScope != null && hasCachedIconForKey(aliasScope.primaryKey)
+                if (shouldWriteAliasFavicon(
+                        scope = nonNullScope,
+                        aliasScope = aliasScope,
+                        targetKey = targetKey,
+                        aliasAlreadyCached = aliasAlreadyCached
+                    )
+                ) {
+                    storedAlias = recordBitmapForKey(aliasScope!!.primaryKey, normalized)
+                }
+            }
+            if (!storedPrimary && !storedAlias) {
+                val retainedInBaseline = synchronized(publicWebViewBaselines) {
+                    publicWebViewBaselines.get(nonNullScope.authorityKey)?.bitmap === normalized
+                }
+                if (!retainedInBaseline && !normalized.isRecycled) {
+                    normalized.recycle()
+                }
             }
         }
     }
@@ -408,9 +470,10 @@ class FaviconRepository(
             if (incomingSamples != null) {
                 synchronized(publicWebViewBaselines) {
                     if (publicWebViewBaselines.get(scope.authorityKey) == null) {
+                        // Root path never needs to retain a Bitmap reference in baseline
                         publicWebViewBaselines.put(
                             scope.authorityKey,
-                            WebViewAuthorityBaseline(null, incomingSamples, incoming)
+                            WebViewAuthorityBaseline(null, incomingSamples, null)
                         )
                     }
                 }
@@ -437,33 +500,29 @@ class FaviconRepository(
             prevBaseline.pathKey != pathKey &&
             !arePixelSamplesSimilar(prevBaseline.samplePixels, incomingSamples)
         ) {
-            // Two distinct subpaths on this public host emitted genuinely different WebView icons
-            // (e.g. Google Docs/Sheets or a public reverse proxy): fork both to path-scoped keys
-            // without letting apple-touch-icon vs favicon.ico format differences downgrade normal sites.
             val prevPathKey = prevBaseline.pathKey
-            if (prevPathKey != null && !prevBaseline.bitmap.isRecycled && !hasCachedIconForKey(prevPathKey)) {
-                recordBitmapForKey(prevPathKey, prevBaseline.bitmap)
+            val prevBmp = prevBaseline.bitmap
+            if (prevPathKey != null && prevBmp != null && !prevBmp.isRecycled && !hasCachedIconForKey(prevPathKey)) {
+                recordBitmapForKey(prevPathKey, prevBmp)
             }
             return pathKey
         }
         return scope.authorityKey
     }
 
-    private suspend fun recordBitmapForKey(cacheKey: String, bitmap: Bitmap) {
+    private suspend fun recordBitmapForKey(cacheKey: String, bitmap: Bitmap): Boolean {
         val existing = synchronized(memoryCache) { memoryCache.get(hostKey(cacheKey)) }
         if (existing != null) {
-            // Keep higher-resolution icon if we already fetched a crisp apple-touch-icon for this exact key
             if (existing.width > bitmap.width && existing.width >= 48) {
-                return
+                return false
             }
-            // Skip redundant PNG compression, disk rewrite, and global Compose revision broadcast
-            // when the cached icon is already equal/higher resolution and visually identical.
             if (existing.width >= bitmap.width && bitmapsLookSimilar(existing, bitmap)) {
-                return
+                return false
             }
         }
         fetchGate.clearNegativeCache(cacheKey)
         putHostBitmap(cacheKey, bitmap, writeDisk = true)
+        return true
     }
 
     fun clearPrivateTabIcon(tabId: String) {
@@ -529,7 +588,7 @@ class FaviconRepository(
         val candidates: List<String> = emptyList()
     )
 
-    private fun fetchFaviconFromNetwork(originalUrl: String, scope: FaviconScope): Bitmap? {
+    private suspend fun fetchFaviconFromNetwork(originalUrl: String, scope: FaviconScope): Bitmap? {
         val targets = buildProbeTargets(originalUrl, scope)
 
         // 1. Parse target HTML <head> for high-res apple-touch-icon / icon links
@@ -569,36 +628,48 @@ class FaviconRepository(
         return null
     }
 
-    private fun discoverIconUrlsFromHtml(targetUrl: String): HtmlDiscoveryResult {
+    private suspend fun discoverIconUrlsFromHtml(targetUrl: String): HtmlDiscoveryResult {
         var succeeded = false
         var isAuthBlocked = false
         var finalUrl = targetUrl
-        val htmlSnippet = runCatching {
+        val htmlSnippet = try {
             val req = Request.Builder()
                 .url(targetUrl)
                 .header("User-Agent", FAVICON_USER_AGENT)
                 .header("Accept", "text/html,application/xhtml+xml;q=0.9,*/*;q=0.1")
                 .build()
-            httpClient.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) {
-                    if (resp.code == 401 || resp.code == 403) {
-                        isAuthBlocked = true
+            val call = httpClient.newCall(req)
+            val cancelHandle = coroutineContext[Job]?.invokeOnCompletion { call.cancel() }
+            try {
+                call.execute().use { resp ->
+                    if (!resp.isSuccessful) {
+                        if (resp.code == 401 || resp.code == 403) {
+                            isAuthBlocked = true
+                        }
+                        ""
+                    } else {
+                        succeeded = true
+                        finalUrl = resp.request.url.toString()
+                        val contentType = resp.header("Content-Type").orEmpty()
+                        if (contentType.isNotBlank() && !contentType.contains("html", ignoreCase = true)) {
+                            ""
+                        } else {
+                            val source = resp.body.source()
+                            source.request(MAX_HTML_PEEK_BYTES)
+                            val peek = source.buffer.clone()
+                            val byteCount = minOf(peek.size, MAX_HTML_PEEK_BYTES)
+                            peek.readUtf8(byteCount)
+                        }
                     }
-                    return@use ""
                 }
-                succeeded = true
-                finalUrl = resp.request.url.toString()
-                val contentType = resp.header("Content-Type").orEmpty()
-                if (contentType.isNotBlank() && !contentType.contains("html", ignoreCase = true)) {
-                    return@use ""
-                }
-                val source = resp.body.source()
-                source.request(MAX_HTML_PEEK_BYTES)
-                val peek = source.buffer.clone()
-                val byteCount = minOf(peek.size, MAX_HTML_PEEK_BYTES)
-                peek.readUtf8(byteCount)
+            } finally {
+                cancelHandle?.dispose()
             }
-        }.getOrDefault("")
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (_: Throwable) {
+            ""
+        }
 
         if (htmlSnippet.isBlank()) {
             return HtmlDiscoveryResult(
@@ -614,42 +685,52 @@ class FaviconRepository(
         )
     }
 
-    private fun downloadAndDecodeBitmap(url: String): Bitmap? {
+    private suspend fun downloadAndDecodeBitmap(url: String): Bitmap? {
         if (!url.startsWith("http://", true) && !url.startsWith("https://", true)) return null
-        return runCatching {
+        return try {
             val req = Request.Builder()
                 .url(url)
                 .header("User-Agent", FAVICON_USER_AGENT)
                 .build()
-            httpClient.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) return@use null
-                val contentType = resp.header("Content-Type").orEmpty().lowercase(Locale.ROOT)
-                if (contentType.contains("svg") || contentType.contains("html") || contentType.contains("text/plain")) {
-                    return@use null
-                }
-                val bytes = resp.body.byteStream().use { stream ->
-                    readBoundedBytes(stream, MAX_ICON_DOWNLOAD_BYTES)
-                }
-                if (bytes.isEmpty()) return@use null
+            val call = httpClient.newCall(req)
+            val cancelHandle = coroutineContext[Job]?.invokeOnCompletion { call.cancel() }
+            try {
+                call.execute().use { resp ->
+                    if (!resp.isSuccessful) return@use null
+                    val contentType = resp.header("Content-Type").orEmpty().lowercase(Locale.ROOT)
+                    if (contentType.contains("svg") || contentType.contains("html") || contentType.contains("text/plain")) {
+                        return@use null
+                    }
+                    val bytes = resp.body.byteStream().use { stream ->
+                        readBoundedBytes(stream, MAX_ICON_DOWNLOAD_BYTES)
+                    }
+                    if (bytes.isEmpty()) return@use null
 
-                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-                if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@use null
+                    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+                    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@use null
 
-                val decodeOpts = BitmapFactory.Options().apply {
-                    inSampleSize = computeInSampleSize(bounds.outWidth, bounds.outHeight, FAVICON_MAX_PX * 2)
-                    inPreferredConfig = Bitmap.Config.ARGB_8888
+                    val decodeOpts = BitmapFactory.Options().apply {
+                        inSampleSize = computeInSampleSize(bounds.outWidth, bounds.outHeight, FAVICON_MAX_PX * 2)
+                        inPreferredConfig = Bitmap.Config.ARGB_8888
+                    }
+                    val raw = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, decodeOpts) ?: return@use null
+                    val scaled = scaleBitmapIfNeeded(raw, FAVICON_MAX_PX)
+                    if (scaled == null) {
+                        if (!raw.isRecycled) raw.recycle()
+                        return@use null
+                    }
+                    if (scaled !== raw) raw.recycle()
+                    scaled
                 }
-                val raw = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, decodeOpts) ?: return@use null
-                val scaled = scaleBitmapIfNeeded(raw, FAVICON_MAX_PX)
-                if (scaled == null) {
-                    if (!raw.isRecycled) raw.recycle()
-                    return@use null
-                }
-                if (scaled !== raw) raw.recycle()
-                scaled
+            } finally {
+                cancelHandle?.dispose()
             }
-        }.getOrNull()
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (_: Throwable) {
+            null
+        }
     }
 
     private suspend fun putHostBitmap(key: String, bitmap: Bitmap, writeDisk: Boolean) {
@@ -664,7 +745,7 @@ class FaviconRepository(
                 }
             }
         }
-        bumpRevision()
+        bumpRevision(key)
     }
 
     private fun readDiskFavicon(key: String): Bitmap? {
@@ -675,7 +756,17 @@ class FaviconRepository(
 
     private fun diskFileForHost(key: String): File = File(faviconCacheDir, "${sha256Hex(key)}.png")
 
-    private fun bumpRevision() {
+    private fun bumpRevision(changedKey: String? = null) {
+        if (changedKey != null) {
+            if (keyRevisions.size > 1024) keyRevisions.clear()
+            keyRevisions.compute(changedKey) { _, prev -> (prev ?: 0L) + 1L }
+            val authPrefix = changedKey.substringBefore('/')
+            if (authPrefix != changedKey) {
+                keyRevisions.compute(authPrefix) { _, prev -> (prev ?: 0L) + 1L }
+            }
+        } else {
+            keyRevisions.clear()
+        }
         _revision.update { it + 1L }
     }
 
@@ -729,44 +820,74 @@ class FaviconRepository(
         internal fun resolveScope(url: String): FaviconScope? {
             val trimmed = url.trim()
             if (trimmed.isBlank() || trimmed.equals(OmniboxEngine.NEW_TAB_URL, ignoreCase = true)) return null
-            if (!trimmed.startsWith("http://", true) && !trimmed.startsWith("https://", true)) return null
-
-            val uri = runCatching { URI(trimmed) }.getOrNull()
             val scheme: String
-            val rawHost: String
-            val port: Int
-            val rawPath: String
-
-            if (uri != null && !uri.scheme.isNullOrBlank() && !uri.host.isNullOrBlank()) {
-                scheme = uri.scheme.lowercase(Locale.ROOT)
-                rawHost = uri.host
-                port = uri.port
-                rawPath = uri.rawPath.orEmpty()
-            } else {
-                val match = AUTHORITY_FALLBACK_REGEX.find(trimmed) ?: return null
-                scheme = match.groupValues[1].lowercase(Locale.ROOT)
-                val hostPort = match.groupValues[2].substringAfterLast('@')
-                val rest = match.groupValues[3]
-                if (hostPort.startsWith("[")) {
-                    val closeIdx = hostPort.indexOf(']')
-                    if (closeIdx <= 1) return null
-                    rawHost = hostPort.substring(0, closeIdx + 1)
-                    val after = hostPort.substring(closeIdx + 1)
-                    port = if (after.startsWith(":")) after.substring(1).toIntOrNull() ?: -1 else -1
-                } else {
-                    val colonIdx = hostPort.lastIndexOf(':')
-                    if (colonIdx > 0) {
-                        rawHost = hostPort.substring(0, colonIdx)
-                        port = hostPort.substring(colonIdx + 1).toIntOrNull() ?: -1
-                    } else {
-                        rawHost = hostPort
-                        port = -1
-                    }
+            val schemeEnd: Int
+            when {
+                trimmed.startsWith("https://", ignoreCase = true) -> {
+                    scheme = "https"
+                    schemeEnd = 8
                 }
-                rawPath = rest.substringBefore('?').substringBefore('#')
+                trimmed.startsWith("http://", ignoreCase = true) -> {
+                    scheme = "http"
+                    schemeEnd = 7
+                }
+                else -> return null
             }
 
-            if (scheme != "http" && scheme != "https") return null
+            val rest = trimmed.substring(schemeEnd)
+            if (rest.isEmpty()) return null
+            var authEnd = rest.length
+            for (i in rest.indices) {
+                val c = rest[i]
+                if (c == '/' || c == '?' || c == '#' || c == '\\') {
+                    authEnd = i
+                    break
+                }
+            }
+            if (authEnd <= 0) return null
+            val rawAuth = rest.substring(0, authEnd)
+            if (rawAuth.any { it.isWhitespace() }) return null
+            val hostPort = rawAuth.substringAfterLast('@')
+            if (hostPort.isEmpty()) return null
+
+            val rawHost: String
+            val port: Int
+            if (hostPort.startsWith("[")) {
+                val closeIdx = hostPort.indexOf(']')
+                if (closeIdx <= 1) return null
+                rawHost = hostPort.substring(0, closeIdx + 1)
+                val after = hostPort.substring(closeIdx + 1)
+                port = when {
+                    after.isEmpty() -> -1
+                    after.startsWith(":") -> after.substring(1).toIntOrNull() ?: return null
+                    else -> return null
+                }
+            } else {
+                val colonIdx = hostPort.lastIndexOf(':')
+                if (colonIdx >= 0) {
+                    if (colonIdx == 0) return null
+                    rawHost = hostPort.substring(0, colonIdx)
+                    port = hostPort.substring(colonIdx + 1).toIntOrNull() ?: return null
+                } else {
+                    rawHost = hostPort
+                    port = -1
+                }
+            }
+
+            val rawPath = if (authEnd < rest.length && rest[authEnd] == '/') {
+                var pathEnd = rest.length
+                for (i in authEnd until rest.length) {
+                    val c = rest[i]
+                    if (c == '?' || c == '#' || c == '\\') {
+                        pathEnd = i
+                        break
+                    }
+                }
+                rest.substring(authEnd, pathEnd)
+            } else {
+                ""
+            }
+
             val normalizedHost = OmniboxEngine.normalizeHost(rawHost)
             if (normalizedHost.isBlank()) return null
 

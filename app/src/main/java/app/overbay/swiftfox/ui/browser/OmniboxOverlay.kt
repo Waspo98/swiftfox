@@ -1,6 +1,7 @@
 package app.overbay.swiftfox.ui.browser
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,8 +17,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
@@ -28,13 +29,13 @@ import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
-import androidx.compose.material.icons.rounded.Bolt
-import androidx.compose.material.icons.rounded.Bookmark
+import app.overbay.swiftfox.ui.icons.rounded.Bolt
+import app.overbay.swiftfox.ui.icons.rounded.Bookmark
 import androidx.compose.material.icons.rounded.Close
-import androidx.compose.material.icons.rounded.History
-import androidx.compose.material.icons.rounded.Public
+import app.overbay.swiftfox.ui.icons.rounded.History
+import app.overbay.swiftfox.ui.icons.rounded.Public
 import androidx.compose.material.icons.rounded.Search
-import androidx.compose.material.icons.rounded.Tab
+import app.overbay.swiftfox.ui.icons.rounded.Tab
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -63,7 +64,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.boundsInRoot
-import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onPlaced
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.SpanStyle
@@ -83,6 +84,8 @@ import app.overbay.swiftfox.ui.components.SiteIconBadge
 import app.overbay.swiftfox.ui.theme.LocalSwiftfoxColors
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.yield
+
+internal class BoundsHolder(var rect: Rect? = null)
 
 @Composable
 fun OmniboxOverlay(
@@ -109,7 +112,7 @@ fun OmniboxOverlay(
     val foxColors = LocalSwiftfoxColors.current
     val quickBangs = remember { OmniboxEngine.bangs.take(7) }
     val quickTlds = remember { OmniboxEngine.quickTldShortcuts }
-    var targetPillRect by remember { mutableStateOf<Rect?>(null) }
+    val targetPillBounds = remember { BoundsHolder() }
 
     // TextFieldState owns the IME buffer synchronously so fast typing bursts never race with
     // parent recompositions or drop characters; select-all on initial open or rapid reopen.
@@ -298,18 +301,18 @@ fun OmniboxOverlay(
                     modifier = Modifier
                         .weight(1f)
                         .heightIn(min = 52.dp)
-                        .onGloballyPositioned { coords ->
+                        .onPlaced { coords ->
                             if (coords.isAttached) {
                                 val r = coords.boundsInRoot()
                                 if (r.width > 0f && r.height > 0f) {
-                                    targetPillRect = r
+                                    targetPillBounds.rect = r
                                 }
                             }
                         }
                         .graphicsLayer {
                             val p = expandProgressProvider().coerceIn(0f, 1f)
                             val src = sourceRect
-                            val dst = targetPillRect
+                            val dst = targetPillBounds.rect
                             if (src != null && dst != null && dst.width > 0f && dst.height > 0f) {
                                 val inv = 1f - p
                                 translationX = (src.center.x - dst.center.x) * inv
@@ -470,54 +473,52 @@ fun OmniboxOverlay(
                     }
             ) {
                 // Active one-time scope reset chip, Quick TLD shortcuts, or Quick Bangs
-                LazyRow(
-                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 16.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
                     if (activeSearchScope != null) {
-                        item(key = "active_scope_chip", contentType = "active_scope_chip") {
-                            Surface(
-                                onClick = {
-                                    onSelectSearchScope(null)
-                                    focusRequestNonce++
-                                },
-                                shape = RoundedCornerShape(16.dp),
-                                color = if (isPrivate) foxColors.privateContainer else MaterialTheme.colorScheme.primaryContainer,
-                                border = BorderStroke(
-                                    1.dp,
-                                    if (isPrivate) {
-                                        foxColors.privateAccent.copy(alpha = 0.5f)
-                                    } else {
-                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
-                                    }
-                                ),
-                                modifier = Modifier.heightIn(min = 48.dp)
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(start = 14.dp, end = 10.dp, top = 12.dp, bottom = 12.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    Text(
-                                        text = "Searching in ${activeSearchScope.displayLabel(customSearchUrlTemplate)}",
-                                        style = MaterialTheme.typography.labelLarge,
-                                        color = if (isPrivate) foxColors.onPrivateContainer else MaterialTheme.colorScheme.onPrimaryContainer
-                                    )
-                                    Icon(
-                                        imageVector = Icons.Rounded.Close,
-                                        contentDescription = "Clear search engine filter",
-                                        tint = if (isPrivate) foxColors.privateAccent else MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(16.dp)
-                                    )
+                        Surface(
+                            onClick = {
+                                onSelectSearchScope(null)
+                                focusRequestNonce++
+                            },
+                            shape = RoundedCornerShape(16.dp),
+                            color = if (isPrivate) foxColors.privateContainer else MaterialTheme.colorScheme.primaryContainer,
+                            border = BorderStroke(
+                                1.dp,
+                                if (isPrivate) {
+                                    foxColors.privateAccent.copy(alpha = 0.5f)
+                                } else {
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
                                 }
+                            ),
+                            modifier = Modifier.heightIn(min = 48.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(start = 14.dp, end = 10.dp, top = 12.dp, bottom = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text(
+                                    text = "Searching in ${activeSearchScope.displayLabel(customSearchUrlTemplate)}",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = if (isPrivate) foxColors.onPrivateContainer else MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                                Icon(
+                                    imageVector = Icons.Rounded.Close,
+                                    contentDescription = "Clear search engine filter",
+                                    tint = if (isPrivate) foxColors.privateAccent else MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(16.dp)
+                                )
                             }
                         }
                     } else if (showQuickTldChips) {
-                        items(
-                            items = quickTlds,
-                            key = { "tld_$it" },
-                            contentType = { "tld_shortcut" }
-                        ) { shortcut ->
+                        quickTlds.forEach { shortcut ->
                             val isPrimaryCom = shortcut == ".com"
                             Surface(
                                 onClick = {
@@ -560,11 +561,7 @@ fun OmniboxOverlay(
                             }
                         }
                     } else {
-                        items(
-                            items = quickBangs,
-                            key = { it.name },
-                            contentType = { "bang_shortcut" }
-                        ) { bang ->
+                        quickBangs.forEach { bang ->
                             Surface(
                                 onClick = {
                                     val bangPrefix = "${bang.triggers.first()} "

@@ -5,9 +5,11 @@ import app.overbay.swiftfox.data.db.FilterListDao
 import app.overbay.swiftfox.data.db.FilterListEntity
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.coroutineContext
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -24,8 +26,17 @@ class FilterListRepository(
     context: Context,
     private val dao: FilterListDao,
     private val engine: AdblockEngine,
-    private val client: OkHttpClient = defaultHttpClient()
+    private val clientProvider: () -> OkHttpClient
 ) {
+    constructor(
+        context: Context,
+        dao: FilterListDao,
+        engine: AdblockEngine,
+        client: OkHttpClient = defaultHttpClient()
+    ) : this(context, dao, engine, { client })
+
+    private val client: OkHttpClient
+        get() = clientProvider()
     private val appContext = context.applicationContext ?: context
     // Serializes network sync passes and structural add/delete mutations so deleted custom lists
     // cannot be resurrected by an in-flight download or duplicated by double-taps.
@@ -274,32 +285,38 @@ class FilterListRepository(
                     reqBuilder.header("If-None-Match", entity.etag)
                 }
 
-                client.newCall(reqBuilder.build()).execute().use { response ->
-                    val fetched = when {
-                        response.code == 304 -> {
-                            FetchedList(
-                                content = null,
-                                etag = response.header("ETag") ?: entity.etag,
-                                notModified = true
-                            )
-                        }
-                        response.isSuccessful -> {
-                            val bodyStream = response.body.byteStream()
-                            val content = readBoundedUtf8(bodyStream, MAX_FILTER_LIST_BYTES)
-                            if (content.isBlank()) {
-                                throw IllegalStateException("Downloaded empty filter list")
+                val call = client.newCall(reqBuilder.build())
+                val cancelHandle = coroutineContext[Job]?.invokeOnCompletion { call.cancel() }
+                try {
+                    call.execute().use { response ->
+                        val fetched = when {
+                            response.code == 304 -> {
+                                FetchedList(
+                                    content = null,
+                                    etag = response.header("ETag") ?: entity.etag,
+                                    notModified = true
+                                )
                             }
-                            FetchedList(
-                                content = content,
-                                etag = response.header("ETag"),
-                                notModified = false
-                            )
+                            response.isSuccessful -> {
+                                val bodyStream = response.body.byteStream()
+                                val content = readBoundedUtf8(bodyStream, MAX_FILTER_LIST_BYTES)
+                                if (content.isBlank()) {
+                                    throw IllegalStateException("Downloaded empty filter list")
+                                }
+                                FetchedList(
+                                    content = content,
+                                    etag = response.header("ETag"),
+                                    notModified = false
+                                )
+                            }
+                            else -> {
+                                throw IllegalStateException("HTTP ${response.code}")
+                            }
                         }
-                        else -> {
-                            throw IllegalStateException("HTTP ${response.code}")
-                        }
+                        Result.success(fetched)
                     }
-                    Result.success(fetched)
+                } finally {
+                    cancelHandle?.dispose()
                 }
             } catch (e: CancellationException) {
                 throw e

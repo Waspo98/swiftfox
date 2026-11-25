@@ -13,6 +13,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import java.io.IOException
 
@@ -70,6 +71,7 @@ class PreferencesRepository(private val context: Context) {
         val SYNC_LAST_TIMESTAMP_MS = longPreferencesKey("sync_last_timestamp_ms")
         val SYNC_LOCAL_HISTORY_SEEDED = booleanPreferencesKey("sync_local_history_seeded")
         val SYNC_ZEN_SEPARATE_ESSENTIALS = booleanPreferencesKey("sync_zen_separate_essentials")
+        val SYNC_HAS_CONNECTED_ACCOUNT = booleanPreferencesKey("sync_has_connected_account")
         val HAS_SEEDED_DEFAULTS = booleanPreferencesKey("has_seeded_defaults")
         val CLEARED_LEGACY_WEB_DARK_OVERRIDES = booleanPreferencesKey("cleared_legacy_web_dark_overrides")
     }
@@ -136,10 +138,12 @@ class PreferencesRepository(private val context: Context) {
                 syncLastTimestampMs = prefs[Keys.SYNC_LAST_TIMESTAMP_MS] ?: 0L,
                 syncLocalHistorySeeded = prefs[Keys.SYNC_LOCAL_HISTORY_SEEDED] ?: false,
                 syncZenSeparateEssentials = prefs[Keys.SYNC_ZEN_SEPARATE_ESSENTIALS],
+                syncHasConnectedAccount = prefs[Keys.SYNC_HAS_CONNECTED_ACCOUNT] ?: false,
                 hasSeededDefaults = prefs[Keys.HAS_SEEDED_DEFAULTS] ?: false,
                 hasClearedLegacyWebDarkOverrides = prefs[Keys.CLEARED_LEGACY_WEB_DARK_OVERRIDES] ?: false
             )
         }
+        .distinctUntilChanged()
 
     suspend fun setThemeMode(mode: ThemeMode) {
         context.swiftfoxDataStore.edit { it[Keys.THEME_MODE] = mode.name }
@@ -324,6 +328,10 @@ class PreferencesRepository(private val context: Context) {
                 it[Keys.SYNC_ZEN_SEPARATE_ESSENTIALS] = separate
             }
         }
+    }
+
+    suspend fun setSyncHasConnectedAccount(connected: Boolean) {
+        context.swiftfoxDataStore.edit { it[Keys.SYNC_HAS_CONNECTED_ACCOUNT] = connected }
     }
 
     private inline fun <reified T : Enum<T>> parseEnum(raw: String?, fallback: T): T {

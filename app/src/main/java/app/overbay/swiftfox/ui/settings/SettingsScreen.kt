@@ -207,6 +207,10 @@ fun SettingsScreen(
                                     viewModel.setOverlay(BrowserOverlay.NONE)
                                     viewModel.goForward()
                                 },
+                                onReloadOrStop = {
+                                    viewModel.setOverlay(BrowserOverlay.NONE)
+                                    viewModel.reloadOrStop()
+                                },
                                 onToggleBookmark = { viewModel.toggleBookmarkForActiveTab() },
                                 onShareCleanUrl = {
                                     viewModel.setOverlay(BrowserOverlay.NONE)

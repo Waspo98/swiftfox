@@ -17,6 +17,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -150,13 +151,7 @@ internal class PullToRefreshController(
         return true
     }
 
-    fun blockByDom(): Boolean {
-        val wasPulling = pullDistancePx > 0f || rawPullPx > 0f
-        eligible = false
-        rawPullPx = 0f
-        pullDistancePx = 0f
-        return wasPulling
-    }
+    fun blockByDom(): Boolean = cancelPull()
 
     fun cancelPull(): Boolean {
         val wasPulling = pullDistancePx > 0f || rawPullPx > 0f
@@ -208,9 +203,14 @@ class PullToRefreshVisualState(val triggerDistancePx: Float) {
     val activePullPx = mutableFloatStateOf(0f)
     var isDragging by mutableStateOf(false)
     var isRefreshingPulse by mutableStateOf(false)
+    var clearGeneration by mutableIntStateOf(0)
+        private set
 
     fun updatePull(pullPx: Float, dragging: Boolean) {
         if (dragging) {
+            if (isRefreshingPulse) {
+                isRefreshingPulse = false
+            }
             if (activePullPx.floatValue != pullPx) {
                 activePullPx.floatValue = pullPx
             }
@@ -238,6 +238,7 @@ class PullToRefreshVisualState(val triggerDistancePx: Float) {
         isDragging = false
         isRefreshingPulse = false
         activePullPx.floatValue = 0f
+        clearGeneration++
     }
 }
 
@@ -254,7 +255,12 @@ internal fun PullToRefreshIndicatorOverlay(
 
     val animatedPullPx = remember { Animatable(0f) }
 
-    LaunchedEffect(visualState.isDragging, visualState.isRefreshingPulse, reduceMotion) {
+    LaunchedEffect(
+        visualState.isDragging,
+        visualState.isRefreshingPulse,
+        visualState.clearGeneration,
+        reduceMotion
+    ) {
         when {
             visualState.isDragging -> {
                 animatedPullPx.stop()
@@ -284,11 +290,15 @@ internal fun PullToRefreshIndicatorOverlay(
             }
             else -> {
                 val startPx = visualState.activePullPx.floatValue
-                if (startPx > 0.5f || animatedPullPx.value > 0.5f) {
+                if (startPx <= 0.5f) {
+                    if (animatedPullPx.value != 0f) {
+                        animatedPullPx.snapTo(0f)
+                    }
+                } else {
                     if (reduceMotion) {
                         animatedPullPx.snapTo(0f)
                     } else {
-                        animatedPullPx.snapTo(startPx.coerceAtLeast(animatedPullPx.value))
+                        animatedPullPx.snapTo(startPx)
                         animatedPullPx.animateTo(
                             targetValue = 0f,
                             animationSpec = tween(durationMillis = 150, easing = EmphasizedDecelerateEasing)

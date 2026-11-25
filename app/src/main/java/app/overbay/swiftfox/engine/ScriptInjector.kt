@@ -413,8 +413,27 @@ object ScriptInjector {
                 });
             }
 
+            function onTouchBubble(e) {
+                if (touching && !blockedSentForTouch && e.defaultPrevented) {
+                    blockedSentForTouch = true;
+                    postGate(true);
+                }
+            }
+
+            function attachWindowBubbleListeners() {
+                window.removeEventListener('touchstart', onTouchBubble, false);
+                window.removeEventListener('touchmove', onTouchBubble, false);
+                window.addEventListener('touchstart', onTouchBubble, { passive: true });
+                window.addEventListener('touchmove', onTouchBubble, { passive: true });
+            }
+
             postReady();
-            document.addEventListener('DOMContentLoaded', postReady, { once: true, passive: true });
+            attachWindowBubbleListeners();
+            document.addEventListener('DOMContentLoaded', function() {
+                postReady();
+                attachWindowBubbleListeners();
+            }, { once: true, passive: true });
+            window.addEventListener('load', attachWindowBubbleListeners, { once: true, passive: true });
             window.addEventListener('pageshow', postReady, { passive: true });
 
             function blocksVerticalPull(touchAction) {
@@ -485,12 +504,15 @@ object ScriptInjector {
                         }
                         el = next;
                     }
-                    var docEl = document.documentElement;
-                    if (docEl && window.getComputedStyle) {
-                        var rootStyle = window.getComputedStyle(docEl);
-                        var rootObY = rootStyle.overscrollBehaviorY || rootStyle.overscrollBehavior || '';
-                        if (rootObY === 'none') {
-                            return true;
+                    var rootNodes = [document.body, document.documentElement];
+                    for (var ri = 0; ri < rootNodes.length; ri++) {
+                        var rootNode = rootNodes[ri];
+                        if (rootNode && window.getComputedStyle) {
+                            var rootStyle = window.getComputedStyle(rootNode);
+                            var rootObY = rootStyle.overscrollBehaviorY || rootStyle.overscrollBehavior || '';
+                            if (rootObY === 'none') {
+                                return true;
+                            }
                         }
                     }
                 } catch (_e) {}
@@ -504,20 +526,6 @@ object ScriptInjector {
                 blockedSentForTouch = blocked;
                 postGate(blocked);
             }, { capture: true, passive: true });
-
-            document.addEventListener('touchstart', function(e) {
-                if (touching && !blockedSentForTouch && e.defaultPrevented) {
-                    blockedSentForTouch = true;
-                    postGate(true);
-                }
-            }, { passive: true });
-
-            document.addEventListener('touchmove', function(e) {
-                if (touching && !blockedSentForTouch && e.defaultPrevented) {
-                    blockedSentForTouch = true;
-                    postGate(true);
-                }
-            }, { passive: true });
 
             document.addEventListener('scroll', function() {
                 if (touching && !blockedSentForTouch) {

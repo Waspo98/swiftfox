@@ -66,6 +66,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -456,21 +457,23 @@ fun SpacesTabSwitcher(
                                 ),
                                 fadeOutSpec = null
                             )
-                        ) {
+                        ) { isCardDismissing ->
                             TabPreviewCard(
                                 tab = tab,
                                 isActive = isLoaded && tab.id == state.activeTabId,
                                 isLoaded = isLoaded,
                                 thumbnail = if (isLoaded) thumbnails.bitmaps[tab.id] else null,
                                 onSelect = {
-                                    if (isPinnedTab) {
-                                        itemCallbacks.onActivatePinnedTab(tab.id)
-                                    } else {
-                                        onSelectTab(tab.id)
+                                    if (!isCardDismissing) {
+                                        if (isPinnedTab) {
+                                            itemCallbacks.onActivatePinnedTab(tab.id)
+                                        } else {
+                                            onSelectTab(tab.id)
+                                        }
                                     }
                                 },
-                                onLongPress = { actionTab = tab },
-                                onClose = closeOrUnloadTab
+                                onLongPress = { if (!isCardDismissing) actionTab = tab },
+                                onClose = { if (!isCardDismissing) closeOrUnloadTab() }
                             )
                         }
                     }
@@ -1094,7 +1097,7 @@ private fun SwipeToDismissTabCard(
     staysInGridAfterDismiss: Boolean,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
-    content: @Composable () -> Unit
+    content: @Composable (isDismissing: Boolean) -> Unit
 ) {
     val reduceMotion = rememberReduceMotion()
     val haptic = LocalHapticFeedback.current
@@ -1103,6 +1106,8 @@ private fun SwipeToDismissTabCard(
     val minFlingVelocityPx = with(density) { 280.dp.toPx() }
     val minExitSpeedPx = with(density) { 1500.dp.toPx() }
     val offsetX = remember(tabId) { Animatable(0f) }
+    var dragOffsetPx by remember(tabId) { mutableFloatStateOf(0f) }
+    var useDragOffset by remember(tabId) { mutableStateOf(false) }
     var cardWidthPx by remember(tabId) { mutableIntStateOf(0) }
     var isDragging by remember(tabId) { mutableStateOf(false) }
     var isDismissing by remember(tabId) { mutableStateOf(false) }
@@ -1112,101 +1117,157 @@ private fun SwipeToDismissTabCard(
     val currentStaysInGrid by rememberUpdatedState(staysInGridAfterDismiss)
 
     LaunchedEffect(tabId, enabled) {
-        if (!enabled && !isDismissing && offsetX.value != 0f) {
-            offsetX.snapTo(0f)
+        if (!enabled && !isDismissing) {
+            isDragging = false
+            useDragOffset = false
+            dragOffsetPx = 0f
+            if (offsetX.value != 0f) {
+                offsetX.snapTo(0f)
+            }
         }
     }
 
     Box(
         modifier = modifier
-            .zIndex(if (isDragging || isDismissing) 1f else 0f)
+            .zIndex(if (isDragging || isDismissing || useDragOffset) 1f else 0f)
             .onSizeChanged { cardWidthPx = it.width }
             .pointerInput(tabId, enabled, minFlingVelocityPx, minExitSpeedPx) {
                 if (!enabled) return@pointerInput
                 val velocityTracker = VelocityTracker()
                 var currentDragOffset = 0f
                 var crossedThreshold = false
+                var hasTrackedFirstSample = false
 
-                detectHorizontalDragGestures(
-                    onDragStart = {
-                        if (isDismissing) return@detectHorizontalDragGestures
-                        velocityTracker.resetTracking()
-                        currentDragOffset = offsetX.value
-                        crossedThreshold = false
-                        isDragging = true
-                        scope.launch { offsetX.stop() }
-                    },
-                    onHorizontalDrag = { change, dragAmount ->
-                        if (isDismissing) return@detectHorizontalDragGestures
-                        change.consume()
-                        velocityTracker.addPosition(change.uptimeMillis, change.position)
-                        currentDragOffset += dragAmount
-                        val targetOffset = currentDragOffset
-                        val threshold = cardWidthPx * 0.32f
-                        val nowCrossed = cardWidthPx > 0 && abs(targetOffset) >= threshold
-                        if (nowCrossed && !crossedThreshold) {
-                            crossedThreshold = true
-                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        } else if (!nowCrossed) {
+                try {
+                    detectHorizontalDragGestures(
+                        onDragStart = {
+                            if (isDismissing) return@detectHorizontalDragGestures
+                            velocityTracker.resetTracking()
+                            hasTrackedFirstSample = false
+                            currentDragOffset = if (useDragOffset) dragOffsetPx else offsetX.value
+                            dragOffsetPx = currentDragOffset
+                            useDragOffset = true
                             crossedThreshold = false
-                        }
-                        scope.launch { offsetX.snapTo(targetOffset) }
-                    },
-                    onDragEnd = {
-                        isDragging = false
-                        if (isDismissing) return@detectHorizontalDragGestures
-                        val vx = velocityTracker.calculateVelocity().x
-                        val direction = resolveTabCardSwipeDismissDirection(
-                            offsetX = currentDragOffset,
-                            velocityX = vx,
-                            cardWidthPx = cardWidthPx.toFloat(),
-                            minFlingVelocityPxPerSec = minFlingVelocityPx
-                        )
-                        if (direction != 0) {
-                            isDismissing = true
-                            val exitTarget = direction * (cardWidthPx.coerceAtLeast(1) * 1.12f)
-                            val remainingPx = abs(exitTarget - currentDragOffset)
-                            val exitDurationMs = computeTabCardSwipeExitDurationMs(
-                                remainingDistancePx = remainingPx,
-                                velocityX = vx,
-                                minExitSpeedPxPerSec = minExitSpeedPx
-                            )
-                            scope.launch {
-                                if (currentReduceMotion) {
-                                    offsetX.snapTo(exitTarget)
-                                } else {
-                                    offsetX.animateTo(
-                                        targetValue = exitTarget,
-                                        animationSpec = tween(
-                                            durationMillis = exitDurationMs,
-                                            easing = LinearEasing
-                                        )
+                            isDragging = true
+                            scope.launch { offsetX.stop() }
+                        },
+                        onHorizontalDrag = { change, dragAmount ->
+                            if (isDismissing) return@detectHorizontalDragGestures
+                            change.consume()
+                            if (!hasTrackedFirstSample) {
+                                hasTrackedFirstSample = true
+                                if (change.uptimeMillis > change.previousUptimeMillis) {
+                                    velocityTracker.addPosition(
+                                        change.previousUptimeMillis,
+                                        change.previousPosition
                                     )
                                 }
-                                currentOnDismiss()
-                                if (currentStaysInGrid) {
+                            }
+                            velocityTracker.addPosition(change.uptimeMillis, change.position)
+                            currentDragOffset += dragAmount
+                            val targetOffset = currentDragOffset
+                            val threshold = cardWidthPx * 0.32f
+                            val nowCrossed = cardWidthPx > 0 && abs(targetOffset) >= threshold
+                            if (nowCrossed && !crossedThreshold) {
+                                crossedThreshold = true
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            } else if (!nowCrossed) {
+                                crossedThreshold = false
+                            }
+                            dragOffsetPx = targetOffset
+                        },
+                        onDragEnd = {
+                            isDragging = false
+                            if (isDismissing) return@detectHorizontalDragGestures
+                            val finalOffset = currentDragOffset
+                            val vx = velocityTracker.calculateVelocity().x
+                            val direction = resolveTabCardSwipeDismissDirection(
+                                offsetX = finalOffset,
+                                velocityX = vx,
+                                cardWidthPx = cardWidthPx.toFloat(),
+                                minFlingVelocityPxPerSec = minFlingVelocityPx
+                            )
+                            if (direction != 0) {
+                                isDismissing = true
+                                val exitTarget = direction * (cardWidthPx.coerceAtLeast(1) * 1.12f)
+                                val remainingPx = abs(exitTarget - finalOffset)
+                                val exitDurationMs = computeTabCardSwipeExitDurationMs(
+                                    remainingDistancePx = remainingPx,
+                                    velocityX = vx,
+                                    minExitSpeedPxPerSec = minExitSpeedPx
+                                )
+                                var didInvokeDismiss = false
+                                val invokeDismissOnce = {
+                                    if (!didInvokeDismiss) {
+                                        didInvokeDismiss = true
+                                        currentOnDismiss()
+                                    }
+                                }
+                                scope.launch {
+                                    try {
+                                        offsetX.snapTo(finalOffset)
+                                        useDragOffset = false
+                                        if (currentReduceMotion) {
+                                            offsetX.snapTo(exitTarget)
+                                        } else {
+                                            offsetX.animateTo(
+                                                targetValue = exitTarget,
+                                                animationSpec = tween(
+                                                    durationMillis = exitDurationMs,
+                                                    easing = LinearEasing
+                                                )
+                                            )
+                                        }
+                                        invokeDismissOnce()
+                                        if (currentStaysInGrid) {
+                                            if (currentReduceMotion) {
+                                                offsetX.snapTo(0f)
+                                            } else {
+                                                offsetX.animateTo(
+                                                    targetValue = 0f,
+                                                    animationSpec = spring(
+                                                        dampingRatio = Spring.DampingRatioNoBouncy,
+                                                        stiffness = 700f
+                                                    )
+                                                )
+                                            }
+                                            isDismissing = false
+                                        }
+                                    } finally {
+                                        invokeDismissOnce()
+                                    }
+                                }
+                            } else {
+                                scope.launch {
+                                    offsetX.snapTo(finalOffset)
+                                    useDragOffset = false
                                     if (currentReduceMotion) {
                                         offsetX.snapTo(0f)
                                     } else {
                                         offsetX.animateTo(
                                             targetValue = 0f,
+                                            initialVelocity = vx,
                                             animationSpec = spring(
                                                 dampingRatio = Spring.DampingRatioNoBouncy,
                                                 stiffness = 700f
                                             )
                                         )
                                     }
-                                    isDismissing = false
                                 }
                             }
-                        } else {
+                        },
+                        onDragCancel = {
+                            isDragging = false
+                            if (isDismissing) return@detectHorizontalDragGestures
+                            val finalOffset = currentDragOffset
                             scope.launch {
+                                offsetX.snapTo(finalOffset)
+                                useDragOffset = false
                                 if (currentReduceMotion) {
                                     offsetX.snapTo(0f)
                                 } else {
                                     offsetX.animateTo(
                                         targetValue = 0f,
-                                        initialVelocity = vx,
                                         animationSpec = spring(
                                             dampingRatio = Spring.DampingRatioNoBouncy,
                                             stiffness = 700f
@@ -1215,30 +1276,18 @@ private fun SwipeToDismissTabCard(
                                 }
                             }
                         }
-                    },
-                    onDragCancel = {
-                        isDragging = false
-                        if (isDismissing) return@detectHorizontalDragGestures
-                        scope.launch {
-                            if (currentReduceMotion) {
-                                offsetX.snapTo(0f)
-                            } else {
-                                offsetX.animateTo(
-                                    targetValue = 0f,
-                                    animationSpec = spring(
-                                        dampingRatio = Spring.DampingRatioNoBouncy,
-                                        stiffness = 700f
-                                    )
-                                )
-                            }
-                        }
+                    )
+                } finally {
+                    isDragging = false
+                    if (!isDismissing) {
+                        useDragOffset = false
                     }
-                )
+                }
             }
     ) {
         Box(
             modifier = Modifier.graphicsLayer {
-                val dx = offsetX.value
+                val dx = if (useDragOffset) dragOffsetPx else offsetX.value
                 translationX = dx
                 val width = size.width.coerceAtLeast(1f)
                 val progress = (abs(dx) / (width * 0.95f)).coerceIn(0f, 1f)
@@ -1248,7 +1297,7 @@ private fun SwipeToDismissTabCard(
                 }
             }
         ) {
-            content()
+            content(isDismissing)
         }
     }
 }

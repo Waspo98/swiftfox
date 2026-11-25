@@ -550,7 +550,8 @@ fun BrowserScreen(
                                         topBarHeightPx = collapseBridge.topBarHeightPx,
                                         bottomBarHeightPx = collapseBridge.bottomBarHeightPx,
                                         collapseProgress = progress,
-                                        expandedViewport = progress > 0.001f
+                                        expandedViewport = progress > 0.001f ||
+                                            (collapseBridge.isUserDragging && webContainer.isViewportExpanded)
                                     )
                                     webContainer.onPullToRefreshProgress = { pullPx, dragging ->
                                         pullToRefreshVisualState.updatePull(pullPx, dragging)
@@ -1363,6 +1364,7 @@ fun BrowserShellLayout(
                                     onFocusOmnibox = { rect -> onFocusOmniboxFromRect(rect, true) },
                                     onGoBack = onGoBack,
                                     onGoForward = onGoForward,
+                                    onReloadOrStop = onReloadOrStop,
                                     onOpenReaderMode = onOpenReaderMode,
                                     onOpenSettings = onOpenSettings,
                                     onOpenTabSwitcher = onOpenTabSwitcher,
@@ -1379,6 +1381,7 @@ fun BrowserShellLayout(
                                         onFocusOmnibox = { rect -> onFocusOmniboxFromRect(rect, true) },
                                         onGoBack = onGoBack,
                                         onGoForward = onGoForward,
+                                        onReloadOrStop = onReloadOrStop,
                                         onOpenReaderMode = onOpenReaderMode,
                                         onOpenSettings = onOpenSettings,
                                         onOpenTabSwitcher = onOpenTabSwitcher,
@@ -1422,6 +1425,7 @@ fun BrowserShellLayout(
                                     onFocusOmnibox = { rect -> onFocusOmniboxFromRect(rect, true) },
                                     onGoBack = onGoBack,
                                     onGoForward = onGoForward,
+                                    onReloadOrStop = onReloadOrStop,
                                     onOpenReaderMode = onOpenReaderMode,
                                     onOpenSettings = onOpenSettings,
                                     onOpenTabSwitcher = onOpenTabSwitcher,
@@ -1817,6 +1821,7 @@ private fun FullOmniboxToolbar(
     onFocusOmnibox: (Rect?) -> Unit,
     onGoBack: () -> Unit,
     onGoForward: () -> Unit,
+    onReloadOrStop: () -> Unit,
     onOpenReaderMode: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenTabSwitcher: () -> Unit,
@@ -1987,15 +1992,19 @@ private fun FullOmniboxToolbar(
                         val showDesktopIndicator = activeTab != null &&
                             !activeTab.isStartPage &&
                             activeTab.resolvedSiteMode == SiteMode.DESKTOP
+                        val showStopButton = activeTab != null &&
+                            !activeTab.isStartPage &&
+                            activeTab.isLoading
                         val showReaderButton = activeTab != null &&
                             !activeTab.isStartPage &&
+                            !showStopButton &&
                             activeTab.isReaderAvailable
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(
                                     start = 12.dp,
-                                    end = if (showReaderButton) 4.dp else 12.dp
+                                    end = if (showReaderButton || showStopButton) 4.dp else 12.dp
                                 ),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -2058,6 +2067,19 @@ private fun FullOmniboxToolbar(
                                         imageVector = Icons.AutoMirrored.Rounded.MenuBook,
                                         contentDescription = "Reader mode",
                                         tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
+
+                            if (showStopButton) {
+                                IconButton(
+                                    onClick = onReloadOrStop,
+                                    modifier = Modifier.size(48.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Close,
+                                        contentDescription = "Stop loading",
                                         modifier = Modifier.size(20.dp)
                                     )
                                 }

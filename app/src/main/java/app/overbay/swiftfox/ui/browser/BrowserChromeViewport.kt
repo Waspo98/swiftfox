@@ -361,7 +361,7 @@ internal class ToolbarCollapseBridge(
                     topBarHeightPx = topBarHeightPx,
                     bottomBarHeightPx = bottomBarHeightPx,
                     collapseProgress = progress,
-                    expandedViewport = progress > 0.001f
+                    expandedViewport = progress > 0.001f || (isUserDragging && container.isViewportExpanded)
                 )
             }
             if (container != null && container.isInLayout) {
@@ -602,10 +602,12 @@ internal class WebViewContainer(context: Context) : FrameLayout(context), FrameC
         triggerDistancePx = 72f * density,
         showDeadzonePx = 8f * density
     )
+    private var pullClaimedTouch: Boolean = false
     private var velocityTracker: VelocityTracker? = null
 
     fun clearGestureCallbacks() {
         cancelActivePullToRefresh()
+        pullClaimedTouch = false
         onGestureStart = null
         onGestureDragDelta = null
         onGestureEnd = null
@@ -704,6 +706,7 @@ internal class WebViewContainer(context: Context) : FrameLayout(context), FrameC
         val dragCallback = onGestureDragDelta
         if (childWebView == null || dragCallback == null) {
             cancelActivePullToRefresh()
+            pullClaimedTouch = false
             pullToRefreshController.reset()
             gestureState.reset()
             recycleVelocityTracker()
@@ -714,6 +717,7 @@ internal class WebViewContainer(context: Context) : FrameLayout(context), FrameC
         var hadActivePullAtEnd = false
         when (action) {
             MotionEvent.ACTION_DOWN -> {
+                pullClaimedTouch = false
                 recycleVelocityTracker()
                 velocityTracker = VelocityTracker.obtain()
                 addScreenVelocityEvent(ev)
@@ -756,10 +760,21 @@ internal class WebViewContainer(context: Context) : FrameLayout(context), FrameC
                             domGateState = childWebView.domTouchGateState
                         )
                         val nextPullPx = pullToRefreshController.pullDistancePx
+                        if (!pullClaimedTouch && nextPullPx > 0f) {
+                            pullClaimedTouch = true
+                            val cancelEvent = MotionEvent.obtain(ev).apply {
+                                setAction(MotionEvent.ACTION_CANCEL)
+                            }
+                            try {
+                                super.dispatchTouchEvent(cancelEvent)
+                            } finally {
+                                cancelEvent.recycle()
+                            }
+                        }
                         if (nextPullPx > 0f || wasPulling) {
                             onPullToRefreshProgress?.invoke(nextPullPx, nextPullPx > 0f)
                         }
-                        if (!pullHandled && nextPullPx <= 0.5f) {
+                        if (!pullHandled && !pullClaimedTouch && nextPullPx <= 0.5f) {
                             val consumedPx = dragCallback(result.rawDy, childWebView)
                             // Sync child translationY synchronously BEFORE super.dispatchTouchEvent
                             // so Android transforms ev into childWebView with zero frame lag.
@@ -790,12 +805,21 @@ internal class WebViewContainer(context: Context) : FrameLayout(context), FrameC
             }
         }
 
-        val handled = super.dispatchTouchEvent(ev)
+        val handled = if (pullClaimedTouch) {
+            true
+        } else {
+            super.dispatchTouchEvent(ev)
+        }
 
         if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+            val wasClaimedByPull = pullClaimedTouch
+            pullClaimedTouch = false
             val outcome = gestureState.onUpOrCancel(isCancel = (action == MotionEvent.ACTION_CANCEL))
             if (outcome.shouldFinish) {
-                finishGesture(childWebView, cancelled = outcome.cancelled || hadActivePullAtEnd)
+                finishGesture(
+                    childWebView,
+                    cancelled = outcome.cancelled || hadActivePullAtEnd || wasClaimedByPull
+                )
             }
         }
         return handled
@@ -833,6 +857,7 @@ internal class WebViewContainer(context: Context) : FrameLayout(context), FrameC
 
     override fun onDetachedFromWindow() {
         cancelActivePullToRefresh()
+        pullClaimedTouch = false
         pullToRefreshController.reset()
         gestureState.reset()
         recycleVelocityTracker()

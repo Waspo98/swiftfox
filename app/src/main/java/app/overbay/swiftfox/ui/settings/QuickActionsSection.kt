@@ -30,11 +30,13 @@ import androidx.compose.material.icons.automirrored.rounded.SendToMobile
 import androidx.compose.material.icons.rounded.AutoFixHigh
 import androidx.compose.material.icons.rounded.Bookmark
 import androidx.compose.material.icons.rounded.BookmarkBorder
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DesktopWindows
 import androidx.compose.material.icons.rounded.FindInPage
 import androidx.compose.material.icons.rounded.PictureInPictureAlt
 import androidx.compose.material.icons.rounded.Print
 import androidx.compose.material.icons.rounded.PushPin
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Shield
@@ -61,6 +63,7 @@ fun QuickActionsSection(
     state: BrowserUiState,
     onGoBack: () -> Unit,
     onGoForward: () -> Unit,
+    onReloadOrStop: () -> Unit,
     onToggleBookmark: () -> Unit,
     onShareCleanUrl: () -> Unit,
     onPrintPage: () -> Unit,
@@ -157,6 +160,12 @@ fun QuickActionsSection(
                     )
                     if (isWebPage) {
                         QuickIconAction(
+                            label = if (activeTab.isLoading) "Stop" else "Reload",
+                            icon = if (activeTab.isLoading) Icons.Rounded.Close else Icons.Rounded.Refresh,
+                            onClick = onReloadOrStop,
+                            modifier = Modifier.weight(1f)
+                        )
+                        QuickIconAction(
                             label = if (state.isActiveUrlBookmarked) "Saved" else "Save",
                             icon = if (state.isActiveUrlBookmarked) {
                                 Icons.Rounded.Bookmark
@@ -171,12 +180,6 @@ fun QuickActionsSection(
                             label = "Share",
                             icon = Icons.Rounded.Share,
                             onClick = onShareCleanUrl,
-                            modifier = Modifier.weight(1f)
-                        )
-                        QuickIconAction(
-                            label = "Print",
-                            icon = Icons.Rounded.Print,
-                            onClick = onPrintPage,
                             modifier = Modifier.weight(1f)
                         )
                     }
@@ -278,6 +281,11 @@ fun QuickActionsSection(
                         label = "Find in page",
                         icon = Icons.Rounded.FindInPage,
                         onClick = onFindInPage
+                    )
+                    QuickActionPill(
+                        label = "Print",
+                        icon = Icons.Rounded.Print,
+                        onClick = onPrintPage
                     )
                     QuickActionPill(
                         label = "Pin essential",

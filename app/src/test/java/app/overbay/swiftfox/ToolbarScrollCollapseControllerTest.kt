@@ -3,9 +3,11 @@ package app.overbay.swiftfox
 import androidx.compose.runtime.snapshots.Snapshot
 import app.overbay.swiftfox.data.prefs.BrowserSettings
 import app.overbay.swiftfox.engine.DomTouchGateState
+import app.overbay.swiftfox.engine.ScriptInjector
 import app.overbay.swiftfox.ui.browser.FrameCallbackScheduler
 import app.overbay.swiftfox.ui.browser.GestureAxis
 import app.overbay.swiftfox.ui.browser.PullToRefreshController
+import app.overbay.swiftfox.ui.browser.PullToRefreshVisualState
 import app.overbay.swiftfox.ui.browser.ToolbarCollapseBridge
 import app.overbay.swiftfox.ui.browser.ToolbarScrollCollapseController
 import app.overbay.swiftfox.ui.browser.VerticalDragGestureState
@@ -1073,5 +1075,50 @@ class ToolbarScrollCollapseControllerTest {
         assertTrue(ptr.cancelPull())
         assertFalse(ptr.eligible)
         assertEquals(0f, ptr.pullDistancePx, 0.001f)
+    }
+
+    @Test
+    fun pullToRefreshVisualStateClearsPulseOnRePullPreservesRetractOriginAndBumpsClearGeneration() {
+        val visualState = PullToRefreshVisualState(triggerDistancePx = 100f)
+        assertEquals(0, visualState.clearGeneration)
+
+        // Normal drag + release below threshold preserves activePullPx so overlay animates back smoothly
+        visualState.updatePull(pullPx = 48f, dragging = true)
+        assertTrue(visualState.isDragging)
+        assertEquals(48f, visualState.activePullPx.floatValue, 0.001f)
+        visualState.updatePull(pullPx = 0f, dragging = false)
+        assertFalse(visualState.isDragging)
+        assertEquals(48f, visualState.activePullPx.floatValue, 0.001f)
+
+        // Starting a new pull during an active refresh pulse clears isRefreshingPulse so
+        // cancelling/releasing below threshold never replays a phantom pulse
+        visualState.triggerRefreshPulse()
+        assertTrue(visualState.isRefreshingPulse)
+        assertFalse(visualState.isDragging)
+        visualState.updatePull(pullPx = 24f, dragging = true)
+        assertTrue(visualState.isDragging)
+        assertFalse(visualState.isRefreshingPulse)
+        assertEquals(24f, visualState.activePullPx.floatValue, 0.001f)
+        visualState.updatePull(pullPx = 0f, dragging = false)
+        assertFalse(visualState.isDragging)
+        assertFalse(visualState.isRefreshingPulse)
+
+        // Explicit clear (tab switch / Start Page / posture change) resets everything and bumps generation
+        visualState.triggerRefreshPulse()
+        visualState.clear()
+        assertFalse(visualState.isDragging)
+        assertFalse(visualState.isRefreshingPulse)
+        assertEquals(0f, visualState.activePullPx.floatValue, 0.001f)
+        assertEquals(1, visualState.clearGeneration)
+    }
+
+    @Test
+    fun touchScrollGateScriptAttachesWindowBubbleListenersAndChecksBodyAndRootOverscroll() {
+        val script = ScriptInjector.buildTouchScrollGateScript()
+        assertTrue(script.contains("if (window !== window.top) return;"))
+        assertTrue(script.contains("window.addEventListener('touchstart', onTouchBubble, { passive: true })"))
+        assertTrue(script.contains("window.addEventListener('touchmove', onTouchBubble, { passive: true })"))
+        assertTrue(script.contains("window.addEventListener('load', attachWindowBubbleListeners"))
+        assertTrue(script.contains("[document.body, document.documentElement]"))
     }
 }

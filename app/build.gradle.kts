@@ -183,7 +183,6 @@ dependencies {
     implementation(libs.androidx.webkit)
     implementation(libs.androidx.window)
     implementation(libs.androidx.datastore.preferences)
-    implementation(libs.androidx.swiperefreshlayout)
     implementation(libs.androidx.work.runtime.ktx)
 
     implementation(libs.androidx.room.runtime)

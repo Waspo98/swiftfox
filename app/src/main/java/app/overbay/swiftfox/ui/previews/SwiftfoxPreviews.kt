@@ -305,6 +305,7 @@ fun QuickActionsSectionPreview() {
                 state = previewState(DevicePosture.FOLDED, startPageActive = false),
                 onGoBack = {},
                 onGoForward = {},
+                onReloadOrStop = {},
                 onToggleBookmark = {},
                 onShareCleanUrl = {},
                 onPrintPage = {},

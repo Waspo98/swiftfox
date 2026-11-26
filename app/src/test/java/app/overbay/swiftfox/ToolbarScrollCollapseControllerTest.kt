@@ -300,7 +300,6 @@ class ToolbarScrollCollapseControllerTest {
         assertFalse(gesture.trackingActive)
         assertEquals(GestureAxis.IGNORED, gesture.axis)
         assertFalse(gesture.shouldRecordVelocityOnMove())
-        assertFalse(gesture.shouldRecordTerminalVelocity())
 
         // Subsequent moves & pointer-up must be ignored without re-triggering finish
         assertEquals(VerticalDragGestureState.MoveResult.Ignored, gesture.onMove(200f, 300f))
@@ -319,13 +318,12 @@ class ToolbarScrollCollapseControllerTest {
         )
         assertFalse(gesture.trackingActive)
         assertEquals(GestureAxis.IGNORED, gesture.axis)
-        assertFalse(gesture.shouldRecordTerminalVelocity())
+        assertFalse(gesture.shouldRecordVelocityOnMove())
         assertFalse(gesture.onUpOrCancel(isCancel = false).shouldFinish)
 
         // Quick tap without crossing vertical slop finishes as cancelled (zero fling velocity)
         gesture.onDown(rawX = 200f, rawY = 500f)
         assertEquals(VerticalDragGestureState.MoveResult.Ignored, gesture.onMove(202f, 496f))
-        assertFalse(gesture.shouldRecordTerminalVelocity())
         val tapUp = gesture.onUpOrCancel(isCancel = false)
         assertTrue(tapUp.shouldFinish)
         assertTrue(tapUp.cancelled)
@@ -340,7 +338,7 @@ class ToolbarScrollCollapseControllerTest {
         assertTrue(move1 is VerticalDragGestureState.MoveResult.VerticalDelta)
         assertEquals(24f, (move1 as VerticalDragGestureState.MoveResult.VerticalDelta).rawDy, 0.001f)
         assertEquals(GestureAxis.VERTICAL, gesture.axis)
-        assertTrue(gesture.shouldRecordTerminalVelocity())
+        assertTrue(gesture.shouldRecordVelocityOnMove())
 
         val up = gesture.onUpOrCancel(isCancel = false)
         assertTrue(up.shouldFinish)
@@ -1159,5 +1157,362 @@ class ToolbarScrollCollapseControllerTest {
         assertTrue(script.contains("window.addEventListener('touchmove', onTouchBubble, { passive: true })"))
         assertTrue(script.contains("window.addEventListener('load', attachWindowBubbleListeners"))
         assertTrue(script.contains("[document.body, document.documentElement]"))
+    }
+
+    @Test
+    fun downwardScrollWithLiftOffReboundWobbleStaysHiddenAndSuppressesSpuriousVelocity() {
+        val controller = ToolbarScrollCollapseController(
+            topRevealThresholdPx = 24,
+            reversalDeadzonePx = 30f,
+            reversalConfirmDistancePx = 42f
+        )
+        // Case 1: Toolbars already collapsed (1f), user scrolls down 300px, then thumb wobbles 4px down on lift
+        controller.setProgress(1f)
+        controller.onGestureStart()
+        val consumedDown = controller.onDragDelta(
+            rawDeltaY = 300f,
+            travelDistancePx = 180f,
+            scrollRange = 4000,
+            scrollExtent = 1000,
+            minScrollableOverflowPx = 400,
+            enabled = true,
+            forceExpanded = false
+        )
+        assertEquals(0f, consumedDown, 0.001f)
+
+        val wobbleConsumed = controller.onDragDelta(
+            rawDeltaY = -4f,
+            travelDistancePx = 180f,
+            scrollRange = 4000,
+            scrollExtent = 1000,
+            minScrollableOverflowPx = 400,
+            enabled = true,
+            forceExpanded = false
+        )
+        assertEquals(0f, wobbleConsumed, 0.001f)
+        assertEquals(1f, controller.collapseProgress, 0.001f)
+
+        // Spurious positive velocity from lift rebound must be sanitized to 0f and stay hidden (1f)
+        assertEquals(0f, controller.sanitizeSnapVelocity(velocityY = 260f, minFlingVelocityPxPerSec = 150f), 0.001f)
+        assertEquals(
+            1f,
+            controller.resolveSnapTarget(
+                velocityY = 260f,
+                minFlingVelocityPxPerSec = 150f,
+                scrollY = 600,
+                scrollRange = 4000,
+                scrollExtent = 1000,
+                minScrollableOverflowPx = 400,
+                enabled = true,
+                forceExpanded = false
+            ),
+            0.001f
+        )
+
+        // Case 2: Mid-collapse drag (0f -> 0.67f), 3px lift wobble + spurious positive velocity finishes collapsing
+        controller.setProgress(0f)
+        controller.onGestureStart()
+        controller.onDragDelta(
+            rawDeltaY = 120f,
+            travelDistancePx = 180f,
+            scrollRange = 4000,
+            scrollExtent = 1000,
+            minScrollableOverflowPx = 400,
+            enabled = true,
+            forceExpanded = false
+        )
+        controller.onDragDelta(
+            rawDeltaY = -3f,
+            travelDistancePx = 180f,
+            scrollRange = 4000,
+            scrollExtent = 1000,
+            minScrollableOverflowPx = 400,
+            enabled = true,
+            forceExpanded = false
+        )
+        assertEquals(0f, controller.sanitizeSnapVelocity(velocityY = 220f, minFlingVelocityPxPerSec = 150f), 0.001f)
+        assertEquals(
+            1f,
+            controller.resolveSnapTarget(
+                velocityY = 220f,
+                minFlingVelocityPxPerSec = 150f,
+                scrollY = 120,
+                scrollRange = 4000,
+                scrollExtent = 1000,
+                minScrollableOverflowPx = 400,
+                enabled = true,
+                forceExpanded = false
+            ),
+            0.001f
+        )
+    }
+
+    @Test
+    fun upwardScrollWithLiftOffReboundWobbleStaysExpanded() {
+        val controller = ToolbarScrollCollapseController(
+            topRevealThresholdPx = 24,
+            reversalDeadzonePx = 30f,
+            reversalConfirmDistancePx = 42f
+        )
+        controller.setProgress(0f)
+        controller.onGestureStart()
+
+        // Drag finger down 250px (scrolling up the page), then wobble 5px up before lifting
+        controller.onDragDelta(
+            rawDeltaY = -250f,
+            travelDistancePx = 180f,
+            scrollRange = 4000,
+            scrollExtent = 1000,
+            minScrollableOverflowPx = 400,
+            enabled = true,
+            forceExpanded = false
+        )
+        val wobbleConsumed = controller.onDragDelta(
+            rawDeltaY = 5f,
+            travelDistancePx = 180f,
+            scrollRange = 4000,
+            scrollExtent = 1000,
+            minScrollableOverflowPx = 400,
+            enabled = true,
+            forceExpanded = false
+        )
+        assertEquals(0f, wobbleConsumed, 0.001f)
+        assertEquals(0f, controller.collapseProgress, 0.001f)
+        assertEquals(0f, controller.sanitizeSnapVelocity(velocityY = -240f, minFlingVelocityPxPerSec = 150f), 0.001f)
+        assertEquals(
+            0f,
+            controller.resolveSnapTarget(
+                velocityY = -240f,
+                minFlingVelocityPxPerSec = 150f,
+                scrollY = 900,
+                scrollRange = 4000,
+                scrollExtent = 1000,
+                minScrollableOverflowPx = 400,
+                enabled = true,
+                forceExpanded = false
+            ),
+            0.001f
+        )
+    }
+
+    @Test
+    fun midGestureDeliberateReversalPastThresholdRevealsAndSnapsOpen() {
+        val controller = ToolbarScrollCollapseController(
+            topRevealThresholdPx = 24,
+            reversalDeadzonePx = 30f,
+            reversalConfirmDistancePx = 42f
+        )
+        controller.setProgress(1f)
+        controller.onGestureStart()
+
+        // Scroll down 300px, then without lifting drag down 20px (inside 30px deadzone) -> stays 1f
+        controller.onDragDelta(
+            rawDeltaY = 300f,
+            travelDistancePx = 180f,
+            scrollRange = 4000,
+            scrollExtent = 1000,
+            minScrollableOverflowPx = 400,
+            enabled = true,
+            forceExpanded = false
+        )
+        val consumedInsideDeadzone = controller.onDragDelta(
+            rawDeltaY = -20f,
+            travelDistancePx = 180f,
+            scrollRange = 4000,
+            scrollExtent = 1000,
+            minScrollableOverflowPx = 400,
+            enabled = true,
+            forceExpanded = false
+        )
+        assertEquals(0f, consumedInsideDeadzone, 0.001f)
+        assertEquals(1f, controller.collapseProgress, 0.001f)
+
+        // Continue dragging down another 30px (total reversal 50px -> 20px past deadzone, > 42px confirm)
+        val consumedPastDeadzone = controller.onDragDelta(
+            rawDeltaY = -30f,
+            travelDistancePx = 180f,
+            scrollRange = 4000,
+            scrollExtent = 1000,
+            minScrollableOverflowPx = 400,
+            enabled = true,
+            forceExpanded = false
+        )
+        assertEquals(-20f, consumedPastDeadzone, 0.001f)
+        assertEquals(160f / 180f, controller.collapseProgress, 0.001f)
+
+        // Subsequent moves while already unlocked track 1:1 without subtracting deadzone again
+        val consumedAfterUnlock = controller.onDragDelta(
+            rawDeltaY = -20f,
+            travelDistancePx = 180f,
+            scrollRange = 4000,
+            scrollExtent = 1000,
+            minScrollableOverflowPx = 400,
+            enabled = true,
+            forceExpanded = false
+        )
+        assertEquals(-20f, consumedAfterUnlock, 0.001f)
+        assertEquals(140f / 180f, controller.collapseProgress, 0.001f)
+
+        // Downward flick past confirm threshold is preserved and snaps open (0f)
+        assertEquals(480f, controller.sanitizeSnapVelocity(velocityY = 480f, minFlingVelocityPxPerSec = 150f), 0.001f)
+        assertEquals(
+            0f,
+            controller.resolveSnapTarget(
+                velocityY = 480f,
+                minFlingVelocityPxPerSec = 150f,
+                scrollY = 900,
+                scrollRange = 4000,
+                scrollExtent = 1000,
+                minScrollableOverflowPx = 400,
+                enabled = true,
+                forceExpanded = false
+            ),
+            0.001f
+        )
+    }
+
+    @Test
+    fun freshDownwardFlickRevealsResponsivelyWhileWeakDriftNearHiddenStaysHidden() {
+        val controller = ToolbarScrollCollapseController(
+            topRevealThresholdPx = 24,
+            reversalDeadzonePx = 30f,
+            reversalConfirmDistancePx = 42f
+        )
+        controller.setProgress(1f)
+        controller.onGestureStart()
+
+        // Fresh downward drag immediately moves 1:1 without reversal deadzone lag
+        val consumed = controller.onDragDelta(
+            rawDeltaY = -18f,
+            travelDistancePx = 180f,
+            scrollRange = 4000,
+            scrollExtent = 1000,
+            minScrollableOverflowPx = 400,
+            enabled = true,
+            forceExpanded = false
+        )
+        assertEquals(-18f, consumed, 0.001f)
+        assertEquals(0.90f, controller.collapseProgress, 0.001f)
+
+        // Weak downward drift right near hidden (0.90f >= 0.85f) stays hidden (1f)
+        assertEquals(
+            1f,
+            controller.resolveSnapTarget(
+                velocityY = 200f,
+                minFlingVelocityPxPerSec = 150f,
+                scrollY = 900,
+                scrollRange = 4000,
+                scrollExtent = 1000,
+                minScrollableOverflowPx = 400,
+                enabled = true,
+                forceExpanded = false
+            ),
+            0.001f
+        )
+
+        // Decisive downward flick (>= 2.5x minFlingVelocity) snaps open (0f)
+        assertEquals(
+            0f,
+            controller.resolveSnapTarget(
+                velocityY = 600f,
+                minFlingVelocityPxPerSec = 150f,
+                scrollY = 900,
+                scrollRange = 4000,
+                scrollExtent = 1000,
+                minScrollableOverflowPx = 400,
+                enabled = true,
+                forceExpanded = false
+            ),
+            0.001f
+        )
+
+        // And starting a new gesture resets prior upward scroll tracking cleanly
+        controller.setProgress(1f)
+        controller.onGestureStart()
+        controller.onDragDelta(
+            rawDeltaY = 200f,
+            travelDistancePx = 180f,
+            scrollRange = 4000,
+            scrollExtent = 1000,
+            minScrollableOverflowPx = 400,
+            enabled = true,
+            forceExpanded = false
+        )
+        controller.onGestureStart()
+        val freshConsumed = controller.onDragDelta(
+            rawDeltaY = -18f,
+            travelDistancePx = 180f,
+            scrollRange = 4000,
+            scrollExtent = 1000,
+            minScrollableOverflowPx = 400,
+            enabled = true,
+            forceExpanded = false
+        )
+        assertEquals(-18f, freshConsumed, 0.001f)
+    }
+
+    @Test
+    fun multiReversalInSingleGestureReanchorsDeadzoneAndSuppressesWobble() {
+        val controller = ToolbarScrollCollapseController(
+            topRevealThresholdPx = 24,
+            reversalDeadzonePx = 30f,
+            reversalConfirmDistancePx = 42f
+        )
+
+        // Case 1: Collapsed -> scroll down 300 -> reverse up 100 -> scroll back down 80 (re-collapses to 1f) -> -5px wobble
+        controller.setProgress(1f)
+        controller.onGestureStart()
+        controller.onDragDelta(300f, 180f, 4000, 1000, 400, enabled = true, forceExpanded = false)
+        controller.onDragDelta(-100f, 180f, 4000, 1000, 400, enabled = true, forceExpanded = false)
+        assertTrue(controller.collapseProgress < 0.9f)
+        controller.onDragDelta(80f, 180f, 4000, 1000, 400, enabled = true, forceExpanded = false)
+        assertEquals(1f, controller.collapseProgress, 0.001f)
+
+        val wobbleAfterRecollapse = controller.onDragDelta(
+            rawDeltaY = -5f,
+            travelDistancePx = 180f,
+            scrollRange = 4000,
+            scrollExtent = 1000,
+            minScrollableOverflowPx = 400,
+            enabled = true,
+            forceExpanded = false
+        )
+        assertEquals(0f, wobbleAfterRecollapse, 0.001f)
+        assertEquals(1f, controller.collapseProgress, 0.001f)
+        assertEquals(0f, controller.sanitizeSnapVelocity(260f, 150f), 0.001f)
+        assertEquals(1f, controller.resolveSnapTarget(260f, 150f, 900, 4000, 1000, 400, true, false), 0.001f)
+
+        // Case 2: Collapsed -> scroll down 300 -> reverse up 230 (fully reveals 0f while net delta > 0) -> +5px wobble
+        controller.setProgress(1f)
+        controller.onGestureStart()
+        controller.onDragDelta(300f, 180f, 4000, 1000, 400, enabled = true, forceExpanded = false)
+        controller.onDragDelta(-230f, 180f, 4000, 1000, 400, enabled = true, forceExpanded = false)
+        assertEquals(0f, controller.collapseProgress, 0.001f)
+
+        val wobbleAfterFullReveal = controller.onDragDelta(
+            rawDeltaY = 5f,
+            travelDistancePx = 180f,
+            scrollRange = 4000,
+            scrollExtent = 1000,
+            minScrollableOverflowPx = 400,
+            enabled = true,
+            forceExpanded = false
+        )
+        assertEquals(0f, wobbleAfterFullReveal, 0.001f)
+        assertEquals(0f, controller.collapseProgress, 0.001f)
+        assertEquals(0f, controller.sanitizeSnapVelocity(-240f, 150f), 0.001f)
+        assertEquals(0f, controller.resolveSnapTarget(-240f, 150f, 900, 4000, 1000, 400, true, false), 0.001f)
+
+        // Case 3: Mid-travel reversal back and forth preserves real downward fling and suppresses wobble
+        controller.setProgress(0.90f)
+        controller.onGestureStart()
+        controller.onDragDelta(-10f, 180f, 4000, 1000, 400, enabled = true, forceExpanded = false)
+        controller.onDragDelta(30f, 180f, 4000, 1000, 400, enabled = true, forceExpanded = false)
+        assertEquals(1f, controller.collapseProgress, 0.001f)
+        // Downward-scroll fling in the final direction is preserved
+        assertEquals(-200f, controller.sanitizeSnapVelocity(-200f, 150f), 0.001f)
+        // Lift-off rebound wobble in the opposite direction is suppressed
+        controller.onDragDelta(-4f, 180f, 4000, 1000, 400, enabled = true, forceExpanded = false)
+        assertEquals(0f, controller.sanitizeSnapVelocity(220f, 150f), 0.001f)
     }
 }

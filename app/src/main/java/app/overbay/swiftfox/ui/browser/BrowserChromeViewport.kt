@@ -204,7 +204,7 @@ internal class ToolbarCollapseBridge(
         val hostActive = settleHostActiveProvider?.invoke() ?: false
         if (hostActive && !isUserDragging && snapJob?.isActive != true) {
             val current = controller.collapseProgress
-            if (current > 0.001f && current < 0.999f) {
+            if (current > EXPANDED_EPSILON && current < FULL_COLLAPSE_EPSILON) {
                 val settledTarget = controller.resolveSettledSnapTarget(
                     enabled = settleEnabledProvider?.invoke() ?: false,
                     forceExpanded = settleForceExpandedProvider?.invoke() ?: true
@@ -360,7 +360,7 @@ internal class ToolbarCollapseBridge(
                 }
                 applyProgress(
                     progress = pending,
-                    expandedViewport = pending > 0.001f
+                    expandedViewport = pending > EXPANDED_EPSILON
                 )
             }
             pendingFlingRunnable = runnable
@@ -373,7 +373,7 @@ internal class ToolbarCollapseBridge(
         flingSettleJob = null
         flingSettleHost?.cancelDelayedSettler(flingSettleRunnable)
         flingSettleHost = null
-        if (next > 0.001f && next < 0.999f) {
+        if (next > EXPANDED_EPSILON && next < FULL_COLLAPSE_EPSILON) {
             settleEnabledProvider = isEnabledProvider
             settleForceExpandedProvider = isForceExpandedProvider
             settleHostActiveProvider = isHostActive
@@ -538,8 +538,6 @@ internal class VerticalDragGestureState(private val touchSlop: Int) {
 
     fun shouldRecordVelocityOnMove(): Boolean = trackingActive && axis != GestureAxis.IGNORED
 
-    fun shouldRecordTerminalVelocity(): Boolean = trackingActive && axis == GestureAxis.VERTICAL
-
     fun onUpOrCancel(isCancel: Boolean): PointerUpOutcome {
         if (!trackingActive) return PointerUpOutcome(shouldFinish = false, cancelled = true)
         val cancelled = isCancel || axis != GestureAxis.VERTICAL
@@ -563,8 +561,6 @@ internal enum class ViewportHeightMode {
     /** Full viewport height: only active once top-bar translationY reaches 0f (or when no top bar exists). */
     FULL
 }
-
-internal const val FULL_COLLAPSE_EPSILON = 0.999f
 
 internal fun resolveViewportHeightMode(
     topBarHeightPx: Int,
@@ -871,9 +867,8 @@ internal class WebViewContainer(context: Context) : FrameLayout(context), FrameC
             }
 
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                if (gestureState.shouldRecordTerminalVelocity()) {
-                    addScreenVelocityEvent(ev)
-                }
+                // Intentionally skip feeding ACTION_UP into VelocityTracker: capacitive centroid
+                // peel-off on finger lift creates 1-2 px reverse spikes amplified by LSQ2.
                 val isCancel = action == MotionEvent.ACTION_CANCEL
                 hadActivePullAtEnd = pullToRefreshController.pullDistancePx > 0.5f
                 val shouldTrigger = pullToRefreshController.onTouchEnd(

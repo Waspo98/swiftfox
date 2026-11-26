@@ -284,7 +284,9 @@ fun BrowserScreen(
         with(density) {
             ToolbarCollapseBridge(
                 controller = ToolbarScrollCollapseController(
-                    topRevealThresholdPx = 8.dp.roundToPx()
+                    topRevealThresholdPx = 8.dp.roundToPx(),
+                    reversalDeadzonePx = 10.dp.toPx(),
+                    reversalConfirmDistancePx = 14.dp.toPx()
                 ),
                 sideRailTravelPx = 56.dp.toPx(),
                 minExtraOverflowPx = 48.dp.roundToPx(),
@@ -643,6 +645,7 @@ fun BrowserScreen(
                                         collapseBridge.isUserDragging = true
                                         collapseBridge.snapJob?.cancel()
                                         collapseBridge.cancelFlingWork()
+                                        collapseBridge.controller.onGestureStart()
                                     }
                                     webContainer.onGestureDragDelta = { rawDeltaY, wv ->
                                         val consumed = collapseBridge.controller.onDragDelta(
@@ -663,8 +666,12 @@ fun BrowserScreen(
                                     }
                                     webContainer.onGestureEnd = { velocityY, wv, handoffFling ->
                                         collapseBridge.isUserDragging = false
-                                        val target = collapseBridge.controller.resolveSnapTarget(
+                                        val effectiveVelocityY = collapseBridge.controller.sanitizeSnapVelocity(
                                             velocityY = velocityY,
+                                            minFlingVelocityPxPerSec = webContainer.minFlingVelocityPx
+                                        )
+                                        val target = collapseBridge.controller.resolveSnapTarget(
+                                            velocityY = effectiveVelocityY,
                                             minFlingVelocityPxPerSec = webContainer.minFlingVelocityPx,
                                             scrollY = wv.scrollY,
                                             scrollRange = wv.verticalScrollRangePx,
@@ -675,8 +682,8 @@ fun BrowserScreen(
                                             webViewTranslatesWithTopBar = collapseBridge.hasTopBar
                                         )
                                         animateCollapseTo(target)
-                                        if (handoffFling) {
-                                            val flingVy = (-velocityY).roundToInt()
+                                        if (handoffFling && kotlin.math.abs(effectiveVelocityY) >= webContainer.minFlingVelocityPx) {
+                                            val flingVy = (-effectiveVelocityY).roundToInt()
                                             val canScrollInFlingDirection = if (flingVy > 0) {
                                                 wv.canScrollVertically(1)
                                             } else {

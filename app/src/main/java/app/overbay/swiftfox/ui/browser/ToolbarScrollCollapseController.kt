@@ -15,10 +15,25 @@ package app.overbay.swiftfox.ui.browser
  */
 class ToolbarScrollCollapseController(
     private val topRevealThresholdPx: Int,
-    private val snapMidpoint: Float = 0.45f
+    private val snapMidpoint: Float = 0.45f,
+    private val reversalDeadzonePx: Float = 0f,
+    private val reversalConfirmDistancePx: Float = 0f,
+    private val nearCollapsedRevealMultiplier: Float = 2.5f,
+    private val nearCollapsedThreshold: Float = 0.85f
 ) {
     var collapseProgress: Float = 0f
         private set
+
+    private var gestureDeltaY: Float = 0f
+    private var downPeakDeltaY: Float? = null
+    private var upTroughDeltaY: Float? = null
+
+    /** Resets per-gesture directional tracking at touch start (`ACTION_DOWN`). */
+    fun onGestureStart() {
+        gestureDeltaY = 0f
+        downPeakDeltaY = null
+        upTroughDeltaY = null
+    }
 
     /**
      * Applies a raw screen-space vertical finger delta (`rawDeltaY > 0` when dragging finger up
@@ -51,9 +66,141 @@ class ToolbarScrollCollapseController(
         if (rawDeltaY == 0f) return 0f
 
         val old = collapseProgress
-        val next = (old + rawDeltaY / travelDistancePx).coerceIn(0f, 1f)
-        collapseProgress = next
+        val oldGestureDeltaY = gestureDeltaY
+        val newGestureDeltaY = oldGestureDeltaY + rawDeltaY
+        gestureDeltaY = newGestureDeltaY
+        val effectiveDeltaY = applyReversalDeadzone(
+            rawDeltaY = rawDeltaY,
+            oldGestureDeltaY = oldGestureDeltaY,
+            newGestureDeltaY = newGestureDeltaY
+        )
+
+        val next = if (effectiveDeltaY == 0f) {
+            old
+        } else {
+            (old + effectiveDeltaY / travelDistancePx).coerceIn(0f, 1f).also {
+                collapseProgress = it
+            }
+        }
+        updateDirectionalExtrema(
+            rawDeltaY = rawDeltaY,
+            oldProgress = old,
+            newProgress = next,
+            newGestureDeltaY = newGestureDeltaY
+        )
         return (next - old) * travelDistancePx
+    }
+
+    private fun updateDirectionalExtrema(
+        rawDeltaY: Float,
+        oldProgress: Float,
+        newProgress: Float,
+        newGestureDeltaY: Float
+    ) {
+        if (rawDeltaY > 0f) {
+            if (oldProgress < FULL_COLLAPSE_EPSILON && newProgress >= FULL_COLLAPSE_EPSILON) {
+                // Re-anchor downward peak upon returning to fully collapsed so subsequent lift-off
+                // wobbles get a fresh deadzone & confirmation window.
+                downPeakDeltaY = newGestureDeltaY
+                upTroughDeltaY = null
+                return
+            }
+            val currentTrough = upTroughDeltaY
+            if (currentTrough == null) {
+                if (newProgress >= FULL_COLLAPSE_EPSILON || newGestureDeltaY > 0f) {
+                    downPeakDeltaY = maxOf(downPeakDeltaY ?: newGestureDeltaY, newGestureDeltaY)
+                }
+                return
+            }
+            val confirmThreshold = if (newProgress <= EXPANDED_EPSILON) {
+                maxOf(reversalConfirmDistancePx, reversalDeadzonePx)
+            } else {
+                reversalConfirmDistancePx
+            }
+            if (newProgress >= FULL_COLLAPSE_EPSILON ||
+                (confirmThreshold > 0f && (newGestureDeltaY - currentTrough) >= confirmThreshold)
+            ) {
+                // Confirmed wave reversal back into downward scrolling: start a fresh peak.
+                downPeakDeltaY = newGestureDeltaY
+                upTroughDeltaY = null
+            }
+        } else if (rawDeltaY < 0f) {
+            if (oldProgress > EXPANDED_EPSILON && newProgress <= EXPANDED_EPSILON) {
+                // Re-anchor upward trough upon returning to fully expanded so subsequent upward
+                // lift-off wobbles get a fresh deadzone & confirmation window.
+                upTroughDeltaY = newGestureDeltaY
+                downPeakDeltaY = null
+                return
+            }
+            val currentPeak = downPeakDeltaY
+            if (currentPeak == null) {
+                if (newProgress <= EXPANDED_EPSILON || newGestureDeltaY < 0f) {
+                    upTroughDeltaY = minOf(upTroughDeltaY ?: newGestureDeltaY, newGestureDeltaY)
+                }
+                return
+            }
+            val confirmThreshold = if (newProgress >= FULL_COLLAPSE_EPSILON) {
+                maxOf(reversalConfirmDistancePx, reversalDeadzonePx)
+            } else {
+                reversalConfirmDistancePx
+            }
+            if (newProgress <= EXPANDED_EPSILON ||
+                (confirmThreshold > 0f && (currentPeak - newGestureDeltaY) >= confirmThreshold)
+            ) {
+                // Confirmed wave reversal back into upward scrolling: start a fresh trough.
+                upTroughDeltaY = newGestureDeltaY
+                downPeakDeltaY = null
+            }
+        }
+    }
+
+    private fun applyReversalDeadzone(
+        rawDeltaY: Float,
+        oldGestureDeltaY: Float,
+        newGestureDeltaY: Float
+    ): Float {
+        if (reversalDeadzonePx <= 0f) return rawDeltaY
+        // Reversing downward (revealing) from fully collapsed after scrolling down in this gesture.
+        val peak = downPeakDeltaY
+        if (rawDeltaY < 0f && collapseProgress >= FULL_COLLAPSE_EPSILON && peak != null) {
+            val prevExcess = ((peak - oldGestureDeltaY) - reversalDeadzonePx).coerceAtLeast(0f)
+            val newExcess = ((peak - newGestureDeltaY) - reversalDeadzonePx).coerceAtLeast(0f)
+            return -(newExcess - prevExcess)
+        }
+        // Reversing upward (collapsing) from fully expanded after scrolling up in this gesture.
+        val trough = upTroughDeltaY
+        if (rawDeltaY > 0f && collapseProgress <= EXPANDED_EPSILON && trough != null) {
+            val prevExcess = ((oldGestureDeltaY - trough) - reversalDeadzonePx).coerceAtLeast(0f)
+            val newExcess = ((newGestureDeltaY - trough) - reversalDeadzonePx).coerceAtLeast(0f)
+            return newExcess - prevExcess
+        }
+        return rawDeltaY
+    }
+
+    /**
+     * Suppresses weak or lift-off rebound velocities that contradict the current gesture's
+     * dominant scroll direction without meaningful reverse finger travel.
+     */
+    fun sanitizeSnapVelocity(
+        velocityY: Float,
+        minFlingVelocityPxPerSec: Float
+    ): Float {
+        if (reversalConfirmDistancePx <= 0f) return velocityY
+        val peak = downPeakDeltaY
+        if (velocityY >= minFlingVelocityPxPerSec && peak != null) {
+            val downwardReversalFromPeak = (peak - gestureDeltaY).coerceAtLeast(0f)
+            if (downwardReversalFromPeak < reversalConfirmDistancePx) {
+                return 0f
+            }
+        }
+        val trough = upTroughDeltaY
+        if (velocityY <= -minFlingVelocityPxPerSec && trough != null) {
+            val upwardReversalFromPeak = (gestureDeltaY - trough).coerceAtLeast(0f)
+            if (upwardReversalFromPeak < reversalConfirmDistancePx) {
+                return 0f
+            }
+        }
+        return velocityY
     }
 
     /**
@@ -117,8 +264,14 @@ class ToolbarScrollCollapseController(
         if (!enabled || forceExpanded) return 0f
         val scrollableOverflow = (scrollRange - scrollExtent).coerceAtLeast(0)
         if (scrollableOverflow < minScrollableOverflowPx) return 0f
-        if (velocityY <= -minFlingVelocityPxPerSec) return 1f
-        if (velocityY >= minFlingVelocityPxPerSec) return 0f
+        val sanitizedVelocity = sanitizeSnapVelocity(velocityY, minFlingVelocityPxPerSec)
+        if (sanitizedVelocity <= -minFlingVelocityPxPerSec) return 1f
+        val revealMinVelocity = if (collapseProgress >= nearCollapsedThreshold) {
+            minFlingVelocityPxPerSec * nearCollapsedRevealMultiplier
+        } else {
+            minFlingVelocityPxPerSec
+        }
+        if (sanitizedVelocity >= revealMinVelocity) return 0f
         if (!webViewTranslatesWithTopBar && scrollY.coerceAtLeast(0) <= topRevealThresholdPx) {
             return 0f
         }
@@ -141,3 +294,6 @@ class ToolbarScrollCollapseController(
         collapseProgress = value.coerceIn(0f, 1f)
     }
 }
+
+internal const val EXPANDED_EPSILON = 0.001f
+internal const val FULL_COLLAPSE_EPSILON = 0.999f

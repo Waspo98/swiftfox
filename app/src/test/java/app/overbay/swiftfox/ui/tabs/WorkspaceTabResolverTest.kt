@@ -5,6 +5,7 @@ import app.overbay.swiftfox.data.db.SpaceEntity
 import app.overbay.swiftfox.data.db.ZenPinnedItemEntity
 import app.overbay.swiftfox.data.prefs.BrowserSettings
 import app.overbay.swiftfox.data.prefs.ExternalAppLinkPolicy
+import app.overbay.swiftfox.data.prefs.TabAutoClearDuration
 import app.overbay.swiftfox.engine.BrowserSession
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
 import app.overbay.swiftfox.ui.browser.BrowserOverlay
@@ -287,7 +288,9 @@ class WorkspaceTabResolverTest {
         val unloaded = WorkspaceTabResolver.toUnloadedPinnedTab(loadedPin)
         assertTrue(unloaded.isUnloaded)
         assertEquals("https://docs.example.com", unloaded.url)
+        assertEquals("https://docs.example.com", unloaded.pinnedUrl)
         assertEquals("Docs", unloaded.title)
+        assertEquals(loadedPin.sessionRevision + 1, unloaded.sessionRevision)
         assertFalse(unloaded.isLoading)
         assertEquals(0, unloaded.progress)
         assertFalse(unloaded.canGoBack)
@@ -632,6 +635,14 @@ class WorkspaceTabResolverTest {
         assertEquals(
             ExternalAppLinkPolicy.ALWAYS_IN_SWIFTFOX,
             BrowserSettings().externalAppLinkPolicy
+        )
+    }
+
+    @Test
+    fun defaultTabAutoClearDurationIsOneWeek() {
+        assertEquals(
+            TabAutoClearDuration.WEEK_1,
+            BrowserSettings().tabAutoClearDuration
         )
     }
 

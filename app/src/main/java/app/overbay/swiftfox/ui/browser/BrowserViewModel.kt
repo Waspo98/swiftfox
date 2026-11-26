@@ -36,6 +36,7 @@ import app.overbay.swiftfox.data.prefs.ReaderFontFamily
 import app.overbay.swiftfox.data.prefs.ReaderSurfaceMode
 import app.overbay.swiftfox.data.prefs.SearchEngineId
 import app.overbay.swiftfox.data.prefs.SiteMode
+import app.overbay.swiftfox.data.prefs.TabAutoClearDuration
 import app.overbay.swiftfox.data.prefs.ThemeMode
 import app.overbay.swiftfox.data.prefs.ToolbarPlacement
 import app.overbay.swiftfox.data.prefs.WebDarkModePreference
@@ -64,8 +65,10 @@ import app.overbay.swiftfox.features.userscripts.UserscriptRunAt
 import app.overbay.swiftfox.features.userscripts.UserscriptUrlMatcher
 import app.overbay.swiftfox.features.zapper.ZapperUiState
 import app.overbay.swiftfox.ui.reader.clearGlobalReaderImageCache
+import app.overbay.swiftfox.ui.tabs.AutoClearedTabsSnapshot
 import app.overbay.swiftfox.ui.tabs.PendingPinCloseTarget
 import app.overbay.swiftfox.ui.tabs.PinnedTabKind
+import app.overbay.swiftfox.ui.tabs.TabAutoClearPolicy
 import app.overbay.swiftfox.ui.tabs.WorkspaceTabResolver
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
@@ -485,6 +488,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             if (_uiState.value.activeTabId == tabId) {
                 _activeTabProgress.value = 100
             }
+            val accessedAt = System.currentTimeMillis()
+            val shouldBumpLastAccessed = _uiState.value.activeTabId == tabId || url.isNotBlank()
             updateTab(tabId) { tab ->
                 tab.copy(
                     url = url.ifBlank { tab.url },
@@ -492,7 +497,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     isLoading = false,
                     progress = 100,
                     canGoBack = canGoBack,
-                    canGoForward = canGoForward
+                    canGoForward = canGoForward,
+                    lastAccessedAt = if (shouldBumpLastAccessed && !tab.isUnloaded) accessedAt else tab.lastAccessedAt
                 )
             }
             val updatedTab = _uiState.value.tabs.firstOrNull { it.id == tabId }
@@ -619,11 +625,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             ScriptInjector.extractOrigin(url)?.let { origin ->
                 pool.getExisting(tabId)?.rotateTokensForOrigin(origin)
             }
+            val accessedAt = System.currentTimeMillis()
             updateTab(tabId) { tab ->
                 tab.copy(
                     url = url,
                     canGoBack = canGoBack,
-                    canGoForward = canGoForward
+                    canGoForward = canGoForward,
+                    lastAccessedAt = if (urlChanged && !tab.isUnloaded) accessedAt else tab.lastAccessedAt
                 )
             }
             val tab = _uiState.value.tabs.firstOrNull { it.id == tabId } ?: return
@@ -994,8 +1002,19 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             title: String
         ) {
             viewModelScope.launch(Dispatchers.Main) {
-                updateTab(tabId) { it.copy(isPlayingMedia = isPlaying, isPlayingVideo = isPlaying && hasVideo) }
+                val now = System.currentTimeMillis()
+                updateTab(tabId) {
+                    val stoppedPlaying = it.isPlayingMedia && !isPlaying
+                    it.copy(
+                        isPlayingMedia = isPlaying,
+                        isPlayingVideo = isPlaying && hasVideo,
+                        lastAccessedAt = if (stoppedPlaying) now else it.lastAccessedAt
+                    )
+                }
                 val tab = _uiState.value.tabs.firstOrNull { it.id == tabId }
+                if (!isPlaying && tab != null && !tab.isPrivate && !tab.isUnloaded) {
+                    persistTab(tab)
+                }
                 if (isPlaying && _uiState.value.settings.backgroundMediaEnabled) {
                     maybeRequestNotificationPermissionOnce()
                     activeMediaTabId = tabId
@@ -1412,6 +1431,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     oldSettings.darkReaderSkipNativeDark != newSettings.darkReaderSkipNativeDark
                 val thirdPartyCookiesChanged = oldSettings.blockThirdPartyCookies != newSettings.blockThirdPartyCookies
                 val bgMediaChanged = oldSettings.backgroundMediaEnabled != newSettings.backgroundMediaEnabled
+                val autoClearEnabledOrShortened = wasLoaded &&
+                    startupTabReconciliationDone.get() &&
+                    newSettings.tabAutoClearDuration != oldSettings.tabAutoClearDuration &&
+                    newSettings.tabAutoClearDuration.isMoreAggressiveThan(oldSettings.tabAutoClearDuration)
 
                 _uiState.update { it.copy(settings = newSettings, hasLoadedSettings = true) }
                 if (!newSettings.backgroundMediaEnabled && oldSettings.backgroundMediaEnabled) {
@@ -1425,6 +1448,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                         updateWebDark = webDarkChanged,
                         updateBgMedia = bgMediaChanged
                     )
+                }
+                if (autoClearEnabledOrShortened) {
+                    runAutoClearStaleTabsIfNeeded()
                 }
             }
         }
@@ -1743,6 +1769,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     )
                 }
                 syncActiveTabProgressAndBlocked()
+                runAutoClearStaleTabsIfNeeded()
             }
         }
     }
@@ -1977,6 +2004,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             readerRequestCounter.incrementAndGet()
             _uiState.value.permissionPrompt?.let(::denyPromptSilently)
             _uiState.value.activeTabId?.let { prevId ->
+                touchTabLastAccessed(prevId)
                 pool.getExisting(prevId)?.clearFindMatches()
             }
         }
@@ -2102,6 +2130,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         omniboxHolder.cancelJobsAndClearSuggestions()
         val previousActive = _uiState.value.activeTabId
         if (previousActive != null && previousActive != tabId) {
+            touchTabLastAccessed(previousActive)
             val prevSession = pool.getExisting(previousActive)
             prevSession?.clearFindMatches()
             if (_uiState.value.zapper.isActive && prevSession != null) {
@@ -2188,8 +2217,20 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun closeTab(tabId: String) {
+        closeTabInternal(tabId, allowDeletingPinned = false)
+    }
+
+    fun deletePinnedTab(tabId: String) {
+        closeTabInternal(tabId, allowDeletingPinned = true)
+    }
+
+    private fun closeTabInternal(tabId: String, allowDeletingPinned: Boolean) {
         val state = _uiState.value
         val closing = state.tabs.firstOrNull { it.id == tabId } ?: return
+        if (!allowDeletingPinned && !closing.isPrivate && (closing.isPinned || closing.isBoundWorkspaceTab)) {
+            closePinnedOrBoundTab(tabId)
+            return
+        }
         val remaining = state.tabs.filterNot { it.id == tabId }
         val wasActiveClosing = state.activeTabId == tabId
         val clearAllPrivateState = closing.isPrivate && remaining.none { it.isPrivate }
@@ -2277,6 +2318,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
 
         val prevRecentlyClosedIcon = _uiState.value.recentlyClosedTab?.customIcon
+        val prevAutoClearedIcons = _uiState.value.recentlyAutoClearedTabs?.allCustomIcons.orEmpty()
         val showClosedSnackbar = !closing.isPrivate && !closing.isStartPage
         _uiState.update { current ->
             val wasActive = current.activeTabId == tabId
@@ -2287,6 +2329,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 privateZappedRules = if (clearAllPrivateState) emptyMap() else current.privateZappedRules,
                 recentlyClosedTab = if (showClosedSnackbar) closing else null,
                 recentlyResetSiteOverride = null,
+                recentlyAutoClearedTabs = null,
                 snackbarMessage = if (showClosedSnackbar) "Closed ${closing.displayTitle}" else null,
                 snackbarId = if (showClosedSnackbar) snackbarCounter.incrementAndGet() else current.snackbarId,
                 zapper = if (wasActive) ZapperUiState() else current.zapper,
@@ -2300,6 +2343,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
         // Clean up after _uiState has dropped the closing tab (and any superseded recentlyClosedTab)
         cleanupUnusedCustomImage(prevRecentlyClosedIcon)
+        prevAutoClearedIcons.forEach(::cleanupUnusedCustomImage)
         if (!closing.isPrivate && !showClosedSnackbar) {
             cleanupUnusedCustomImage(closing.customIcon)
         }
@@ -2368,6 +2412,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         _uiState.value.permissionPrompt?.let(::denyPromptSilently)
         val prevTabId = _uiState.value.activeTabId
         if (prevTabId != null) {
+            touchTabLastAccessed(prevTabId)
             pool.getExisting(prevTabId)?.clearFindMatches()
         }
         val currentState = _uiState.value
@@ -2423,6 +2468,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         _uiState.value.permissionPrompt?.let(::denyPromptSilently)
         val prevTabId = _uiState.value.activeTabId
         if (prevTabId != null) {
+            touchTabLastAccessed(prevTabId)
             pool.getExisting(prevTabId)?.clearFindMatches()
         }
         if (enabled) {
@@ -2965,12 +3011,14 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             else -> target.displayTitle
         }
 
+        val prevAutoClearedIcons = if (showClosedSnackbar) _uiState.value.recentlyAutoClearedTabs?.allCustomIcons.orEmpty() else emptyList()
         _uiState.update { current ->
             current.copy(
                 tabs = updatedTabs,
                 activeTabId = nextActiveId,
                 pendingPinCloseTarget = if (current.pendingPinCloseTarget?.tabId == tabId) null else current.pendingPinCloseTarget,
                 recentlyClosedTab = null,
+                recentlyAutoClearedTabs = if (showClosedSnackbar) null else current.recentlyAutoClearedTabs,
                 snackbarMessage = if (showClosedSnackbar) "Closed $displayName" else current.snackbarMessage,
                 snackbarId = if (showClosedSnackbar) snackbarCounter.incrementAndGet() else current.snackbarId,
                 zapper = if (wasActive) ZapperUiState() else current.zapper,
@@ -2992,6 +3040,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         } else if (unloadedTabToPersist != null) {
             persistTab(unloadedTabToPersist)
         }
+        prevAutoClearedIcons.forEach(::cleanupUnusedCustomImage)
 
         if (wasActive) {
             if (nextActiveId != null) {
@@ -3116,6 +3165,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             state.activeTabId
         }
 
+        val prevAutoClearedIcons = _uiState.value.recentlyAutoClearedTabs?.allCustomIcons.orEmpty()
         val count = targets.size
         _uiState.update { current ->
             current.copy(
@@ -3123,6 +3173,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 activeTabId = nextActiveId,
                 pendingPinCloseTarget = if (current.pendingPinCloseTarget?.tabId in targetIds) null else current.pendingPinCloseTarget,
                 recentlyClosedTab = null,
+                recentlyAutoClearedTabs = null,
                 snackbarMessage = "Closed $count loaded ${if (count == 1) "tab" else "tabs"}",
                 snackbarId = snackbarCounter.incrementAndGet(),
                 zapper = if (wasActiveClosed) ZapperUiState() else current.zapper,
@@ -3143,6 +3194,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             }
         }
         unloadedLocals.forEach { persistTab(it) }
+        prevAutoClearedIcons.forEach(::cleanupUnusedCustomImage)
 
         if (wasActiveClosed) {
             if (nextActiveId != null) {
@@ -3187,6 +3239,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
 
         if (state.isPrivateView) {
+            val prevAutoClearedIcons = _uiState.value.recentlyAutoClearedTabs?.allCustomIcons.orEmpty()
             app.faviconRepository.clearAllPrivateIcons()
             synchronized(privateUserscriptStorageLock) {
                 privateSessionGeneration.incrementAndGet()
@@ -3205,6 +3258,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     privateZappedRules = emptyMap(),
                     pendingPinCloseTarget = null,
                     recentlyClosedTab = null,
+                    recentlyAutoClearedTabs = null,
                     snackbarMessage = "Closed all private tabs",
                     snackbarId = snackbarCounter.incrementAndGet(),
                     zapper = ZapperUiState(),
@@ -3216,6 +3270,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     permissionPrompt = null
                 )
             }
+            prevAutoClearedIcons.forEach(::cleanupUnusedCustomImage)
             selectSpace(validSpaceId)
             return
         }
@@ -3229,12 +3284,14 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         } else {
             state.activeTabId
         }
+        val prevAutoClearedIcons = _uiState.value.recentlyAutoClearedTabs?.allCustomIcons.orEmpty()
         val count = targets.size
         _uiState.update { current ->
             current.copy(
                 tabs = remaining,
                 activeTabId = nextActiveId,
                 recentlyClosedTab = null,
+                recentlyAutoClearedTabs = null,
                 snackbarMessage = "Closed $count open ${if (count == 1) "tab" else "tabs"}",
                 snackbarId = snackbarCounter.incrementAndGet(),
                 zapper = if (wasActiveClosed) ZapperUiState() else current.zapper,
@@ -3252,6 +3309,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             }
         }
         affectedIcons.forEach(::cleanupUnusedCustomImage)
+        prevAutoClearedIcons.forEach(::cleanupUnusedCustomImage)
 
         if (wasActiveClosed) {
             if (nextActiveId != null) {
@@ -3315,12 +3373,14 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             state.permissionPrompt?.let(::denyPromptSilently)
         }
 
+        val prevAutoClearedIcons = _uiState.value.recentlyAutoClearedTabs?.allCustomIcons.orEmpty()
         _uiState.update { current ->
             current.copy(
                 tabs = updatedTabs,
                 activeTabId = if (wasActiveClosed) null else current.activeTabId,
                 pendingPinCloseTarget = null,
                 recentlyClosedTab = null,
+                recentlyAutoClearedTabs = null,
                 snackbarMessage = "Closed all tabs in ${state.activeSpace?.name ?: "Space"}",
                 snackbarId = snackbarCounter.incrementAndGet(),
                 zapper = if (wasActiveClosed) ZapperUiState() else current.zapper,
@@ -3343,6 +3403,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
         unloadedLocals.forEach { persistTab(it) }
         regularIcons.forEach(::cleanupUnusedCustomImage)
+        prevAutoClearedIcons.forEach(::cleanupUnusedCustomImage)
 
         if (wasActiveClosed || _uiState.value.activeTab == null) {
             createTab(
@@ -3431,10 +3492,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun setTabPinned(tabId: String, pinned: Boolean) {
         val target = _uiState.value.tabs.firstOrNull { it.id == tabId } ?: return
         if (target.isPrivate || target.isBoundWorkspaceTab || target.isPinned == pinned) return
+        val baselineTitle = target.customTitle?.takeIf { it.isNotBlank() }
+            ?: target.title.takeIf { it.isNotBlank() && !target.isStartPage && !it.equals("New Tab", ignoreCase = true) }
         val updatedTab = target.copy(
             isPinned = pinned,
             isUnloaded = false,
-            pinnedUrl = if (pinned) (target.pinnedUrl ?: target.url) else null
+            pinnedUrl = if (pinned) (target.pinnedUrl?.takeIf { it.isNotBlank() } ?: target.url) else null,
+            customTitle = if (pinned) baselineTitle else if (target.title.isNotBlank()) null else target.customTitle
         )
         _uiState.update { state ->
             val otherTabs = state.tabs.filterNot { it.id == tabId }
@@ -3645,7 +3709,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             state.essentials.any { it.customIcon == oldSpec } ||
             state.tabs.any { it.customIcon == oldSpec } ||
             state.zenPinnedItems.any { it.customIcon == oldSpec } ||
-            state.recentlyClosedTab?.customIcon == oldSpec
+            state.recentlyClosedTab?.customIcon == oldSpec ||
+            state.recentlyAutoClearedTabs?.allCustomIcons?.contains(oldSpec) == true
         if (!stillReferenced) {
             app.faviconRepository.deleteCustomImageIfUnused(oldSpec)
         }
@@ -4711,7 +4776,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                                 isReaderLoading = false,
                                 snackbarMessage = "Reader view unavailable for this page",
                                 snackbarId = snackbarCounter.incrementAndGet(),
-                                recentlyClosedTab = null
+                                recentlyClosedTab = null,
+                                recentlyAutoClearedTabs = null
                             )
                         }
                     }
@@ -5122,15 +5188,18 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 }
                 if (prevOverride != null) {
                     val discardedClosedIcon = _uiState.value.recentlyClosedTab?.customIcon
+                    val discardedAutoClearedIcons = _uiState.value.recentlyAutoClearedTabs?.allCustomIcons.orEmpty()
                     _uiState.update {
                         it.copy(
                             snackbarMessage = "Reset overrides for $normalizedHost",
                             snackbarId = snackbarCounter.incrementAndGet(),
                             recentlyClosedTab = null,
-                            recentlyResetSiteOverride = prevOverride
+                            recentlyResetSiteOverride = prevOverride,
+                            recentlyAutoClearedTabs = null
                         )
                     }
                     cleanupUnusedCustomImage(discardedClosedIcon)
+                    discardedAutoClearedIcons.forEach(::cleanupUnusedCustomImage)
                 } else {
                     showSnackbar("Reset site overrides for $normalizedHost")
                 }
@@ -5245,8 +5314,318 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun setSwipeUrlBarSwitchTabs(enabled: Boolean) = viewModelScope.launch { prefs.setSwipeUrlBarSwitchTabs(enabled) }
     fun setHideToolbarsOnScroll(enabled: Boolean) = viewModelScope.launch { prefs.setHideToolbarsOnScroll(enabled) }
     fun setConfirmClosePinnedOnSecondTap(enabled: Boolean) = viewModelScope.launch { prefs.setConfirmClosePinnedOnSecondTap(enabled) }
+    fun setTabAutoClearDuration(duration: TabAutoClearDuration) = viewModelScope.launch { prefs.setTabAutoClearDuration(duration) }
     fun setBackgroundMediaEnabled(enabled: Boolean) = viewModelScope.launch { prefs.setBackgroundMediaEnabled(enabled) }
     fun setBlockThirdPartyCookies(enabled: Boolean) = viewModelScope.launch { prefs.setBlockThirdPartyCookies(enabled) }
+
+    fun onAppForegrounded() {
+        if (!startupTabReconciliationDone.get()) return
+        runAutoClearStaleTabsIfNeeded()
+    }
+
+    fun onAppBackgrounded() {
+        val activeId = _uiState.value.activeTabId ?: return
+        touchTabLastAccessed(activeId, persistIfNormal = true)
+    }
+
+    private fun touchTabLastAccessed(
+        tabId: String,
+        persistIfNormal: Boolean = true,
+        nowMs: Long = System.currentTimeMillis()
+    ) {
+        val existing = _uiState.value.tabs.firstOrNull { it.id == tabId } ?: return
+        if (existing.isUnloaded) return
+        val updated = existing.copy(lastAccessedAt = nowMs)
+        updateTab(tabId) {
+            if (it.isUnloaded) it else it.copy(lastAccessedAt = nowMs)
+        }
+        if (persistIfNormal && !updated.isPrivate) {
+            persistTab(updated)
+        }
+    }
+
+    fun runAutoClearStaleTabsIfNeeded(nowMs: Long = System.currentTimeMillis()) {
+        val state = _uiState.value
+        val plan = TabAutoClearPolicy.evaluate(
+            tabs = state.tabs,
+            activeTabId = state.activeTabId,
+            normalThresholdMs = state.settings.tabAutoClearDuration.durationMs,
+            nowMs = nowMs
+        )
+        if (!plan.hasAnyChanges) return
+
+        val expiredPrivateIds = plan.expiredPrivateTabIds.toSet()
+        val expiredRegularIds = plan.expiredRegularTabs.mapTo(mutableSetOf()) { it.id }
+        val boundIdsToUnload = plan.expiredPinnedOrBoundTabs
+            .filter { it.isBoundWorkspaceTab }
+            .mapTo(mutableSetOf()) { it.id }
+        val localPinIdsToUnload = plan.expiredPinnedOrBoundTabs
+            .filter { !it.isBoundWorkspaceTab && it.isPinned }
+            .mapTo(mutableSetOf()) { it.id }
+        val allRemovedIds = expiredPrivateIds + expiredRegularIds + boundIdsToUnload
+        val allAffectedIds = allRemovedIds + localPinIdsToUnload
+
+        allAffectedIds.forEach { id ->
+            releaseTabSessionResources(id, wasActive = id == state.activeTabId)
+        }
+        expiredPrivateIds.forEach { app.faviconRepository.clearPrivateTabIcon(it) }
+        _thumbnails.update { current ->
+            current.copy(bitmaps = current.bitmaps - allAffectedIds)
+        }
+
+        val unloadedLocals = mutableListOf<BrowserTabUi>()
+        val updatedTabs = buildList {
+            for (tab in state.tabs) {
+                when {
+                    tab.id in allRemovedIds -> Unit
+                    tab.id in localPinIdsToUnload -> {
+                        val unloaded = WorkspaceTabResolver.toUnloadedPinnedTab(tab)
+                        unloadedLocals += unloaded
+                        add(unloaded)
+                    }
+                    else -> add(tab)
+                }
+            }
+        }
+
+        val hadPrivate = state.tabs.any { it.isPrivate }
+        val remainingHasPrivate = updatedTabs.any { it.isPrivate }
+        val clearAllPrivateState = hadPrivate && !remainingHasPrivate && expiredPrivateIds.isNotEmpty()
+        if (clearAllPrivateState) {
+            app.faviconRepository.clearAllPrivateIcons()
+            synchronized(privateUserscriptStorageLock) {
+                privateSessionGeneration.incrementAndGet()
+                privateUserscriptStorage.clear()
+                privateDeletedUserscriptKeys.clear()
+            }
+            pool.clearPrivateProfileData()
+        }
+
+        if (activeMediaTabId in allAffectedIds || state.tabs.any { it.id in allAffectedIds && it.isPlayingMedia }) {
+            handoffOrStopMediaService(
+                activeMediaTabId ?: "",
+                candidateTabs = updatedTabs.filter { !it.isUnloaded }
+            )
+        }
+        val activeWasAffected = state.activeTabId != null && state.activeTabId in allAffectedIds
+        if (activeWasAffected || state.permissionPrompt?.tabId in allAffectedIds) {
+            state.permissionPrompt?.let(::denyPromptSilently)
+        }
+
+        val exitedPrivateView = state.isPrivateView && !remainingHasPrivate
+        val validSpaceId = state.spaces.firstOrNull { it.id == state.activeSpaceId }?.id
+            ?: state.spaces.firstOrNull()?.id
+            ?: SwiftfoxDatabase.DEFAULT_SPACE_ID
+        val nextIsPrivateView = if (exitedPrivateView) false else state.isPrivateView
+        val nextActiveId = when {
+            !activeWasAffected && !exitedPrivateView -> state.activeTabId
+            else -> WorkspaceTabResolver.resolveFallbackTabId(
+                remainingTabs = updatedTabs,
+                activeSpaceId = validSpaceId,
+                isPrivateView = nextIsPrivateView
+            )
+        }
+
+        val autoClearMsg = TabAutoClearPolicy.formatAutoClearMessage(
+            regularCount = plan.expiredRegularTabs.size,
+            pinnedOrBoundCount = plan.expiredPinnedOrBoundTabs.size
+        )
+        val newSnapshot = if (autoClearMsg != null) {
+            AutoClearedTabsSnapshot(
+                regularTabs = plan.expiredRegularTabs,
+                pinnedOrBoundTabs = plan.expiredPinnedOrBoundTabs
+            )
+        } else {
+            null
+        }
+        val prevClosedIcon = if (autoClearMsg != null) state.recentlyClosedTab?.customIcon else null
+        val prevAutoClearedIcons = if (autoClearMsg != null) {
+            state.recentlyAutoClearedTabs?.allCustomIcons.orEmpty()
+        } else {
+            emptyList()
+        }
+
+        _uiState.update { current ->
+            current.copy(
+                tabs = updatedTabs,
+                activeTabId = nextActiveId,
+                activeSpaceId = if (exitedPrivateView) validSpaceId else current.activeSpaceId,
+                isPrivateView = nextIsPrivateView,
+                privateSiteOverrides = if (clearAllPrivateState) emptyMap() else current.privateSiteOverrides,
+                privateZappedRules = if (clearAllPrivateState) emptyMap() else current.privateZappedRules,
+                pendingPinCloseTarget = if (current.pendingPinCloseTarget?.tabId in allAffectedIds) null else current.pendingPinCloseTarget,
+                recentlyClosedTab = if (autoClearMsg != null) null else current.recentlyClosedTab,
+                recentlyResetSiteOverride = if (autoClearMsg != null) null else current.recentlyResetSiteOverride,
+                recentlyAutoClearedTabs = newSnapshot ?: current.recentlyAutoClearedTabs,
+                snackbarMessage = autoClearMsg ?: current.snackbarMessage,
+                snackbarId = if (autoClearMsg != null) snackbarCounter.incrementAndGet() else current.snackbarId,
+                zapper = if (activeWasAffected || exitedPrivateView) ZapperUiState() else current.zapper,
+                readerArticle = if (activeWasAffected || exitedPrivateView) null else current.readerArticle,
+                isReaderLoading = if (activeWasAffected || exitedPrivateView) false else current.isReaderLoading,
+                findInPage = if (activeWasAffected || exitedPrivateView) FindInPageState() else current.findInPage,
+                externalAppPrompt = if (current.externalAppPrompt?.tabId in allAffectedIds || activeWasAffected || exitedPrivateView) null else current.externalAppPrompt,
+                httpsErrorPrompt = if (current.httpsErrorPrompt?.tabId in allAffectedIds || activeWasAffected || exitedPrivateView) null else current.httpsErrorPrompt,
+                permissionPrompt = if (current.permissionPrompt?.tabId in allAffectedIds || activeWasAffected || exitedPrivateView) null else current.permissionPrompt
+            )
+        }
+
+        cleanupUnusedCustomImage(prevClosedIcon)
+        prevAutoClearedIcons.forEach(::cleanupUnusedCustomImage)
+
+        val dbDeletes = (expiredRegularIds + boundIdsToUnload).toList()
+        if (dbDeletes.isNotEmpty() || unloadedLocals.isNotEmpty()) {
+            val unloadedEntities = unloadedLocals.map { unloaded ->
+                toTabEntity(unloaded, computeNormalTabOrderIndex(updatedTabs, unloaded))
+            }
+            viewModelScope.launch {
+                tabDbMutex.withLock {
+                    if (dbDeletes.isNotEmpty()) {
+                        db.tabDao().deleteByIds(dbDeletes)
+                    }
+                    if (unloadedEntities.isNotEmpty()) {
+                        val liveIds = _uiState.value.tabs.mapTo(mutableSetOf()) { it.id }
+                        val liveUnloaded = unloadedEntities.filter { it.id in liveIds }
+                        if (liveUnloaded.isNotEmpty()) {
+                            db.tabDao().upsertAll(liveUnloaded)
+                        }
+                    }
+                }
+            }
+        }
+
+        if (activeWasAffected || exitedPrivateView) {
+            if (nextActiveId != null) {
+                pool.setActiveTab(nextActiveId)
+                syncActiveTabProgressAndBlocked(nextActiveId)
+                applyResolvedSettingsToTab(nextActiveId, reloadIfModeChanged = true)
+            } else if (!nextIsPrivateView) {
+                createTab(
+                    spaceId = validSpaceId,
+                    isPrivate = false,
+                    selectImmediately = true,
+                    closeFoldedSidebar = false,
+                    closeTabSwitcher = false
+                )
+            }
+        }
+    }
+
+    fun restoreAutoClearedTabs() {
+        val state = _uiState.value
+        val snapshot = state.recentlyAutoClearedTabs ?: return
+        val now = System.currentTimeMillis()
+        val validSpaceIds = state.spaces.mapTo(mutableSetOf()) { it.id }
+        val fallbackSpaceId = state.spaces.firstOrNull { it.id == state.activeSpaceId }?.id
+            ?: state.spaces.firstOrNull()?.id
+            ?: SwiftfoxDatabase.DEFAULT_SPACE_ID
+        val validEssIds = state.essentials.mapTo(mutableSetOf()) { it.id }
+        val validZenIds = state.zenPinnedItems.mapTo(mutableSetOf()) { it.id }
+        val profile = state.activeProfile
+        val existingIds = state.tabs.mapTo(mutableSetOf()) { it.id }
+        val existingEssIds = state.tabs.mapNotNullTo(mutableSetOf()) { if (!it.isPrivate) it.essentialId else null }
+        val existingZenIds = state.tabs.mapNotNullTo(mutableSetOf()) { if (!it.isPrivate) it.zenPinnedId else null }
+
+        val restoredAdditions = mutableListOf<BrowserTabUi>()
+        val wokenLocalPinsById = mutableMapOf<String, BrowserTabUi>()
+        val droppedIcons = mutableListOf<String>()
+
+        fun restoreTabSnapshot(
+            source: BrowserTabUi,
+            spaceId: String = source.spaceId,
+            url: String = source.url,
+            title: String = source.title,
+            siteModeOverride: SiteMode? = source.siteModeOverride,
+            nextRevision: Int = source.sessionRevision + 1
+        ): BrowserTabUi {
+            val host = OmniboxEngine.extractHost(url)
+            val siteOverride = SiteModeResolver.parseOrNull(effectiveSiteOverride(host, false)?.siteModeOverride)
+            return source.copy(
+                spaceId = spaceId,
+                url = url,
+                title = title,
+                siteModeOverride = siteModeOverride,
+                isUnloaded = false,
+                isLoading = false,
+                progress = 0,
+                isPlayingMedia = false,
+                isPlayingVideo = false,
+                isReaderAvailable = false,
+                darkReaderSkippedNative = false,
+                loadError = null,
+                resolvedSiteMode = SiteModeResolver.resolve(siteModeOverride, siteOverride, profile),
+                lastAccessedAt = now,
+                sessionRevision = nextRevision
+            )
+        }
+
+        for (tab in snapshot.regularTabs) {
+            if (tab.id in existingIds) {
+                tab.customIcon?.let(droppedIcons::add)
+                continue
+            }
+            val resolvedSpaceId = if (tab.spaceId in validSpaceIds) tab.spaceId else fallbackSpaceId
+            restoredAdditions += restoreTabSnapshot(tab, spaceId = resolvedSpaceId)
+        }
+
+        for (tab in snapshot.pinnedOrBoundTabs) {
+            when {
+                tab.essentialId != null -> {
+                    if (tab.essentialId in validEssIds && tab.essentialId !in existingEssIds) {
+                        existingEssIds += tab.essentialId
+                        restoredAdditions += restoreTabSnapshot(tab)
+                    } else {
+                        tab.customIcon?.let(droppedIcons::add)
+                    }
+                }
+                tab.zenPinnedId != null -> {
+                    if (tab.zenPinnedId in validZenIds && tab.zenPinnedId !in existingZenIds && tab.spaceId in validSpaceIds) {
+                        existingZenIds += tab.zenPinnedId
+                        restoredAdditions += restoreTabSnapshot(tab)
+                    } else {
+                        tab.customIcon?.let(droppedIcons::add)
+                    }
+                }
+                tab.isPinned -> {
+                    val currentUnloaded = state.tabs.firstOrNull { it.id == tab.id && !it.isPrivate && it.isPinned }
+                    if (currentUnloaded != null) {
+                        wokenLocalPinsById[tab.id] = restoreTabSnapshot(
+                            source = currentUnloaded,
+                            url = tab.url,
+                            title = tab.title,
+                            siteModeOverride = currentUnloaded.siteModeOverride,
+                            nextRevision = currentUnloaded.sessionRevision + 1
+                        )
+                    }
+                }
+            }
+        }
+
+        val nextTabs = state.tabs.map { wokenLocalPinsById[it.id] ?: it } + restoredAdditions
+        _uiState.update {
+            it.copy(
+                tabs = nextTabs,
+                recentlyAutoClearedTabs = null,
+                snackbarMessage = null
+            )
+        }
+        droppedIcons.forEach(::cleanupUnusedCustomImage)
+
+        val toPersist = wokenLocalPinsById.values + restoredAdditions
+        if (toPersist.isNotEmpty()) {
+            val entities = toPersist.map { restored ->
+                toTabEntity(restored, computeNormalTabOrderIndex(nextTabs, restored))
+            }
+            viewModelScope.launch {
+                tabDbMutex.withLock {
+                    val liveIds = _uiState.value.tabs.mapTo(mutableSetOf()) { it.id }
+                    val liveEntities = entities.filter { it.id in liveIds }
+                    if (liveEntities.isNotEmpty()) {
+                        db.tabDao().upsertAll(liveEntities)
+                    }
+                }
+            }
+        }
+    }
 
     // Mozilla / Zen Sync & Chrome Bookmark Interop actions
     fun startMozillaSignIn() {
@@ -5436,27 +5815,33 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun showSnackbar(message: String) {
         val discardedClosedIcon = _uiState.value.recentlyClosedTab?.customIcon
+        val discardedAutoClearedIcons = _uiState.value.recentlyAutoClearedTabs?.allCustomIcons.orEmpty()
         _uiState.update {
             it.copy(
                 snackbarMessage = message,
                 snackbarId = snackbarCounter.incrementAndGet(),
                 recentlyClosedTab = null,
-                recentlyResetSiteOverride = null
+                recentlyResetSiteOverride = null,
+                recentlyAutoClearedTabs = null
             )
         }
         cleanupUnusedCustomImage(discardedClosedIcon)
+        discardedAutoClearedIcons.forEach(::cleanupUnusedCustomImage)
     }
 
     fun clearSnackbar() {
         val discardedClosedIcon = _uiState.value.recentlyClosedTab?.customIcon
+        val discardedAutoClearedIcons = _uiState.value.recentlyAutoClearedTabs?.allCustomIcons.orEmpty()
         _uiState.update {
             it.copy(
                 snackbarMessage = null,
                 recentlyClosedTab = null,
-                recentlyResetSiteOverride = null
+                recentlyResetSiteOverride = null,
+                recentlyAutoClearedTabs = null
             )
         }
         cleanupUnusedCustomImage(discardedClosedIcon)
+        discardedAutoClearedIcons.forEach(::cleanupUnusedCustomImage)
     }
 
     private fun isChromeDark(): Boolean = when (_uiState.value.settings.themeMode) {
@@ -5554,40 +5939,46 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    private fun persistTab(tab: BrowserTabUi) {
-        if (tab.isPrivate) return
-        val orderIdx = _uiState.value.tabs
+    private fun computeNormalTabOrderIndex(tabs: List<BrowserTabUi>, target: BrowserTabUi): Int {
+        if (target.isBoundWorkspaceTab) return 0
+        return tabs
             .filter {
                 !it.isPrivate &&
                     !it.isBoundWorkspaceTab &&
-                    it.spaceId == tab.spaceId &&
-                    it.isPinned == tab.isPinned
+                    it.spaceId == target.spaceId &&
+                    it.isPinned == target.isPinned
             }
-            .indexOfFirst { it.id == tab.id }
+            .indexOfFirst { it.id == target.id }
             .coerceAtLeast(0)
+    }
+
+    private fun toTabEntity(tab: BrowserTabUi, sortOrder: Int): TabEntity = TabEntity(
+        id = tab.id,
+        spaceId = tab.spaceId,
+        title = tab.title,
+        url = tab.url,
+        isPrivate = false,
+        isPinned = tab.isPinned,
+        siteModeOverride = tab.siteModeOverride?.name,
+        lastAccessedAt = tab.lastAccessedAt,
+        sortOrder = sortOrder,
+        customIcon = tab.customIcon,
+        customTitle = tab.customTitle,
+        essentialId = tab.essentialId,
+        zenPinnedId = tab.zenPinnedId,
+        isUnloaded = tab.isUnloaded,
+        pinnedUrl = tab.pinnedUrl
+    )
+
+    private fun persistTab(tab: BrowserTabUi) {
+        if (tab.isPrivate) return
         viewModelScope.launch {
             tabDbMutex.withLock {
-                // Skip upserting if the tab was already closed before this coroutine acquired the lock
-                if (_uiState.value.tabs.none { it.id == tab.id }) return@withLock
-                db.tabDao().upsert(
-                    TabEntity(
-                        id = tab.id,
-                        spaceId = tab.spaceId,
-                        title = tab.title,
-                        url = tab.url,
-                        isPrivate = false,
-                        isPinned = tab.isPinned,
-                        siteModeOverride = tab.siteModeOverride?.name,
-                        lastAccessedAt = tab.lastAccessedAt,
-                        sortOrder = orderIdx,
-                        customIcon = tab.customIcon,
-                        customTitle = tab.customTitle,
-                        essentialId = tab.essentialId,
-                        zenPinnedId = tab.zenPinnedId,
-                        isUnloaded = tab.isUnloaded,
-                        pinnedUrl = tab.pinnedUrl
-                    )
-                )
+                // Read latest live state under lock so superseded async writes never overwrite a reset/closed pin
+                val latest = _uiState.value.tabs.firstOrNull { it.id == tab.id } ?: return@withLock
+                if (latest.isPrivate) return@withLock
+                val orderIdx = computeNormalTabOrderIndex(_uiState.value.tabs, latest)
+                db.tabDao().upsert(toTabEntity(latest, orderIdx))
             }
         }
     }
@@ -5597,42 +5988,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             !it.isPrivate && !it.isBoundWorkspaceTab && it.spaceId == spaceId
         }
         val pinnedEntities = spaceTabs.filter { it.isPinned }.mapIndexed { idx, tab ->
-            TabEntity(
-                id = tab.id,
-                spaceId = tab.spaceId,
-                title = tab.title,
-                url = tab.url,
-                isPrivate = false,
-                isPinned = true,
-                siteModeOverride = tab.siteModeOverride?.name,
-                lastAccessedAt = tab.lastAccessedAt,
-                sortOrder = idx,
-                customIcon = tab.customIcon,
-                customTitle = tab.customTitle,
-                essentialId = null,
-                zenPinnedId = null,
-                isUnloaded = tab.isUnloaded,
-                pinnedUrl = tab.pinnedUrl
-            )
+            toTabEntity(tab, idx)
         }
         val regularEntities = spaceTabs.filter { !it.isPinned }.mapIndexed { idx, tab ->
-            TabEntity(
-                id = tab.id,
-                spaceId = tab.spaceId,
-                title = tab.title,
-                url = tab.url,
-                isPrivate = false,
-                isPinned = false,
-                siteModeOverride = tab.siteModeOverride?.name,
-                lastAccessedAt = tab.lastAccessedAt,
-                sortOrder = idx,
-                customIcon = tab.customIcon,
-                customTitle = tab.customTitle,
-                essentialId = null,
-                zenPinnedId = null,
-                isUnloaded = false,
-                pinnedUrl = null
-            )
+            toTabEntity(tab.copy(isUnloaded = false, pinnedUrl = null), idx)
         }
         val all = pinnedEntities + regularEntities
         if (all.isEmpty()) return

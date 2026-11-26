@@ -124,6 +124,7 @@ object WorkspaceTabResolver {
         val resetHost = OmniboxEngine.extractHost(homeUrl)
         return tab.copy(
             url = homeUrl,
+            pinnedUrl = homeUrl,
             title = tab.customTitle?.takeIf { it.isNotBlank() } ?: resetHost.ifBlank { tab.title },
             isUnloaded = true,
             isLoading = false,
@@ -134,7 +135,8 @@ object WorkspaceTabResolver {
             isPlayingVideo = false,
             isReaderAvailable = false,
             darkReaderSkippedNative = false,
-            loadError = null
+            loadError = null,
+            sessionRevision = tab.sessionRevision + 1
         )
     }
 

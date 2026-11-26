@@ -81,6 +81,7 @@ import app.overbay.swiftfox.data.prefs.ExternalAppLinkPolicy
 import app.overbay.swiftfox.data.prefs.NightSurfaceStyle
 import app.overbay.swiftfox.data.prefs.SearchEngineId
 import app.overbay.swiftfox.data.prefs.SiteMode
+import app.overbay.swiftfox.data.prefs.TabAutoClearDuration
 import app.overbay.swiftfox.data.prefs.ThemeMode
 import app.overbay.swiftfox.data.prefs.ToolbarPlacement
 import app.overbay.swiftfox.data.prefs.WebDarkModePreference
@@ -405,6 +406,31 @@ internal fun LazyListScope.foldableLayoutSettingsItems(
     }
 }
 
+internal fun LazyListScope.tabsWorkspacesSettingsItems(
+    state: BrowserUiState,
+    viewModel: BrowserViewModel,
+    onOpenAutoClearPicker: () -> Unit
+) {
+    val settings = state.settings
+    item(key = "tabs_workspaces_section", contentType = "settings_section") {
+        SettingsSection(title = "Tab Management") {
+            SettingsNavigationRow(
+                title = "Auto-clear opened tabs",
+                subtitle = tabAutoClearSubtitle(settings.tabAutoClearDuration),
+                trailingBadge = settings.tabAutoClearDuration.label,
+                onClick = onOpenAutoClearPicker
+            )
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+            SettingsSwitchRow(
+                title = "Confirm closing active Essentials & Pins",
+                subtitle = "Ask before closing an open Essential or pinned tab on a second tap",
+                checked = settings.confirmClosePinnedOnSecondTap,
+                onCheckedChange = { viewModel.setConfirmClosePinnedOnSecondTap(it) }
+            )
+        }
+    }
+}
+
 internal fun LazyListScope.adBlockScriptsSettingsItems(
     state: BrowserUiState,
     viewModel: BrowserViewModel
@@ -565,13 +591,6 @@ internal fun LazyListScope.searchGesturesSettingsItems(
                 subtitle = "Pull down from the top of a webpage to reload",
                 checked = settings.pullToRefreshEnabled,
                 onCheckedChange = { viewModel.setPullToRefreshEnabled(it) }
-            )
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
-            SettingsSwitchRow(
-                title = "Confirm closing active Essentials & Pins",
-                subtitle = "Ask before closing an open Essential or pinned tab on a second tap",
-                checked = settings.confirmClosePinnedOnSecondTap,
-                onCheckedChange = { viewModel.setConfirmClosePinnedOnSecondTap(it) }
             )
         }
     }
@@ -915,6 +934,105 @@ private fun applyDarkReaderFilter(
     val g = (g0 * (1f - s) + sg * s).coerceIn(0f, 1f)
     val bl = (b0 * (1f - s) + sb * s).coerceIn(0f, 1f)
     return Color(r, g, bl, source.alpha)
+}
+
+private fun tabAutoClearSubtitle(duration: TabAutoClearDuration): String = when (duration) {
+    TabAutoClearDuration.NEVER -> "Keep open tabs indefinitely until closed manually"
+    else -> "Close inactive tabs and reset loaded pins after ${duration.label.lowercase()}"
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun TabAutoClearPickerSheet(
+    selected: TabAutoClearDuration,
+    onSelect: (TabAutoClearDuration) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+        containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+        contentColor = MaterialTheme.colorScheme.onSurface
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    text = "Auto-clear opened tabs",
+                    style = MaterialTheme.typography.titleLarge
+                )
+                Text(
+                    text = "Closes inactive tabs and restores loaded pins or Essentials to their pinned URL. Active and media-playing tabs stay open.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Surface(
+                shape = RoundedCornerShape(22.dp),
+                color = MaterialTheme.colorScheme.surfaceContainer,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .selectableGroup()
+                        .padding(horizontal = 8.dp, vertical = 6.dp)
+                ) {
+                    TabAutoClearDuration.entries.forEachIndexed { idx, option ->
+                        val isSelected = option == selected
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(14.dp))
+                                .selectable(
+                                    selected = isSelected,
+                                    role = Role.RadioButton,
+                                    onClick = {
+                                        onSelect(option)
+                                        onDismiss()
+                                    }
+                                )
+                                .heightIn(min = 56.dp)
+                                .padding(horizontal = 8.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            RadioButton(selected = isSelected, onClick = null)
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = option.label,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = option.description,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                        if (idx < TabAutoClearDuration.entries.lastIndex) {
+                            HorizontalDivider(
+                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
+                                modifier = Modifier.padding(horizontal = 8.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 private fun searchEngineSubtitle(engine: SearchEngineId, customTemplate: String): String = when (engine) {

@@ -205,15 +205,24 @@ fun BrowserScreen(
             return@LaunchedEffect
         }
         snackbarHostState.currentSnackbarData?.dismiss()
-        val canUndo = state.recentlyClosedTab != null || state.recentlyResetSiteOverride != null
-        val actionLabel = if (canUndo) "Undo" else null
+        val actionLabel = when {
+            state.recentlyAutoClearedTabs != null -> "Restore"
+            state.recentlyClosedTab != null || state.recentlyResetSiteOverride != null -> "Undo"
+            else -> null
+        }
+        val duration = if (state.recentlyAutoClearedTabs != null) {
+            SnackbarDuration.Long
+        } else {
+            SnackbarDuration.Short
+        }
         val result = snackbarHostState.showSnackbar(
             message = msg,
             actionLabel = actionLabel,
-            duration = SnackbarDuration.Short
+            duration = duration
         )
         if (result == SnackbarResult.ActionPerformed) {
             when {
+                state.recentlyAutoClearedTabs != null -> viewModel.restoreAutoClearedTabs()
                 state.recentlyClosedTab != null -> viewModel.undoCloseTab()
                 state.recentlyResetSiteOverride != null -> viewModel.undoResetSiteOverride()
                 else -> viewModel.clearSnackbar()
@@ -380,6 +389,7 @@ fun BrowserScreen(
             onActivatePinnedTab = { tabId -> viewModel.activatePinnedTab(tabId) },
             onClosePinnedTab = { tabId -> viewModel.unloadPinnedTab(tabId) },
             onResetPinnedTab = { tabId -> viewModel.resetPinnedTab(tabId) },
+            onDeletePinnedTab = { tabId -> viewModel.deletePinnedTab(tabId) },
             onEditTabTitleAndUrl = { tabId, title, url -> viewModel.editTabTitleAndUrl(tabId, title, url) },
             onSetTabCustomIcon = { tabId, spec -> viewModel.setTabCustomIcon(tabId, spec) },
             onAddTabToEssentials = { tabId -> viewModel.addTabToEssentials(tabId) },

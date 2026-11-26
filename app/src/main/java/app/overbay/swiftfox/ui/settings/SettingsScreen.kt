@@ -42,6 +42,7 @@ import app.overbay.swiftfox.ui.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Search
 import app.overbay.swiftfox.ui.icons.rounded.Shield
 import app.overbay.swiftfox.ui.icons.rounded.Sync
+import app.overbay.swiftfox.ui.icons.rounded.Tab
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -115,6 +116,7 @@ fun SettingsScreen(
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
     var showClearDataDialog by remember { mutableStateOf(false) }
     var showSearchEnginePicker by remember { mutableStateOf(false) }
+    var showTabAutoClearPicker by remember { mutableStateOf(false) }
 
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -290,6 +292,13 @@ fun SettingsScreen(
                                 )
                                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
                                 SettingsNavigationRow(
+                                    title = SettingsCategory.TABS_WORKSPACES.title,
+                                    subtitle = tabsWorkspacesSummary(state.settings),
+                                    icon = Icons.Rounded.Tab,
+                                    onClick = { viewModel.setSettingsCategory(SettingsCategory.TABS_WORKSPACES) }
+                                )
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+                                SettingsNavigationRow(
                                     title = SettingsCategory.ADBLOCK_SCRIPTS.title,
                                     subtitle = adblockSummary(
                                         settings = state.settings,
@@ -388,6 +397,14 @@ fun SettingsScreen(
                         foldableLayoutSettingsItems(state = state, viewModel = viewModel)
                     }
 
+                    SettingsCategory.TABS_WORKSPACES -> {
+                        tabsWorkspacesSettingsItems(
+                            state = state,
+                            viewModel = viewModel,
+                            onOpenAutoClearPicker = { showTabAutoClearPicker = true }
+                        )
+                    }
+
                     SettingsCategory.ADBLOCK_SCRIPTS -> {
                         adBlockScriptsSettingsItems(state = state, viewModel = viewModel)
                     }
@@ -418,6 +435,14 @@ fun SettingsScreen(
             customTemplate = state.settings.customSearchUrlTemplate,
             onSelect = { viewModel.setSearchEngine(it) },
             onDismiss = { showSearchEnginePicker = false }
+        )
+    }
+
+    if (showTabAutoClearPicker) {
+        TabAutoClearPickerSheet(
+            selected = state.settings.tabAutoClearDuration,
+            onSelect = { viewModel.setTabAutoClearDuration(it) },
+            onDismiss = { showTabAutoClearPicker = false }
         )
     }
 
@@ -457,6 +482,16 @@ private fun appearanceSummary(settings: BrowserSettings): String = buildList {
 private fun foldableSummary(settings: BrowserSettings): String =
     "Folded: ${settings.foldedProfile.toolbarPlacement.label} / ${settings.foldedProfile.defaultSiteMode.label} · " +
         "Unfolded: ${settings.unfoldedProfile.toolbarPlacement.label} / ${settings.unfoldedProfile.defaultSiteMode.label}"
+
+private fun tabsWorkspacesSummary(settings: BrowserSettings): String = buildList {
+    val autoClearPart = if (settings.tabAutoClearDuration.durationMs == null) {
+        "Auto-clear off"
+    } else {
+        "Auto-clear: ${settings.tabAutoClearDuration.label}"
+    }
+    add(autoClearPart)
+    add(if (settings.confirmClosePinnedOnSecondTap) "Confirm closing pins" else "Instant pin close")
+}.joinToString(" · ")
 
 private fun adblockSummary(
     settings: BrowserSettings,

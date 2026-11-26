@@ -60,6 +60,7 @@ class PreferencesRepository(private val context: Context) {
         val SWIPE_URL_BAR_TABS = booleanPreferencesKey("swipe_url_bar_tabs")
         val HIDE_TOOLBARS_ON_SCROLL = booleanPreferencesKey("hide_toolbars_on_scroll")
         val CONFIRM_CLOSE_PINNED_SECOND_TAP = booleanPreferencesKey("confirm_close_pinned_second_tap")
+        val TAB_AUTO_CLEAR_DURATION = stringPreferencesKey("tab_auto_clear_duration")
         val BACKGROUND_MEDIA = booleanPreferencesKey("background_media")
         val BLOCK_THIRD_PARTY_COOKIES = booleanPreferencesKey("block_third_party_cookies")
 
@@ -126,6 +127,10 @@ class PreferencesRepository(private val context: Context) {
                 swipeUrlBarSwitchTabs = prefs[Keys.SWIPE_URL_BAR_TABS] ?: true,
                 hideToolbarsOnScroll = prefs[Keys.HIDE_TOOLBARS_ON_SCROLL] ?: true,
                 confirmClosePinnedOnSecondTap = prefs[Keys.CONFIRM_CLOSE_PINNED_SECOND_TAP] ?: true,
+                tabAutoClearDuration = parseEnum(
+                    prefs[Keys.TAB_AUTO_CLEAR_DURATION],
+                    TabAutoClearDuration.WEEK_1
+                ),
                 backgroundMediaEnabled = prefs[Keys.BACKGROUND_MEDIA] ?: true,
                 blockThirdPartyCookies = prefs[Keys.BLOCK_THIRD_PARTY_COOKIES] ?: false,
                 syncBookmarksEnabled = prefs[Keys.SYNC_BOOKMARKS] ?: true,
@@ -274,6 +279,10 @@ class PreferencesRepository(private val context: Context) {
 
     suspend fun setConfirmClosePinnedOnSecondTap(enabled: Boolean) {
         context.swiftfoxDataStore.edit { it[Keys.CONFIRM_CLOSE_PINNED_SECOND_TAP] = enabled }
+    }
+
+    suspend fun setTabAutoClearDuration(duration: TabAutoClearDuration) {
+        context.swiftfoxDataStore.edit { it[Keys.TAB_AUTO_CLEAR_DURATION] = duration.name }
     }
 
     suspend fun setBackgroundMediaEnabled(enabled: Boolean) {

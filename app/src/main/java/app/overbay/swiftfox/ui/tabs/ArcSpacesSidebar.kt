@@ -580,7 +580,13 @@ fun ArcSpacesSidebar(
                     label = if (target.isPinned) "Delete pin" else "Close tab",
                     icon = Icons.Rounded.DeleteOutline,
                     isDestructive = true,
-                    onClick = { onCloseTab(target.id) }
+                    onClick = {
+                        if (target.isPinned) {
+                            itemCallbacks.onDeletePinnedTab(target.id)
+                        } else {
+                            onCloseTab(target.id)
+                        }
+                    }
                 )
             )
         }
@@ -1025,7 +1031,7 @@ private fun ColumnScope.ArcExpandedSidebarContent(
                     isReorderMode = isReorderingPinned,
                     onSelect = { if (!isReorderingPinned) itemCallbacks.onActivatePinnedTab(tab.id) },
                     onLongPress = { if (!isReorderingPinned) onLongPressTab(tab) },
-                    onClose = { onCloseTab(tab.id) },
+                    onClose = { itemCallbacks.onClosePinnedTab(tab.id) },
                     modifier = Modifier
                         .then(if (!isReorderingPinned) Modifier.animateItem() else Modifier)
                         .dragReorderItem(

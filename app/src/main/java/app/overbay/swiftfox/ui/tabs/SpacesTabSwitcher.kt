@@ -715,6 +715,7 @@ fun SpacesTabSwitcher(
                         when {
                             boundEssential != null -> itemCallbacks.onCloseEssentialTab(boundEssential.id)
                             boundZenPinned != null -> itemCallbacks.onCloseZenPinnedTab(boundZenPinned.id)
+                            target.isPinned -> itemCallbacks.onDeletePinnedTab(target.id)
                             else -> onCloseTab(target.id)
                         }
                     }

@@ -963,7 +963,7 @@ fun StartPageContent(
                     label = "Delete pin",
                     icon = Icons.Rounded.DeleteOutline,
                     isDestructive = true,
-                    onClick = { onCloseTab(target.id) }
+                    onClick = { itemCallbacks.onDeletePinnedTab(target.id) }
                 )
             )
         }

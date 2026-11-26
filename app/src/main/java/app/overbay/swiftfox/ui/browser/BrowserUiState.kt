@@ -25,6 +25,7 @@ import app.overbay.swiftfox.features.reader.ReaderArticle
 import app.overbay.swiftfox.features.sync.RemoteDeviceTabsGroup
 import app.overbay.swiftfox.features.sync.SyncStatusSnapshot
 import app.overbay.swiftfox.features.zapper.ZapperUiState
+import app.overbay.swiftfox.ui.tabs.AutoClearedTabsSnapshot
 import app.overbay.swiftfox.ui.tabs.PendingPinCloseTarget
 
 enum class BrowserOverlay {
@@ -44,6 +45,7 @@ enum class BrowserOverlay {
 enum class SettingsCategory(val title: String) {
     APPEARANCE("Appearance & Theme"),
     FOLDABLE_LAYOUT("Foldable & Layout"),
+    TABS_WORKSPACES("Tabs & Workspaces"),
     ADBLOCK_SCRIPTS("Ad Blocking & Scripts"),
     SEARCH_GESTURES("Search & Gestures"),
     PRIVACY_MEDIA("Privacy, Links & Media")
@@ -156,6 +158,7 @@ data class BrowserUiState(
     val snackbarId: Long = 0L,
     val recentlyClosedTab: BrowserTabUi? = null,
     val recentlyResetSiteOverride: SiteOverrideEntity? = null,
+    val recentlyAutoClearedTabs: AutoClearedTabsSnapshot? = null,
     val syncStatus: SyncStatusSnapshot = SyncStatusSnapshot(),
     val syncedRemoteTabs: List<SyncedRemoteTabEntity> = emptyList(),
     val zenPinnedItems: List<ZenPinnedItemEntity> = emptyList(),

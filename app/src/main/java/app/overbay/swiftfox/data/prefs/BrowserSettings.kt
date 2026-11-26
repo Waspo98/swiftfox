@@ -155,6 +155,24 @@ enum class ReaderSurfaceMode(val label: String) {
     AMOLED("AMOLED")
 }
 
+enum class TabAutoClearDuration(
+    val label: String,
+    val description: String,
+    val durationMs: Long?
+) {
+    HOURS_24("24 hours", "After 1 day of inactivity", 24L * 60L * 60L * 1000L),
+    HOURS_48("48 hours", "After 2 days of inactivity", 48L * 60L * 60L * 1000L),
+    WEEK_1("1 week", "After 7 days of inactivity · Default", 7L * 24L * 60L * 60L * 1000L),
+    MONTH_1("1 month", "After 30 days of inactivity", 30L * 24L * 60L * 60L * 1000L),
+    NEVER("Never", "Keep open tabs until closed manually", null);
+
+    fun isMoreAggressiveThan(previous: TabAutoClearDuration): Boolean {
+        val nextMs = durationMs ?: return false
+        val prevMs = previous.durationMs ?: return true
+        return nextMs < prevMs
+    }
+}
+
 data class PostureProfile(
     val toolbarPlacement: ToolbarPlacement,
     val defaultSiteMode: SiteMode,
@@ -198,6 +216,7 @@ data class BrowserSettings(
     val swipeUrlBarSwitchTabs: Boolean = true,
     val hideToolbarsOnScroll: Boolean = true,
     val confirmClosePinnedOnSecondTap: Boolean = true,
+    val tabAutoClearDuration: TabAutoClearDuration = TabAutoClearDuration.WEEK_1,
     val backgroundMediaEnabled: Boolean = true,
     val blockThirdPartyCookies: Boolean = false,
     val syncBookmarksEnabled: Boolean = true,

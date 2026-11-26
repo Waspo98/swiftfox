@@ -259,8 +259,14 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        viewModel.onAppForegrounded()
+    }
+
     override fun onStop() {
         super.onStop()
+        viewModel.onAppBackgrounded()
         (application as SwiftfoxApp).tabSessionPool.flushPersistentCookies()
     }
 

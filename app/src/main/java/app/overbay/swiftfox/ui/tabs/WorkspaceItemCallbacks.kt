@@ -24,6 +24,7 @@ data class WorkspaceItemCallbacks(
     val onActivatePinnedTab: (tabId: String) -> Unit = {},
     val onClosePinnedTab: (tabId: String) -> Unit = {},
     val onResetPinnedTab: (tabId: String) -> Unit = {},
+    val onDeletePinnedTab: (tabId: String) -> Unit = {},
     val onEditTabTitleAndUrl: (tabId: String, title: String, url: String) -> Unit = { _, _, _ -> },
     val onSetTabCustomIcon: (tabId: String, customIcon: String?) -> Unit = { _, _ -> },
     val onAddTabToEssentials: (tabId: String) -> Unit = {},

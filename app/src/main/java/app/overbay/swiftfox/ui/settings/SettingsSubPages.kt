@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
@@ -305,7 +306,9 @@ internal fun LazyListScope.foldableLayoutSettingsItems(
             shape = RoundedCornerShape(18.dp),
             color = MaterialTheme.colorScheme.primaryContainer,
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)),
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier
+                .widthIn(max = SettingsMaxContentWidth)
+                .fillMaxWidth()
         ) {
             Row(
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
@@ -1106,7 +1109,9 @@ internal fun SettingsSection(
     Surface(
         shape = RoundedCornerShape(22.dp),
         color = MaterialTheme.colorScheme.surfaceContainer,
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier
+            .widthIn(max = SettingsMaxContentWidth)
+            .fillMaxWidth()
     ) {
         Column(
             modifier = Modifier.padding(18.dp),

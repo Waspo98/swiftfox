@@ -18,6 +18,16 @@ data class ResolvedWebDarkState(
 
 object DarkReaderConfig {
 
+    /**
+     * Cycles per-site Web Dark override across the 3 Quick Actions states:
+     * Auto (`null`) -> Force dark (`true`) -> Force light (`false`) -> Auto (`null`).
+     */
+    fun nextSiteOverride(current: Boolean?): Boolean? = when (current) {
+        null -> true
+        true -> false
+        false -> null
+    }
+
     fun resolve(
         settings: BrowserSettings,
         siteOverride: SiteOverrideEntity?,

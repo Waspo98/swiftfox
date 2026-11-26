@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -94,6 +95,8 @@ import app.overbay.swiftfox.ui.theme.rememberReduceMotion
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.text.NumberFormat
+
+internal val SettingsMaxContentWidth = 640.dp
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -197,6 +200,7 @@ fun SettingsScreen(
                     .consumeWindowInsets(innerPadding)
                     .imePadding(),
                 contentPadding = contentPadding,
+                horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(20.dp)
             ) {
                 when (category) {
@@ -245,6 +249,7 @@ fun SettingsScreen(
                                 },
                                 onToggleSiteMode = { viewModel.toggleActiveTabSiteMode() },
                                 onToggleShieldAdblock = { viewModel.toggleActiveSiteAdblock() },
+                                onCycleWebDarkMode = { viewModel.cycleActiveSiteWebDarkOverride() },
                                 onEnterPip = {
                                     viewModel.setOverlay(BrowserOverlay.NONE)
                                     onEnterPip()
@@ -260,7 +265,8 @@ fun SettingsScreen(
                                     externalAppTarget?.let { target ->
                                         viewModel.openActiveTabInExternalApp(target.launchIntent, target.appLabel)
                                     }
-                                }
+                                },
+                                modifier = Modifier.widthIn(max = SettingsMaxContentWidth)
                             )
                         }
 
@@ -501,7 +507,9 @@ private fun AboutAndSystemCard(
     Surface(
         shape = RoundedCornerShape(22.dp),
         color = MaterialTheme.colorScheme.surfaceContainer,
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier
+            .widthIn(max = SettingsMaxContentWidth)
+            .fillMaxWidth()
     ) {
         Column(
             modifier = Modifier.padding(18.dp),

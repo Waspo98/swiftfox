@@ -4189,6 +4189,22 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }) { it.copy(adblockDisabled = disabled) }
     }
 
+    fun cycleActiveSiteWebDarkOverride() {
+        val active = _uiState.value.activeTab ?: return
+        if (active.isStartPage) return
+        val host = OmniboxEngine.extractHost(active.url)
+        if (host.isBlank()) return
+        val current = effectiveSiteOverride(host, active.isPrivate)?.webDarkModeOverride
+        val next = DarkReaderConfig.nextSiteOverride(current)
+        setSiteWebDarkOverride(host, next)
+        val message = when (next) {
+            true -> "Web Dark: Force dark on $host"
+            false -> "Web Dark: Force light on $host"
+            null -> "Web Dark: Auto on $host"
+        }
+        showSnackbar(message)
+    }
+
     fun setSiteWebDarkOverride(host: String, override: Boolean?) {
         val normalizedHost = OmniboxEngine.normalizeHost(host)
         if (normalizedHost.isBlank()) return

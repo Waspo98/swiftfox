@@ -311,6 +311,7 @@ fun QuickActionsSectionPreview() {
                 onPrintPage = {},
                 onToggleSiteMode = {},
                 onToggleShieldAdblock = {},
+                onCycleWebDarkMode = {},
                 onEnterPip = {},
                 onLaunchZapper = {},
                 onOpenReaderMode = {},

@@ -58,6 +58,13 @@ class DarkReaderConfigTest {
     }
 
     @Test
+    fun cyclesPerSiteOverrideFromAutoToForceDarkToForceLightToAuto() {
+        assertEquals(true, DarkReaderConfig.nextSiteOverride(null))
+        assertEquals(false, DarkReaderConfig.nextSiteOverride(true))
+        assertNull(DarkReaderConfig.nextSiteOverride(false))
+    }
+
+    @Test
     fun serializesConfigJsonWithAmoledSlidersSkipNativeDarkAndForceOverride() {
         val settings = BrowserSettings(
             webDarkMode = WebDarkModePreference.ALWAYS_ON,

@@ -3,7 +3,6 @@ package app.overbay.swiftfox.ui.tabs
 import app.overbay.swiftfox.data.db.EssentialEntity
 import app.overbay.swiftfox.data.db.SpaceEntity
 import app.overbay.swiftfox.data.prefs.BrowserSettings
-import app.overbay.swiftfox.engine.BrowserSession
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
 import app.overbay.swiftfox.ui.browser.BrowserOverlay
 import app.overbay.swiftfox.ui.browser.BrowserTabUi
@@ -74,23 +73,6 @@ object WorkspaceTabResolver {
         } else {
             parentSpaceId
         }
-    }
-
-    /**
-     * Resolves the WebView container profile name for [tab]. When [BrowserTabUi.profileOverride] is
-     * set (e.g., an OAuth / `window.open` popup inheriting its parent tab's profile), that explicit
-     * profile takes precedence over the tab's Space container so `WebViewTransport` always shares
-     * the parent's profile—even when every Space has container isolation enabled.
-     */
-    fun resolveSessionContainerProfile(
-        tab: BrowserTabUi,
-        spaces: List<SpaceEntity>
-    ): String? {
-        val explicit = tab.profileOverride
-        if (explicit != null) {
-            return explicit.takeUnless { it.isBlank() || it == BrowserSession.DEFAULT_PROFILE_NAME }
-        }
-        return spaces.firstOrNull { it.id == tab.spaceId }?.containerProfileName
     }
 
     /**

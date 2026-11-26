@@ -50,7 +50,6 @@ import app.overbay.swiftfox.ui.icons.rounded.DeleteOutline
 import app.overbay.swiftfox.ui.icons.rounded.DesktopWindows
 import app.overbay.swiftfox.ui.icons.rounded.DragIndicator
 import androidx.compose.material.icons.rounded.Edit
-import androidx.compose.material.icons.rounded.Lock
 import app.overbay.swiftfox.ui.icons.rounded.Palette
 import app.overbay.swiftfox.ui.icons.rounded.PushPin
 import androidx.compose.material.icons.rounded.Refresh
@@ -136,7 +135,7 @@ fun ArcSpacesSidebar(
     onCloseTab: (String) -> Unit,
     onCreateTab: () -> Unit,
     onCreatePrivateTab: () -> Unit,
-    onCreateSpace: (String, String, Boolean) -> Unit,
+    onCreateSpace: (String, String) -> Unit,
     onDeleteSpace: (String) -> Unit,
     itemCallbacks: WorkspaceItemCallbacks = WorkspaceItemCallbacks(onDeleteSpace = onDeleteSpace),
     modifier: Modifier = Modifier
@@ -297,9 +296,9 @@ fun ArcSpacesSidebar(
     if (showCreateSpaceDialog) {
         CreateSpaceDialog(
             onDismiss = { showCreateSpaceDialog = false },
-            onConfirm = { name, iconKey, isolated ->
+            onConfirm = { name, iconKey ->
                 showCreateSpaceDialog = false
-                onCreateSpace(name, iconKey, isolated)
+                onCreateSpace(name, iconKey)
             }
         )
     }
@@ -307,7 +306,7 @@ fun ArcSpacesSidebar(
     actionSpace?.let { target ->
         ItemActionBottomSheet(
             title = target.name,
-            subtitle = if (!target.containerProfileName.isNullOrBlank()) "Isolated container Space" else "Space",
+            subtitle = "Space",
             leadingIcon = {
                 Surface(
                     shape = RoundedCornerShape(12.dp),
@@ -897,14 +896,6 @@ private fun ColumnScope.ArcExpandedSidebarContent(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f, fill = false)
             )
-            if (!state.isPrivateView && !activeSpace?.containerProfileName.isNullOrBlank()) {
-                Icon(
-                    imageVector = Icons.Rounded.Lock,
-                    contentDescription = "Isolated container",
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(14.dp)
-                )
-            }
         }
         IconButton(
             onClick = if (isOverlayDrawer) onCloseDrawer else onToggleExpanded,

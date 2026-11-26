@@ -6,7 +6,6 @@ import app.overbay.swiftfox.data.db.ZenPinnedItemEntity
 import app.overbay.swiftfox.data.prefs.BrowserSettings
 import app.overbay.swiftfox.data.prefs.ExternalAppLinkPolicy
 import app.overbay.swiftfox.data.prefs.TabAutoClearDuration
-import app.overbay.swiftfox.engine.BrowserSession
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
 import app.overbay.swiftfox.ui.browser.BrowserOverlay
 import app.overbay.swiftfox.ui.browser.BrowserTabUi
@@ -24,7 +23,6 @@ class WorkspaceTabResolverTest {
     private val workSpace = SpaceEntity(
         id = "space_work",
         name = "Work",
-        containerProfileName = "space_work",
         zenContainerGuid = "container-work"
     )
     private val spaces = listOf(personalSpace, workSpace)
@@ -375,45 +373,6 @@ class WorkspaceTabResolverTest {
                 isPrivate = true
             )
         )
-    }
-
-    @Test
-    fun resolveSessionContainerProfile_honorsPopupProfileOverrideEvenWhenAllSpacesAreContainerized() {
-        val allContainerized = listOf(
-            SpaceEntity(id = "space_personal", name = "Personal", containerProfileName = "space_personal"),
-            SpaceEntity(id = "space_work", name = "Work", containerProfileName = "space_work")
-        )
-        val essentialPopup = BrowserTabUi(
-            id = "tab_popup_oauth",
-            spaceId = "space_work",
-            title = "Sign in",
-            url = OmniboxEngine.NEW_TAB_URL,
-            isPopupWindow = true,
-            parentTabId = "tab_ess_gmail",
-            profileOverride = BrowserSession.DEFAULT_PROFILE_NAME
-        )
-        val workPopup = BrowserTabUi(
-            id = "tab_popup_work",
-            spaceId = "space_work",
-            title = "SSO",
-            url = OmniboxEngine.NEW_TAB_URL,
-            isPopupWindow = true,
-            parentTabId = "tab_work_app",
-            profileOverride = "space_work"
-        )
-        val normalWorkTab = BrowserTabUi(
-            id = "tab_work_app",
-            spaceId = "space_work",
-            title = "Work App",
-            url = "https://work.example.com/"
-        )
-
-        // Default profile override resolves to null container (DEFAULT_PROFILE_NAME) even inside Work Space
-        assertNull(WorkspaceTabResolver.resolveSessionContainerProfile(essentialPopup, allContainerized))
-        // Explicit container override keeps the parent's container profile
-        assertEquals("space_work", WorkspaceTabResolver.resolveSessionContainerProfile(workPopup, allContainerized))
-        // Normal tabs continue to resolve from their Space container
-        assertEquals("space_work", WorkspaceTabResolver.resolveSessionContainerProfile(normalWorkTab, allContainerized))
     }
 
     @Test

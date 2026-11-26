@@ -188,15 +188,14 @@ class TabSessionPool(
     fun getOrCreate(
         tabId: String,
         isPrivate: Boolean,
-        spaceContainerProfile: String?,
         context: Context,
         callbacks: SessionHostCallbacks,
         beforeRestore: (BrowserSession) -> Unit = {}
     ): BrowserSession {
-        val profileName = when {
-            isPrivate -> BrowserSession.PRIVATE_PROFILE_NAME
-            !spaceContainerProfile.isNullOrBlank() -> spaceContainerProfile
-            else -> BrowserSession.DEFAULT_PROFILE_NAME
+        val profileName = if (isPrivate) {
+            BrowserSession.PRIVATE_PROFILE_NAME
+        } else {
+            BrowserSession.DEFAULT_PROFILE_NAME
         }
 
         var hostCtx: Context = context
@@ -360,33 +359,18 @@ class TabSessionPool(
     }
 
     fun clearPrivateProfileData() {
-        deleteContainerProfile(BrowserSession.PRIVATE_PROFILE_NAME)
+        deleteWebViewProfile(BrowserSession.PRIVATE_PROFILE_NAME)
     }
 
     /**
-     * Flushes persistent WebView cookies to disk for the default profile and any active
-     * non-private Space container profiles so fresh sign-in / 2FA trust cookies survive
-     * app backgrounding or process eviction. Must be called on the Main thread.
+     * Flushes persistent WebView cookies to disk for the default profile so fresh sign-in / 2FA
+     * trust cookies survive app backgrounding or process eviction. Must be called on the Main thread.
      */
     fun flushPersistentCookies() {
         runCatching { CookieManager.getInstance().flush() }
-        if (!WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) return
-        val activeContainerProfiles = synchronized(lock) {
-            warmSessions.values
-                .asSequence()
-                .filter { !it.isPrivate && it.profileName != BrowserSession.DEFAULT_PROFILE_NAME }
-                .map { it.profileName }
-                .distinct()
-                .toList()
-        }
-        if (activeContainerProfiles.isEmpty()) return
-        val store = runCatching { ProfileStore.getInstance() }.getOrNull() ?: return
-        activeContainerProfiles.forEach { profileName ->
-            runCatching { store.getProfile(profileName)?.cookieManager?.flush() }
-        }
     }
 
-    fun deleteContainerProfile(profileName: String) {
+    private fun deleteWebViewProfile(profileName: String) {
         if (profileName.isBlank() || profileName == BrowserSession.DEFAULT_PROFILE_NAME) return
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) return
         val hasWarm = synchronized(lock) { warmSessions.values.any { it.profileName == profileName } }
@@ -410,7 +394,6 @@ class TabSessionPool(
     }
 
     fun clearProfilesData(
-        containerProfiles: Collection<String>,
         clearHistory: Boolean,
         clearCookiesAndSiteData: Boolean,
         clearCache: Boolean
@@ -436,7 +419,7 @@ class TabSessionPool(
             if (WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) {
                 val store = runCatching { ProfileStore.getInstance() }.getOrNull()
                 if (store != null) {
-                    val allNames = (store.allProfileNames + containerProfiles)
+                    val allNames = store.allProfileNames
                         .filter { it.isNotBlank() && it != BrowserSession.DEFAULT_PROFILE_NAME }
                         .distinct()
                     allNames.forEach { name ->

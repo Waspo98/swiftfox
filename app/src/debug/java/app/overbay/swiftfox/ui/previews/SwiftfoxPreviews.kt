@@ -39,9 +39,9 @@ private fun previewState(
     startPageActive: Boolean = true
 ): BrowserUiState {
     val spaces = listOf(
-        SpaceEntity("space_personal", "Personal", "home", null, 0),
-        SpaceEntity("space_work", "Work", "work", "space_work", 1),
-        SpaceEntity("space_reading", "Reading", "book", null, 2)
+        SpaceEntity("space_personal", "Personal", "home", 0),
+        SpaceEntity("space_work", "Work", "work", 1),
+        SpaceEntity("space_reading", "Reading", "book", 2)
     )
     val essentials = listOf(
         EssentialEntity("e1", null, "Google", "https://www.google.com", "google.com", 0),
@@ -121,7 +121,7 @@ fun FoldedStartDarkPreview() {
             onShareActiveTab = {},
             onSelectSpace = {},
             onTogglePrivate = {},
-            onCreateSpace = { _, _, _ -> },
+            onCreateSpace = { _, _ -> },
             onDeleteSpace = {},
             onSelectTab = {},
             onCloseTab = {},
@@ -168,7 +168,7 @@ fun FoldedStartDayPreview() {
             onShareActiveTab = {},
             onSelectSpace = {},
             onTogglePrivate = {},
-            onCreateSpace = { _, _, _ -> },
+            onCreateSpace = { _, _ -> },
             onDeleteSpace = {},
             onSelectTab = {},
             onCloseTab = {},
@@ -221,7 +221,7 @@ fun FoldedAmoledLargeFontPreview() {
             onShareActiveTab = {},
             onSelectSpace = {},
             onTogglePrivate = {},
-            onCreateSpace = { _, _, _ -> },
+            onCreateSpace = { _, _ -> },
             onDeleteSpace = {},
             onSelectTab = {},
             onCloseTab = {},
@@ -269,7 +269,7 @@ fun FoldedSidebarDrawerPreview() {
             onShareActiveTab = {},
             onSelectSpace = {},
             onTogglePrivate = {},
-            onCreateSpace = { _, _, _ -> },
+            onCreateSpace = { _, _ -> },
             onDeleteSpace = {},
             onSelectTab = {},
             onCloseTab = {},
@@ -341,7 +341,7 @@ fun SpacesTabSwitcherPreview() {
             onCreateTab = {},
             onSelectSpace = {},
             onTogglePrivate = {},
-            onCreateSpace = { _, _, _ -> }
+            onCreateSpace = { _, _ -> }
         )
     }
 }
@@ -371,7 +371,7 @@ fun UnfoldedFoldableBrowserPreview() {
             onShareActiveTab = {},
             onSelectSpace = {},
             onTogglePrivate = {},
-            onCreateSpace = { _, _, _ -> },
+            onCreateSpace = { _, _ -> },
             onDeleteSpace = {},
             onSelectTab = {},
             onCloseTab = {},

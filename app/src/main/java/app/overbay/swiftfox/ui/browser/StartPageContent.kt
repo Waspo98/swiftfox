@@ -1124,7 +1124,7 @@ fun StartPageContent(
     actionSpace?.let { target ->
         ItemActionBottomSheet(
             title = target.name,
-            subtitle = if (!target.containerProfileName.isNullOrBlank()) "Isolated container Space" else "Space",
+            subtitle = "Space",
             leadingIcon = {
                 Surface(
                     shape = RoundedCornerShape(12.dp),

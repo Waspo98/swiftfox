@@ -76,7 +76,6 @@ data class BrowserTabUi(
     val sortOrder: Int = 0,
     val isPopupWindow: Boolean = false,
     val parentTabId: String? = null,
-    val profileOverride: String? = null,
     val isLoading: Boolean = false,
     val progress: Int = 0,
     val canGoBack: Boolean = false,

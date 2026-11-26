@@ -555,7 +555,7 @@ fun BrowserScreen(
             onSelectSpace = { viewModel.selectSpace(it) },
             onSelectStartPageSpace = { viewModel.switchStartPageSpace(it) },
             onTogglePrivate = { viewModel.togglePrivateView(it) },
-            onCreateSpace = { name, icon, isolated -> viewModel.createSpace(name, icon, isolated) },
+            onCreateSpace = { name, icon -> viewModel.createSpace(name, icon) },
             onDeleteSpace = { spaceId -> viewModel.deleteSpace(spaceId) },
             onSelectTab = { viewModel.selectTab(it) },
             onCloseTab = { viewModel.closeTab(it) },
@@ -833,8 +833,8 @@ fun BrowserScreen(
                         onCreateTab = { priv -> viewModel.createTab(isPrivate = priv) },
                         onSelectSpace = { viewModel.selectSpace(it) },
                         onTogglePrivate = { viewModel.togglePrivateView(it) },
-                        onCreateSpace = { name, icon, isolated ->
-                            viewModel.createSpace(name, icon, isolated)
+                        onCreateSpace = { name, icon ->
+                            viewModel.createSpace(name, icon)
                         },
                         onDeleteSpace = { spaceId ->
                             viewModel.deleteSpace(spaceId)
@@ -1342,7 +1342,7 @@ internal fun BrowserShellLayout(
     onSelectSpace: (String) -> Unit,
     onSelectStartPageSpace: (String) -> Unit = onSelectSpace,
     onTogglePrivate: (Boolean) -> Unit,
-    onCreateSpace: (String, String, Boolean) -> Unit,
+    onCreateSpace: (String, String) -> Unit,
     onDeleteSpace: (String) -> Unit,
     onSelectTab: (String) -> Unit,
     onCloseTab: (String) -> Unit,
@@ -1913,7 +1913,7 @@ private fun BoxScope.FoldedSidebarDrawerOverlay(
     onCreateTab: () -> Unit,
     onCreatePrivateTab: () -> Unit,
     onOpenUrl: (String) -> Unit,
-    onCreateSpace: (String, String, Boolean) -> Unit,
+    onCreateSpace: (String, String) -> Unit,
     onDeleteSpace: (String) -> Unit,
     itemCallbacks: WorkspaceItemCallbacks
 ) {

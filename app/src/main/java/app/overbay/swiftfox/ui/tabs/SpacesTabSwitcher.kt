@@ -26,7 +26,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -54,7 +53,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -126,7 +124,7 @@ fun SpacesTabSwitcher(
     onCreateTab: (Boolean) -> Unit,
     onSelectSpace: (String) -> Unit,
     onTogglePrivate: (Boolean) -> Unit,
-    onCreateSpace: (String, String, Boolean) -> Unit,
+    onCreateSpace: (String, String) -> Unit,
     onDeleteSpace: (String) -> Unit = {},
     onOpenSyncedTabs: () -> Unit = {},
     itemCallbacks: WorkspaceItemCallbacks = WorkspaceItemCallbacks(onDeleteSpace = onDeleteSpace)
@@ -350,7 +348,6 @@ fun SpacesTabSwitcher(
                 iconSize = 17.dp,
                 tabCountForSpace = { spaceId -> spaceTabCounts[spaceId] ?: 0 },
                 showThemeDot = true,
-                showLockIndicator = true,
                 isReorderMode = isReorderingSpaces,
                 reorderController = spacesReorder,
                 onCreateSpaceClick = { showCreateSpaceDialog = true }
@@ -462,9 +459,9 @@ fun SpacesTabSwitcher(
     if (showCreateSpaceDialog) {
         CreateSpaceDialog(
             onDismiss = { showCreateSpaceDialog = false },
-            onConfirm = { name, iconKey, isolated ->
+            onConfirm = { name, iconKey ->
                 showCreateSpaceDialog = false
-                onCreateSpace(name, iconKey, isolated)
+                onCreateSpace(name, iconKey)
             }
         )
     }
@@ -472,7 +469,7 @@ fun SpacesTabSwitcher(
     actionSpace?.let { target ->
         ItemActionBottomSheet(
             title = target.name,
-            subtitle = if (!target.containerProfileName.isNullOrBlank()) "Isolated container Space" else "Space",
+            subtitle = "Space",
             leadingIcon = {
                 Surface(
                     shape = RoundedCornerShape(12.dp),
@@ -810,11 +807,7 @@ internal fun DeleteSpaceDialog(
         onDismissRequest = onDismiss,
         title = { Text("Delete Space \"${space.name}\"?") },
         text = {
-            val baseMsg = if (!space.containerProfileName.isNullOrBlank()) {
-                "Closes tabs in ${space.name} and clears its isolated WebView container cookies."
-            } else {
-                "Closes all open tabs in ${space.name}."
-            }
+            val baseMsg = "Closes all open tabs in ${space.name}."
             val syncNote = if (!space.syncGuid.isNullOrBlank()) {
                 "\n\nThis Space is synced from Zen Browser and will reappear on the next sync unless removed in Zen Browser."
             } else {
@@ -1236,11 +1229,10 @@ private fun TabPreviewCard(
 @Composable
 internal fun CreateSpaceDialog(
     onDismiss: () -> Unit,
-    onConfirm: (String, String, Boolean) -> Unit
+    onConfirm: (String, String) -> Unit
 ) {
     var name by remember { mutableStateOf("") }
     var selectedIcon by remember { mutableStateOf("star") }
-    var isolatedContainer by remember { mutableStateOf(false) }
 
     val iconOptions = listOf(
         "home", "work", "book", "code", "shop", "star",
@@ -1289,31 +1281,11 @@ internal fun CreateSpaceDialog(
                         }
                     }
                 }
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("Container isolation", style = MaterialTheme.typography.titleSmall)
-                        Text(
-                            text = "Separate cookies & logins via WebView ProfileStore",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Spacer(Modifier.width(8.dp))
-                    Switch(
-                        checked = isolatedContainer,
-                        onCheckedChange = { isolatedContainer = it }
-                    )
-                }
             }
         },
         confirmButton = {
             TextButton(
-                onClick = { if (name.isNotBlank()) onConfirm(name, selectedIcon, isolatedContainer) },
+                onClick = { if (name.isNotBlank()) onConfirm(name, selectedIcon) },
                 enabled = name.isNotBlank()
             ) {
                 Text("Create")

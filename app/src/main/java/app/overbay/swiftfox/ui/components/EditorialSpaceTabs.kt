@@ -29,7 +29,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import app.overbay.swiftfox.ui.icons.rounded.DragIndicator
-import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -196,7 +195,6 @@ fun EditorialSpacesTabStrip(
     iconSize: Dp = 17.dp,
     tabCountForSpace: ((String) -> Int)? = null,
     showThemeDot: Boolean = false,
-    showLockIndicator: Boolean = false,
     isReorderMode: Boolean = false,
     reorderController: DragReorderController<SpaceEntity>? = null,
     onCreateSpaceClick: (() -> Unit)? = null
@@ -276,7 +274,6 @@ fun EditorialSpacesTabStrip(
                     iconSize = iconSize,
                     visibleTabCount = visibleCount,
                     showThemeDot = showThemeDot,
-                    showLockIndicator = showLockIndicator,
                     isReorderMode = isReorderMode,
                     onClick = { if (!isReorderMode) onSelectSpace(space.id) },
                     onLongClick = { if (!isReorderMode) onLongPressSpace(space) },
@@ -301,7 +298,6 @@ private fun EditorialSpaceTabItem(
     iconSize: Dp,
     visibleTabCount: Int?,
     showThemeDot: Boolean,
-    showLockIndicator: Boolean,
     isReorderMode: Boolean,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
@@ -336,12 +332,10 @@ private fun EditorialSpaceTabItem(
     )
 
     val dotColor = if (showThemeDot) parseSpaceColorHexOrNull(space.themeColorHex) else null
-    val hasContainer = showLockIndicator && !space.containerProfileName.isNullOrBlank()
-    val accessibilityDescription = remember(space.name, hasContainer, visibleTabCount) {
+    val accessibilityDescription = remember(space.name, visibleTabCount) {
         buildString {
             append(space.name)
             append(" Space")
-            if (hasContainer) append(", isolated container")
             if (visibleTabCount != null) {
                 append(", ")
                 append(visibleTabCount)
@@ -456,14 +450,6 @@ private fun EditorialSpaceTabItem(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.widthIn(max = 200.dp)
             )
-            if (hasContainer) {
-                Icon(
-                    imageVector = Icons.Rounded.Lock,
-                    contentDescription = null,
-                    tint = iconColor,
-                    modifier = Modifier.size(13.dp)
-                )
-            }
             if (visibleTabCount != null) {
                 Text(
                     text = visibleTabCount.toString(),

@@ -1509,7 +1509,6 @@ class MozillaSyncCoordinator(
                     id = localId,
                     name = zenSpace.name,
                     iconKey = resolvedIconKey,
-                    containerProfileName = prev?.containerProfileName,
                     sortOrder = idx,
                     createdAt = prev?.createdAt ?: System.currentTimeMillis(),
                     syncGuid = zenSpace.uuid,
@@ -1535,7 +1534,6 @@ class MozillaSyncCoordinator(
                     id = SwiftfoxDatabase.DEFAULT_SPACE_ID,
                     name = "Personal",
                     iconKey = "home",
-                    containerProfileName = null,
                     sortOrder = 0
                 ).also { db.spaceDao().upsert(it) }
             } else {

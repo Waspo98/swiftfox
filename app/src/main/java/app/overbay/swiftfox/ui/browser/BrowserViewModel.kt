@@ -784,15 +784,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             val snapshot = _uiState.value
             val parent = snapshot.tabs.firstOrNull { it.id == parentTabId }
             val popupIsPrivate = parent?.isPrivate ?: snapshot.isPrivateView
-            val parentProfileName = if (popupIsPrivate) {
-                null
-            } else {
-                pool.getExisting(parentTabId)?.profileName
-                    ?: parent?.let {
-                        WorkspaceTabResolver.resolveSessionContainerProfile(it, snapshot.spaces)
-                    }
-                    ?: BrowserSession.DEFAULT_PROFILE_NAME
-            }
             val newTab = createTab(
                 url = OmniboxEngine.NEW_TAB_URL,
                 isPrivate = popupIsPrivate,
@@ -802,8 +793,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 ),
                 selectImmediately = true,
                 isPopupWindow = true,
-                parentTabId = parentTabId,
-                profileOverride = parentProfileName
+                parentTabId = parentTabId
             )
             // TabSessionPool binds the active Activity context via MutableContextWrapper
             val session = ensureSession(newTab, app)
@@ -1865,10 +1855,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun getExistingSession(tabId: String): BrowserSession? = pool.getExisting(tabId)
 
     fun ensureSession(tab: BrowserTabUi, context: Context): BrowserSession {
-        val spaceContainer = WorkspaceTabResolver.resolveSessionContainerProfile(
-            tab = tab,
-            spaces = _uiState.value.spaces
-        )
         val existed = pool.getExisting(tab.id) != null
         val initialHost = OmniboxEngine.normalizeHost(tab.displayHost)
         val initialOverride = if (initialHost.isBlank()) null else effectiveSiteOverride(initialHost, tab.isPrivate)
@@ -1888,7 +1874,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         val session = pool.getOrCreate(
             tabId = tab.id,
             isPrivate = tab.isPrivate,
-            spaceContainerProfile = spaceContainer,
             context = context,
             callbacks = sessionCallbacks,
             beforeRestore = { created ->
@@ -1985,7 +1970,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         selectImmediately: Boolean = true,
         isPopupWindow: Boolean = false,
         parentTabId: String? = null,
-        profileOverride: String? = null,
         closeFoldedSidebar: Boolean = true,
         closeTabSwitcher: Boolean = true,
         dismissAllOverlays: Boolean = false,
@@ -2078,7 +2062,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             customTitle = if (isPrivate) null else customTitle,
             isPopupWindow = isPopupWindow,
             parentTabId = parentTabId,
-            profileOverride = if (isPrivate) null else profileOverride,
             resolvedSiteMode = resolvedMode,
             lastAccessedAt = System.currentTimeMillis()
         )
@@ -2503,7 +2486,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun createSpace(name: String, iconKey: String, isolatedContainer: Boolean) {
+    fun createSpace(name: String, iconKey: String) {
         val trimmed = name.trim()
         if (trimmed.isEmpty()) return
         val id = "space_${UUID.randomUUID().toString().take(8)}"
@@ -2511,7 +2494,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             id = id,
             name = trimmed,
             iconKey = iconKey,
-            containerProfileName = if (isolatedContainer) id else null,
             sortOrder = _uiState.value.spaces.size
         )
         pendingCreatedSpaces[id] = space
@@ -2558,9 +2540,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             current.copy(bitmaps = current.bitmaps - affectedIds)
         }
         pendingCreatedSpaces.remove(spaceId)
-        spaceToDelete.containerProfileName?.let { profileName ->
-            pool.deleteContainerProfile(profileName)
-        }
         val affectedZenPinnedIcons = _uiState.value.zenPinnedItems
             .filter { it.spaceId == spaceId }
             .mapNotNull { it.customIcon }
@@ -3737,16 +3716,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             activeTab = active,
             activeSpaceId = _uiState.value.activeSpaceId
         )
-        if (targetSpaceId != active.spaceId && pool.getExisting(active.id) != null) {
-            val prevContainer = WorkspaceTabResolver.resolveSessionContainerProfile(active, _uiState.value.spaces)
-            val nextContainer = WorkspaceTabResolver.resolveSessionContainerProfile(
-                active.copy(spaceId = targetSpaceId),
-                _uiState.value.spaces
-            )
-            if (prevContainer != nextContainer) {
-                pool.remove(active.id)
-            }
-        }
         loadErrorDiagJobByTab.remove(active.id)?.cancel()
         app.userscriptBridge.cancelCallsForTab(active.id)
         // Discard any hibernated WebView bundle so re-creating the session loads the new URL
@@ -4905,9 +4874,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             if (clearHistory || clearCache) {
                 app.faviconRepository.clearFaviconCache()
             }
-            val containerProfiles = _uiState.value.spaces.mapNotNull { it.containerProfileName }
             pool.clearProfilesData(
-                containerProfiles = containerProfiles,
                 clearHistory = clearHistory,
                 clearCookiesAndSiteData = clearCookiesAndSiteData,
                 clearCache = clearCache

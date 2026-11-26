@@ -27,7 +27,7 @@ import kotlinx.coroutines.sync.withLock
         SyncedRemoteTabEntity::class,
         ZenPinnedItemEntity::class
     ],
-    version = 6,
+    version = 7,
     exportSchema = true
 )
 abstract class SwiftfoxDatabase : RoomDatabase() {
@@ -66,21 +66,18 @@ abstract class SwiftfoxDatabase : RoomDatabase() {
                             id = DEFAULT_SPACE_ID,
                             name = "Personal",
                             iconKey = "home",
-                            containerProfileName = null,
                             sortOrder = 0
                         ),
                         SpaceEntity(
                             id = "space_work",
                             name = "Work",
                             iconKey = "work",
-                            containerProfileName = "space_work",
                             sortOrder = 1
                         ),
                         SpaceEntity(
                             id = "space_reading",
                             name = "Reading",
                             iconKey = "book",
-                            containerProfileName = null,
                             sortOrder = 2
                         )
                     )
@@ -297,6 +294,29 @@ abstract class SwiftfoxDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_6_7: Migration = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `spaces_new` (" +
+                        "`id` TEXT NOT NULL, " +
+                        "`name` TEXT NOT NULL, " +
+                        "`iconKey` TEXT NOT NULL, " +
+                        "`sortOrder` INTEGER NOT NULL, " +
+                        "`createdAt` INTEGER NOT NULL, " +
+                        "`syncGuid` TEXT, " +
+                        "`themeColorHex` TEXT, " +
+                        "`zenContainerGuid` TEXT, " +
+                        "PRIMARY KEY(`id`))"
+                )
+                db.execSQL(
+                    "INSERT INTO `spaces_new` (`id`, `name`, `iconKey`, `sortOrder`, `createdAt`, `syncGuid`, `themeColorHex`, `zenContainerGuid`) " +
+                        "SELECT `id`, `name`, `iconKey`, `sortOrder`, `createdAt`, `syncGuid`, `themeColorHex`, `zenContainerGuid` FROM `spaces`"
+                )
+                db.execSQL("DROP TABLE `spaces`")
+                db.execSQL("ALTER TABLE `spaces_new` RENAME TO `spaces`")
+            }
+        }
+
         @Volatile
         private var instance: SwiftfoxDatabase? = null
 
@@ -311,7 +331,8 @@ abstract class SwiftfoxDatabase : RoomDatabase() {
                     MIGRATION_2_3,
                     MIGRATION_3_4,
                     MIGRATION_4_5,
-                    MIGRATION_5_6
+                    MIGRATION_5_6,
+                    MIGRATION_6_7
                 )
                     .fallbackToDestructiveMigrationOnDowngrade(dropAllTables = true)
                     .build()

@@ -9,7 +9,6 @@ data class SpaceEntity(
     @PrimaryKey val id: String,
     val name: String,
     val iconKey: String = "fox",
-    val containerProfileName: String? = null,
     val sortOrder: Int = 0,
     val createdAt: Long = System.currentTimeMillis(),
     val syncGuid: String? = null,

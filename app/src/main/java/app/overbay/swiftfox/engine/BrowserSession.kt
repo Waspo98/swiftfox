@@ -50,7 +50,8 @@ data class BridgeTokenSet(
     val darkReaderToken: String,
     val cosmeticToken: String,
     val gmToken: String,
-    val readerToken: String
+    val readerToken: String,
+    val pwaToken: String
 ) {
     val darkReaderKey: String = "__sfDr_${darkReaderToken.take(12)}"
     val gmKey: String = "__sfGm_${gmToken.take(12)}"
@@ -65,7 +66,8 @@ data class BridgeTokenSet(
             darkReaderToken = BrowserSession.generateHexToken(),
             cosmeticToken = BrowserSession.generateHexToken(),
             gmToken = BrowserSession.generateHexToken(),
-            readerToken = BrowserSession.generateHexToken()
+            readerToken = BrowserSession.generateHexToken(),
+            pwaToken = BrowserSession.generateHexToken()
         )
     }
 }
@@ -104,6 +106,7 @@ interface SessionHostCallbacks : WebNavigationCallbacks, WebChromeCallbacks {
     fun onUserscriptDeleteValue(tabId: String, pageUrl: String, scriptId: String, key: String)
     fun onUserscriptXmlHttpRequest(tabId: String, pageUrl: String, scriptId: String, reqId: String, requestJson: String)
     fun onUserscriptAbortXmlHttpRequest(tabId: String, reqId: String)
+    fun onPwaChannelMessage(tabId: String, pageUrl: String, event: String, json: String) {}
 }
 
 class BrowserSession(
@@ -111,7 +114,8 @@ class BrowserSession(
     val isPrivate: Boolean,
     val profileName: String,
     context: Context,
-    hostCallbacks: SessionHostCallbacks
+    hostCallbacks: SessionHostCallbacks,
+    private val forceMobileViewport: Boolean = false
 ) {
     internal data class SiteOverrideSnapshot(
         val effectiveMode: SiteMode,
@@ -157,6 +161,12 @@ class BrowserSession(
             cachedPageHost,
             headers
         )
+        override fun shouldOverrideMainFrameNavigation(
+            tabId: String,
+            url: String,
+            isRedirect: Boolean,
+            hasGesture: Boolean
+        ): Boolean = currentCallbacks.shouldOverrideMainFrameNavigation(tabId, url, isRedirect, hasGesture)
         override fun onPageStarted(tabId: String, url: String, canGoBack: Boolean, canGoForward: Boolean) {
             if (url.startsWith("http://", ignoreCase = true) || url.startsWith("https://", ignoreCase = true)) {
                 committedOverrideSnapshot = currentOverrideSnapshot()
@@ -272,6 +282,8 @@ class BrowserSession(
         ) = currentCallbacks.onUserscriptXmlHttpRequest(tabId, pageUrl, scriptId, reqId, requestJson)
         override fun onUserscriptAbortXmlHttpRequest(tabId: String, reqId: String) =
             currentCallbacks.onUserscriptAbortXmlHttpRequest(tabId, reqId)
+        override fun onPwaChannelMessage(tabId: String, pageUrl: String, event: String, json: String) =
+            currentCallbacks.onPwaChannelMessage(tabId, pageUrl, event, json)
     }
 
     private val mutableContext = MutableContextWrapper(context)
@@ -296,6 +308,7 @@ class BrowserSession(
     private val defaultMobileUserAgent: String
     private val documentStartHandlers = mutableListOf<ScriptHandler>()
     private var touchScrollGateHandler: ScriptHandler? = null
+    private var mobileViewportHandler: ScriptHandler? = null
     private var prepaintDarkHandler: ScriptHandler? = null
     private var lastPrepaintDarkScript: String? = null
     private var subframeDarkRuntimeHandler: ScriptHandler? = null
@@ -339,6 +352,9 @@ class BrowserSession(
         configureProfile()
         defaultMobileUserAgent = sanitizeMobileUserAgent(webView.settings.userAgentString)
         configureSettings()
+        if (forceMobileViewport) {
+            mobileViewportHandler = ScriptInjector.registerGlobalMobileViewportScript(webView)
+        }
         configureClients()
     }
 
@@ -411,7 +427,7 @@ class BrowserSession(
             displayZoomControls = false
             setSupportZoom(true)
             useWideViewPort = true
-            loadWithOverviewMode = true
+            loadWithOverviewMode = !forceMobileViewport
             mediaPlaybackRequiresUserGesture = false
             javaScriptCanOpenWindowsAutomatically = false
             setSupportMultipleWindows(true)
@@ -669,6 +685,15 @@ class BrowserSession(
                     )
                 }
             }
+
+            "pwa" -> {
+                if (token.isEmpty() || token != curTokens.pwaToken) return
+                if (committedOrigin == null || msgOrigin != committedOrigin) return
+                val event = obj.optString("event", "")
+                if (event.isNotEmpty()) {
+                    callbackProxy.onPwaChannelMessage(tabId, committedUrl, event, obj.toString())
+                }
+            }
         }
     }
 
@@ -755,10 +780,15 @@ class BrowserSession(
         applyProfileCookiePolicy: Boolean = true
     ): Boolean {
         if (isDestroyed) return false
-        val normalizedCustomUa = customUserAgent?.trim()?.takeIf { it.isNotEmpty() }
+        val effectiveMode = if (forceMobileViewport) SiteMode.MOBILE else mode
+        val normalizedCustomUa = if (forceMobileViewport) {
+            null
+        } else {
+            customUserAgent?.trim()?.takeIf { it.isNotEmpty() }
+        }
         val prevSnapshot = currentOverrideSnapshot()
 
-        currentSiteMode = mode
+        currentSiteMode = effectiveMode
         currentCustomUa = normalizedCustomUa
         currentJsEnabled = javascriptEnabled
         currentCookiesEnabled = cookiesEnabled
@@ -768,11 +798,11 @@ class BrowserSession(
             javaScriptEnabled = javascriptEnabled
             userAgentString = when {
                 normalizedCustomUa != null -> normalizedCustomUa
-                mode == SiteMode.DESKTOP -> DESKTOP_USER_AGENT
+                effectiveMode == SiteMode.DESKTOP -> DESKTOP_USER_AGENT
                 else -> defaultMobileUserAgent
             }
             useWideViewPort = true
-            loadWithOverviewMode = true
+            loadWithOverviewMode = !forceMobileViewport
         }
 
         runCatching {
@@ -1057,6 +1087,8 @@ class BrowserSession(
         webView.onDomPullToRefreshBlocked = null
         runCatching { touchScrollGateHandler?.remove() }
         touchScrollGateHandler = null
+        runCatching { mobileViewportHandler?.remove() }
+        mobileViewportHandler = null
         clearDocumentStartScripts()
         clearGlobalPrepaintDarkScript()
         clearSubframeDarkReaderRuntime()
@@ -1099,6 +1131,7 @@ class BrowserSession(
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
         private val WEBVIEW_WV_TOKEN_REGEX = Regex(""";\s*wv\b""", RegexOption.IGNORE_CASE)
         private val WEBVIEW_VERSION_TOKEN_REGEX = Regex("""\bVersion/\d+(?:\.\d+)*\s+""", RegexOption.IGNORE_CASE)
+        private val MOBILE_UA_TOKEN_REGEX = Regex("""\bMobile\b""", RegexOption.IGNORE_CASE)
         private val secureRandom = SecureRandom()
         private val HEX_CHARS = charArrayOf(
             '0', '1', '2', '3', '4', '5', '6', '7',
@@ -1106,17 +1139,25 @@ class BrowserSession(
         )
 
         /**
-         * Strips Android WebView's `; wv` and `Version/4.0` markers so Google Sign-In and other
-         * OAuth providers treat Swiftfox as a standard mobile Chromium browser instead of an
-         * untrusted embedded WebView.
+         * Strips Android WebView's `; wv` and `Version/4.0` markers and preserves a standard
+         * `Mobile` Chromium UA token so OAuth providers and responsive websites treat Swiftfox
+         * as a mobile Chromium browser instead of an embedded WebView or desktop/tablet agent.
          */
         internal fun sanitizeMobileUserAgent(rawUa: String): String {
             if (rawUa.isBlank()) return rawUa
-            return rawUa
+            val cleaned = rawUa
                 .replace(WEBVIEW_WV_TOKEN_REGEX, "")
                 .replace(WEBVIEW_VERSION_TOKEN_REGEX, "")
                 .replace("  ", " ")
                 .trim()
+            if (cleaned.contains("Android", ignoreCase = true) && !MOBILE_UA_TOKEN_REGEX.containsMatchIn(cleaned)) {
+                return if (cleaned.contains("Safari/")) {
+                    cleaned.replaceFirst("Safari/", "Mobile Safari/")
+                } else {
+                    "$cleaned Mobile"
+                }
+            }
+            return cleaned
         }
 
         internal fun generateHexToken(): String {

@@ -173,5 +173,33 @@ class QuickActionsSectionLogicTest {
         assertEquals(CompactQuickActionId.SEND_TO_ZEN, syncedRows[2][0].id)
         assertTrue(syncedRows[1][1].highlightedCue)
         assertEquals("Custom rules active", syncedRows[1][1].stateAnnouncement)
+
+        val pwaRows = buildCompactQuickActionRows(
+            isWebPage = true,
+            hasActiveSiteRules = false,
+            showPinEssential = true,
+            showInstallWebApp = true,
+            isPwaCapable = true,
+            showSendToZen = false
+        )
+        assertEquals(listOf(2, 2, 1), pwaRows.map { it.size })
+        val installSpec = pwaRows[1][1]
+        assertEquals(CompactQuickActionId.INSTALL_WEB_APP, installSpec.id)
+        assertEquals("Install app", installSpec.label)
+        assertTrue(installSpec.highlightedCue)
+        assertEquals("PWA installable", installSpec.stateAnnouncement)
+
+        val shortcutRows = buildCompactQuickActionRows(
+            isWebPage = true,
+            hasActiveSiteRules = false,
+            showPinEssential = true,
+            showInstallWebApp = true,
+            isPwaCapable = false,
+            showSendToZen = false
+        )
+        val shortcutSpec = shortcutRows[1][1]
+        assertEquals(CompactQuickActionId.INSTALL_WEB_APP, shortcutSpec.id)
+        assertEquals("Add to Home", shortcutSpec.label)
+        assertFalse(shortcutSpec.highlightedCue)
     }
 }

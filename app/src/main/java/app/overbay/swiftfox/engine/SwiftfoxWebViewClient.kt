@@ -64,6 +64,12 @@ interface WebNavigationCallbacks {
     fun onHttpsOnlyFailure(prompt: HttpsUpgradeErrorPrompt)
     fun onMainFrameLoadError(tabId: String, url: String, errorCode: Int, description: String) {}
     fun onRenderProcessGone(tabId: String, didCrash: Boolean)
+    fun shouldOverrideMainFrameNavigation(
+        tabId: String,
+        url: String,
+        isRedirect: Boolean,
+        hasGesture: Boolean
+    ): Boolean = false
 }
 
 class SwiftfoxWebViewClient(
@@ -161,6 +167,16 @@ class SwiftfoxWebViewClient(
                     resetPendingMainFrameUrl()
                     return true
                 }
+                if (callbacks.shouldOverrideMainFrameNavigation(
+                        tabId = tabId,
+                        url = url,
+                        isRedirect = request.isRedirect,
+                        hasGesture = request.hasGesture()
+                    )
+                ) {
+                    resetPendingMainFrameUrl()
+                    return true
+                }
             }
             return false
         }
@@ -218,69 +234,7 @@ class SwiftfoxWebViewClient(
     private fun buildBlockedSubresourceResponse(
         url: String,
         headers: Map<String, String>
-    ): WebResourceResponse {
-        val accept = headers.entries.firstOrNull { it.key.equals("accept", ignoreCase = true) }?.value
-            ?.lowercase(Locale.ROOT).orEmpty()
-        val dest = headers.entries.firstOrNull { it.key.equals("sec-fetch-dest", ignoreCase = true) }?.value
-            ?.lowercase(Locale.ROOT).orEmpty()
-        val path = url.substringBefore('?').substringBefore('#').lowercase(Locale.ROOT)
-
-        return when {
-            dest == "image" || accept.startsWith("image/") ||
-                path.endsWith(".png") || path.endsWith(".jpg") || path.endsWith(".jpeg") ||
-                path.endsWith(".gif") || path.endsWith(".webp") || path.endsWith(".svg") ||
-                path.endsWith(".ico") -> {
-                WebResourceResponse(
-                    "image/png",
-                    null,
-                    200,
-                    "OK",
-                    BLOCKED_CORS_HEADERS,
-                    ByteArrayInputStream(TRANSPARENT_1X1_PNG)
-                )
-            }
-            dest == "script" || path.endsWith(".js") || path.endsWith(".mjs") -> {
-                WebResourceResponse(
-                    "application/javascript",
-                    "utf-8",
-                    200,
-                    "OK",
-                    BLOCKED_CORS_HEADERS,
-                    ByteArrayInputStream(EMPTY_JS_BYTES)
-                )
-            }
-            dest == "style" || accept.contains("text/css") || path.endsWith(".css") -> {
-                WebResourceResponse(
-                    "text/css",
-                    "utf-8",
-                    200,
-                    "OK",
-                    BLOCKED_CORS_HEADERS,
-                    ByteArrayInputStream(EMPTY_BYTES)
-                )
-            }
-            dest == "iframe" || dest == "frame" || dest == "document" || accept.contains("text/html") -> {
-                WebResourceResponse(
-                    "text/html",
-                    "utf-8",
-                    200,
-                    "OK",
-                    BLOCKED_CORS_HEADERS,
-                    ByteArrayInputStream(TRANSPARENT_EMPTY_HTML_BYTES)
-                )
-            }
-            else -> {
-                WebResourceResponse(
-                    "text/plain",
-                    "utf-8",
-                    200,
-                    "OK",
-                    BLOCKED_CORS_HEADERS,
-                    ByteArrayInputStream(EMPTY_BYTES)
-                )
-            }
-        }
-    }
+    ): WebResourceResponse = Companion.buildBlockedSubresourceResponse(url, headers)
 
     private fun handleHttpExternalAppLink(
         view: WebView,
@@ -691,5 +645,72 @@ class SwiftfoxWebViewClient(
         private val TRANSPARENT_EMPTY_HTML_BYTES =
             "<!doctype html><html><head><style>html,body{margin:0;padding:0;background:transparent!important;}</style></head><body></body></html>"
                 .toByteArray(Charsets.UTF_8)
+
+        internal fun buildBlockedSubresourceResponse(
+            url: String,
+            headers: Map<String, String>
+        ): WebResourceResponse {
+            val accept = headers.entries.firstOrNull { it.key.equals("accept", ignoreCase = true) }?.value
+                ?.lowercase(Locale.ROOT).orEmpty()
+            val dest = headers.entries.firstOrNull { it.key.equals("sec-fetch-dest", ignoreCase = true) }?.value
+                ?.lowercase(Locale.ROOT).orEmpty()
+            val path = url.substringBefore('?').substringBefore('#').lowercase(Locale.ROOT)
+
+            return when {
+                dest == "image" || accept.startsWith("image/") ||
+                    path.endsWith(".png") || path.endsWith(".jpg") || path.endsWith(".jpeg") ||
+                    path.endsWith(".gif") || path.endsWith(".webp") || path.endsWith(".svg") ||
+                    path.endsWith(".ico") -> {
+                    WebResourceResponse(
+                        "image/png",
+                        null,
+                        200,
+                        "OK",
+                        BLOCKED_CORS_HEADERS,
+                        ByteArrayInputStream(TRANSPARENT_1X1_PNG)
+                    )
+                }
+                dest == "script" || path.endsWith(".js") || path.endsWith(".mjs") -> {
+                    WebResourceResponse(
+                        "application/javascript",
+                        "utf-8",
+                        200,
+                        "OK",
+                        BLOCKED_CORS_HEADERS,
+                        ByteArrayInputStream(EMPTY_JS_BYTES)
+                    )
+                }
+                dest == "style" || accept.contains("text/css") || path.endsWith(".css") -> {
+                    WebResourceResponse(
+                        "text/css",
+                        "utf-8",
+                        200,
+                        "OK",
+                        BLOCKED_CORS_HEADERS,
+                        ByteArrayInputStream(EMPTY_BYTES)
+                    )
+                }
+                dest == "iframe" || dest == "frame" || dest == "document" || accept.contains("text/html") -> {
+                    WebResourceResponse(
+                        "text/html",
+                        "utf-8",
+                        200,
+                        "OK",
+                        BLOCKED_CORS_HEADERS,
+                        ByteArrayInputStream(TRANSPARENT_EMPTY_HTML_BYTES)
+                    )
+                }
+                else -> {
+                    WebResourceResponse(
+                        "text/plain",
+                        "utf-8",
+                        200,
+                        "OK",
+                        BLOCKED_CORS_HEADERS,
+                        ByteArrayInputStream(EMPTY_BYTES)
+                    )
+                }
+            }
+        }
     }
 }

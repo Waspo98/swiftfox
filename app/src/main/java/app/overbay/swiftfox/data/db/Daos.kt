@@ -426,3 +426,27 @@ interface ZenPinnedItemDao {
         if (items.isNotEmpty()) upsertAll(items)
     }
 }
+
+@Dao
+interface WebAppDao {
+    @Query("SELECT * FROM web_apps ORDER BY lastLaunchedAt DESC, createdAt DESC")
+    fun observeAll(): Flow<List<WebAppEntity>>
+
+    @Query("SELECT * FROM web_apps WHERE id = :id LIMIT 1")
+    suspend fun getById(id: String): WebAppEntity?
+
+    @Query("SELECT * FROM web_apps WHERE startUrl = :startUrl LIMIT 1")
+    suspend fun findByStartUrl(startUrl: String): WebAppEntity?
+
+    @Query("SELECT COUNT(*) FROM web_apps WHERE customIcon = :spec")
+    suspend fun countByCustomIcon(spec: String): Int
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(webApp: WebAppEntity)
+
+    @Query("UPDATE web_apps SET lastLaunchedAt = :timestamp WHERE id = :id")
+    suspend fun updateLastLaunched(id: String, timestamp: Long)
+
+    @Query("DELETE FROM web_apps WHERE id = :id")
+    suspend fun deleteById(id: String)
+}

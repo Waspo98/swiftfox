@@ -59,6 +59,7 @@ import app.overbay.swiftfox.ui.icons.rounded.ChevronRight
 import app.overbay.swiftfox.ui.icons.rounded.DarkMode
 import app.overbay.swiftfox.ui.icons.rounded.DesktopWindows
 import app.overbay.swiftfox.ui.icons.rounded.FindInPage
+import app.overbay.swiftfox.ui.icons.rounded.InstallMobile
 import app.overbay.swiftfox.ui.icons.rounded.LightMode
 import app.overbay.swiftfox.ui.icons.rounded.PictureInPictureAlt
 import app.overbay.swiftfox.ui.icons.rounded.Print
@@ -85,6 +86,7 @@ internal enum class CompactQuickActionId {
     FIND_IN_PAGE,
     PRINT,
     PIN_ESSENTIAL,
+    INSTALL_WEB_APP,
     SITE_RULES,
     SEND_TO_ZEN
 }
@@ -156,6 +158,8 @@ internal fun buildCompactQuickActionRows(
     isWebPage: Boolean,
     hasActiveSiteRules: Boolean,
     showPinEssential: Boolean = isWebPage,
+    showInstallWebApp: Boolean = false,
+    isPwaCapable: Boolean = false,
     showSendToZen: Boolean
 ): List<List<CompactQuickActionSpec>> {
     if (!isWebPage) return emptyList()
@@ -177,6 +181,16 @@ internal fun buildCompactQuickActionRows(
                 CompactQuickActionSpec(
                     id = CompactQuickActionId.PIN_ESSENTIAL,
                     label = "Pin essential"
+                )
+            )
+        }
+        if (showInstallWebApp) {
+            add(
+                CompactQuickActionSpec(
+                    id = CompactQuickActionId.INSTALL_WEB_APP,
+                    label = if (isPwaCapable) "Install app" else "Add to Home",
+                    highlightedCue = isPwaCapable,
+                    stateAnnouncement = if (isPwaCapable) "PWA installable" else null
                 )
             )
         }
@@ -217,6 +231,7 @@ fun QuickActionsSection(
     onOpenSiteRules: () -> Unit,
     onFindInPage: () -> Unit,
     onPinEssential: () -> Unit,
+    onInstallWebApp: () -> Unit = {},
     onSendToZenSpace: () -> Unit,
     externalAppLabel: String? = null,
     onOpenInApp: () -> Unit = {},
@@ -295,6 +310,9 @@ fun QuickActionsSection(
         )
 
     val showPinEssential = isWebPage && !isPrivateTab
+    val pwaCandidate = state.activeTabPwaCandidate
+    val isPwaCapable = isWebPage && !isPrivateTab && pwaCandidate?.isStandaloneCapable == true
+    val isPwaNotInstalledYet = isPwaCapable && pwaCandidate.existingInstalledAppId == null
     val showSendToZen = isWebPage &&
         !isPrivateTab &&
         state.syncStatus.accountState is SyncAccountState.Connected &&
@@ -306,12 +324,15 @@ fun QuickActionsSection(
         isWebPage,
         hasActiveSiteRules,
         showPinEssential,
+        isPwaCapable,
         showSendToZen
     ) {
         buildCompactQuickActionRows(
             isWebPage = isWebPage,
             hasActiveSiteRules = hasActiveSiteRules,
             showPinEssential = showPinEssential,
+            showInstallWebApp = showPinEssential,
+            isPwaCapable = isPwaCapable,
             showSendToZen = showSendToZen
         )
     }
@@ -497,6 +518,15 @@ fun QuickActionsSection(
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.42f))
 
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    if (isPwaNotInstalledYet) {
+                        QuickContextualActionBar(
+                            label = "Install ${pwaCandidate.suggestedName}",
+                            icon = Icons.Rounded.InstallMobile,
+                            trailingLabel = "Web App",
+                            emphasized = true,
+                            onClick = onInstallWebApp
+                        )
+                    }
                     if (showPipBanner) {
                         QuickContextualActionBar(
                             label = "Picture-in-Picture",
@@ -528,6 +558,7 @@ fun QuickActionsSection(
                                     CompactQuickActionId.FIND_IN_PAGE -> Icons.Rounded.FindInPage
                                     CompactQuickActionId.PRINT -> Icons.Rounded.Print
                                     CompactQuickActionId.PIN_ESSENTIAL -> Icons.Rounded.PushPin
+                                    CompactQuickActionId.INSTALL_WEB_APP -> Icons.Rounded.InstallMobile
                                     CompactQuickActionId.SITE_RULES -> Icons.Rounded.Tune
                                     CompactQuickActionId.SEND_TO_ZEN -> Icons.AutoMirrored.Rounded.SendToMobile
                                 }
@@ -535,6 +566,7 @@ fun QuickActionsSection(
                                     CompactQuickActionId.FIND_IN_PAGE -> onFindInPage
                                     CompactQuickActionId.PRINT -> onPrintPage
                                     CompactQuickActionId.PIN_ESSENTIAL -> onPinEssential
+                                    CompactQuickActionId.INSTALL_WEB_APP -> onInstallWebApp
                                     CompactQuickActionId.SITE_RULES -> onOpenSiteRules
                                     CompactQuickActionId.SEND_TO_ZEN -> onSendToZenSpace
                                 }

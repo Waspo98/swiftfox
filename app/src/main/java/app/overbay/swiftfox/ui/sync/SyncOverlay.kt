@@ -65,6 +65,8 @@ import androidx.compose.ui.unit.dp
 import app.overbay.swiftfox.features.sync.SyncAccountState
 import app.overbay.swiftfox.ui.browser.BrowserUiState
 import app.overbay.swiftfox.ui.components.SwiftfoxSegmentedControl
+import app.overbay.swiftfox.ui.theme.LocalSwiftfoxBrandAppearance
+import app.overbay.swiftfox.ui.theme.SwiftfoxAppIcon
 import app.overbay.swiftfox.ui.theme.SwiftfoxEmblem
 import app.overbay.swiftfox.ui.theme.SwiftfoxEmblemVariant
 import java.util.Locale
@@ -155,20 +157,29 @@ fun SyncOverlay(
                             modifier = Modifier.padding(20.dp),
                             verticalArrangement = Arrangement.spacedBy(14.dp)
                         ) {
+                            val brandAppearance = LocalSwiftfoxBrandAppearance.current
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(14.dp)
                             ) {
-                                Surface(
-                                    shape = RoundedCornerShape(18.dp),
-                                    color = MaterialTheme.colorScheme.primaryContainer,
-                                    modifier = Modifier.size(52.dp)
-                                ) {
-                                    Box(contentAlignment = Alignment.Center) {
-                                        SwiftfoxEmblem(
-                                            size = 32.dp,
-                                            variant = SwiftfoxEmblemVariant.ORANGE
-                                        )
+                                if (brandAppearance.syncInApp) {
+                                    SwiftfoxAppIcon(
+                                        size = 52.dp,
+                                        variant = brandAppearance.effectiveAppIconVariant,
+                                        isLightBackground = brandAppearance.effectiveAppIconLightBackground
+                                    )
+                                } else {
+                                    Surface(
+                                        shape = RoundedCornerShape(18.dp),
+                                        color = MaterialTheme.colorScheme.primaryContainer,
+                                        modifier = Modifier.size(52.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            SwiftfoxEmblem(
+                                                size = 32.dp,
+                                                variant = SwiftfoxEmblemVariant.ORANGE
+                                            )
+                                        }
                                     }
                                 }
                                 Column(modifier = Modifier.weight(1f)) {

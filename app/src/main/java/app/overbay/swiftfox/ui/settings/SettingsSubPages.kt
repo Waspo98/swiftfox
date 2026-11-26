@@ -10,6 +10,7 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -76,6 +77,9 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.overbay.swiftfox.data.prefs.AccentPreset
+import app.overbay.swiftfox.data.prefs.AppIconBackgroundMode
+import app.overbay.swiftfox.data.prefs.AppIconColorStyle
+import app.overbay.swiftfox.data.prefs.AppIconPalette
 import app.overbay.swiftfox.data.prefs.DevicePosture
 import app.overbay.swiftfox.data.prefs.ExternalAppLinkPolicy
 import app.overbay.swiftfox.data.prefs.NightSurfaceStyle
@@ -89,7 +93,10 @@ import app.overbay.swiftfox.ui.browser.BrowserOverlay
 import app.overbay.swiftfox.ui.browser.BrowserUiState
 import app.overbay.swiftfox.ui.browser.BrowserViewModel
 import app.overbay.swiftfox.ui.components.SwiftfoxSegmentedControl
+import app.overbay.swiftfox.ui.theme.SwiftfoxAppIcon
+import app.overbay.swiftfox.ui.theme.SwiftfoxBrand
 import app.overbay.swiftfox.ui.theme.rememberReduceMotion
+import app.overbay.swiftfox.ui.theme.toEmblemVariant
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import java.text.NumberFormat
 import kotlin.math.roundToInt
@@ -183,6 +190,136 @@ internal fun LazyListScope.appearanceSettingsItems(
                 subtitle = "Match Android wallpaper palette (keeps AMOLED Black)",
                 checked = settings.useDynamicColor,
                 onCheckedChange = { viewModel.setUseDynamicColor(it) }
+            )
+        }
+    }
+
+    item(key = "appearance_app_icon", contentType = "settings_section") {
+        val isChromeDark = settings.themeMode.isDarkActive(isSystemInDarkTheme())
+        val isBeta = SwiftfoxBrand.isBetaBuild
+        val resolvedIcon = settings.resolveAppIcon(isChromeDark = isChromeDark, isBetaBuild = isBeta)
+        val accentIconOptions = remember {
+            listOf(
+                AppIconColorStyle.FOX_AMBER to AppIconPalette.FOX_AMBER,
+                AppIconColorStyle.MIDNIGHT_INDIGO to AppIconPalette.MIDNIGHT_INDIGO,
+                AppIconColorStyle.FOREST to AppIconPalette.FOREST,
+                AppIconColorStyle.MONOCHROME to AppIconPalette.MONOCHROME
+            )
+        }
+
+        SettingsSection(title = "App Icon") {
+            SettingGroup(
+                label = "Icon background",
+                supportingText = if (settings.appIconBackgroundMode == AppIconBackgroundMode.FOLLOW_THEME) {
+                    val activeLabel = if (resolvedIcon.isLightBackground) "Light" else "Dark"
+                    "Follows app theme · Currently using $activeLabel icon"
+                } else {
+                    null
+                }
+            ) {
+                SwiftfoxSegmentedControl(
+                    options = AppIconBackgroundMode.entries,
+                    selected = settings.appIconBackgroundMode,
+                    onSelect = { viewModel.setAppIconBackgroundMode(it) },
+                    labelFor = { mode ->
+                        when (mode) {
+                            AppIconBackgroundMode.DARK -> "Dark"
+                            AppIconBackgroundMode.LIGHT -> "Light"
+                            AppIconBackgroundMode.FOLLOW_THEME -> "Auto"
+                        }
+                    },
+                    iconFor = { mode ->
+                        when (mode) {
+                            AppIconBackgroundMode.DARK -> Icons.Rounded.DarkMode
+                            AppIconBackgroundMode.LIGHT -> Icons.Rounded.LightMode
+                            AppIconBackgroundMode.FOLLOW_THEME -> Icons.Rounded.BrightnessAuto
+                        }
+                    }
+                )
+            }
+
+            SettingGroup(
+                label = "Icon style",
+                supportingText = if (settings.appIconMatchAccent) {
+                    if (settings.useDynamicColor) {
+                        "Material You is active — matching your ${settings.accentPreset.label} preset"
+                    } else {
+                        "Matching your active ${settings.accentPreset.label} accent — tap any style to customize"
+                    }
+                } else {
+                    null
+                }
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .selectableGroup()
+                        .alpha(if (settings.appIconMatchAccent) 0.52f else 1f),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (isBeta) {
+                        AppIconVariantTile(
+                            title = "Beta Violet",
+                            subtitle = "Default Swiftfox Beta icon",
+                            palette = AppIconPalette.BETA_VIOLET,
+                            isLightBackground = resolvedIcon.isLightBackground,
+                            selected = !settings.appIconMatchAccent &&
+                                settings.appIconColorStyle == AppIconColorStyle.CHANNEL_DEFAULT,
+                            onClick = { viewModel.setAppIconColorStyle(AppIconColorStyle.CHANNEL_DEFAULT) },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+
+                    val rows = remember(accentIconOptions) { accentIconOptions.chunked(2) }
+                    rows.forEach { rowItems ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            rowItems.forEach { (style, palette) ->
+                                val selected = !settings.appIconMatchAccent && (
+                                    settings.appIconColorStyle == style ||
+                                        (!isBeta &&
+                                            style == AppIconColorStyle.FOX_AMBER &&
+                                            settings.appIconColorStyle == AppIconColorStyle.CHANNEL_DEFAULT)
+                                    )
+                                AppIconVariantTile(
+                                    title = style.label,
+                                    palette = palette,
+                                    isLightBackground = resolvedIcon.isLightBackground,
+                                    selected = selected,
+                                    onClick = { viewModel.setAppIconColorStyle(style) },
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                            if (rowItems.size == 1) {
+                                Spacer(Modifier.weight(1f))
+                            }
+                        }
+                    }
+                }
+            }
+
+            SettingsSwitchRow(
+                title = "Match app accent",
+                subtitle = "Automatically switch icon color to match your Accent palette",
+                checked = settings.appIconMatchAccent,
+                onCheckedChange = { viewModel.setAppIconMatchAccent(it) }
+            )
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+
+            SettingsSwitchRow(
+                title = "Use this icon throughout the app",
+                subtitle = "Apply this icon style to the Start Page, sidebar, tab switcher, and About card",
+                checked = settings.syncAppIconInApp,
+                onCheckedChange = { viewModel.setSyncAppIconInApp(it) }
+            )
+
+            Text(
+                text = "Your launcher may take a moment to refresh the home screen icon after switching styles.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
     }
@@ -755,6 +892,77 @@ internal fun LazyListScope.privacyMediaSettingsItems(
                 )
                 Spacer(Modifier.size(8.dp))
                 Text("Clear browsing data...")
+            }
+        }
+    }
+}
+
+@Composable
+private fun AppIconVariantTile(
+    title: String,
+    palette: AppIconPalette,
+    isLightBackground: Boolean,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    subtitle: String? = null
+) {
+    Surface(
+        shape = RoundedCornerShape(20.dp),
+        color = if (selected) {
+            MaterialTheme.colorScheme.primaryContainer
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerHigh
+        },
+        contentColor = if (selected) {
+            MaterialTheme.colorScheme.onPrimaryContainer
+        } else {
+            MaterialTheme.colorScheme.onSurface
+        },
+        border = if (selected) {
+            BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
+        } else {
+            BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.28f))
+        },
+        modifier = modifier
+            .heightIn(min = 58.dp)
+            .clip(RoundedCornerShape(20.dp))
+            .selectable(
+                selected = selected,
+                role = Role.RadioButton,
+                onClick = onClick
+            )
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            SwiftfoxAppIcon(
+                size = 38.dp,
+                variant = palette.toEmblemVariant(),
+                isLightBackground = isLightBackground
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.labelLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (!subtitle.isNullOrBlank()) {
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (selected) {
+                            MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
         }
     }

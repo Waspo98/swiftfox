@@ -28,6 +28,10 @@ class PreferencesRepository(private val context: Context) {
         val NIGHT_SURFACE = stringPreferencesKey("night_surface")
         val ACCENT_PRESET = stringPreferencesKey("accent_preset")
         val USE_DYNAMIC_COLOR = booleanPreferencesKey("use_dynamic_color")
+        val APP_ICON_BACKGROUND_MODE = stringPreferencesKey("app_icon_background_mode")
+        val APP_ICON_COLOR_STYLE = stringPreferencesKey("app_icon_color_style")
+        val APP_ICON_MATCH_ACCENT = booleanPreferencesKey("app_icon_match_accent")
+        val SYNC_APP_ICON_IN_APP = booleanPreferencesKey("sync_app_icon_in_app")
         val WEB_DARK_MODE = stringPreferencesKey("web_dark_mode")
         val DARK_READER_AMOLED = booleanPreferencesKey("dark_reader_amoled")
         val DARK_READER_BRIGHTNESS = intPreferencesKey("dark_reader_brightness")
@@ -91,6 +95,16 @@ class PreferencesRepository(private val context: Context) {
                 nightSurfaceStyle = parseEnum(prefs[Keys.NIGHT_SURFACE], NightSurfaceStyle.DARK),
                 accentPreset = parseEnum(prefs[Keys.ACCENT_PRESET], AccentPreset.FOX_AMBER),
                 useDynamicColor = prefs[Keys.USE_DYNAMIC_COLOR] ?: false,
+                appIconBackgroundMode = parseEnum(
+                    prefs[Keys.APP_ICON_BACKGROUND_MODE],
+                    AppIconBackgroundMode.DARK
+                ),
+                appIconColorStyle = parseEnum(
+                    prefs[Keys.APP_ICON_COLOR_STYLE],
+                    AppIconColorStyle.CHANNEL_DEFAULT
+                ),
+                appIconMatchAccent = prefs[Keys.APP_ICON_MATCH_ACCENT] ?: false,
+                syncAppIconInApp = prefs[Keys.SYNC_APP_ICON_IN_APP] ?: false,
                 webDarkMode = parseEnum(prefs[Keys.WEB_DARK_MODE], WebDarkModePreference.FOLLOW_APP),
                 darkReaderAmoled = prefs[Keys.DARK_READER_AMOLED] ?: false,
                 darkReaderBrightness = (prefs[Keys.DARK_READER_BRIGHTNESS] ?: 100).coerceIn(50, 150),
@@ -164,6 +178,25 @@ class PreferencesRepository(private val context: Context) {
 
     suspend fun setUseDynamicColor(enabled: Boolean) {
         context.swiftfoxDataStore.edit { it[Keys.USE_DYNAMIC_COLOR] = enabled }
+    }
+
+    suspend fun setAppIconBackgroundMode(mode: AppIconBackgroundMode) {
+        context.swiftfoxDataStore.edit { it[Keys.APP_ICON_BACKGROUND_MODE] = mode.name }
+    }
+
+    suspend fun setAppIconColorStyle(style: AppIconColorStyle) {
+        context.swiftfoxDataStore.edit {
+            it[Keys.APP_ICON_MATCH_ACCENT] = false
+            it[Keys.APP_ICON_COLOR_STYLE] = style.name
+        }
+    }
+
+    suspend fun setAppIconMatchAccent(enabled: Boolean) {
+        context.swiftfoxDataStore.edit { it[Keys.APP_ICON_MATCH_ACCENT] = enabled }
+    }
+
+    suspend fun setSyncAppIconInApp(enabled: Boolean) {
+        context.swiftfoxDataStore.edit { it[Keys.SYNC_APP_ICON_IN_APP] = enabled }
     }
 
     suspend fun setWebDarkMode(preference: WebDarkModePreference) {

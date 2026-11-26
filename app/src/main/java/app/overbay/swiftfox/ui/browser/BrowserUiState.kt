@@ -10,6 +10,7 @@ import app.overbay.swiftfox.data.db.SiteOverrideEntity
 import app.overbay.swiftfox.data.db.SpaceEntity
 import app.overbay.swiftfox.data.db.SyncedRemoteTabEntity
 import app.overbay.swiftfox.data.db.UserscriptEntity
+import app.overbay.swiftfox.data.db.WebAppEntity
 import app.overbay.swiftfox.data.db.ZappedRuleEntity
 import app.overbay.swiftfox.data.db.ZenPinnedItemEntity
 import app.overbay.swiftfox.data.prefs.BrowserSettings
@@ -24,6 +25,7 @@ import app.overbay.swiftfox.features.omnibox.OmniboxEngine
 import app.overbay.swiftfox.features.reader.ReaderArticle
 import app.overbay.swiftfox.features.sync.RemoteDeviceTabsGroup
 import app.overbay.swiftfox.features.sync.SyncStatusSnapshot
+import app.overbay.swiftfox.features.webapps.PageInstallCandidate
 import app.overbay.swiftfox.features.zapper.ZapperUiState
 import app.overbay.swiftfox.ui.tabs.AutoClearedTabsSnapshot
 import app.overbay.swiftfox.ui.tabs.PendingPinCloseTarget
@@ -35,6 +37,7 @@ enum class BrowserOverlay {
     BOOKMARKS,
     HISTORY,
     DOWNLOADS,
+    WEB_APPS,
     FILTER_LISTS,
     USERSCRIPTS,
     ZAPPED_RULES,
@@ -85,6 +88,7 @@ data class BrowserTabUi(
     val isPlayingMedia: Boolean = false,
     val isPlayingVideo: Boolean = false,
     val isReaderAvailable: Boolean = false,
+    val isPwaInstallAvailable: Boolean = false,
     val darkReaderSkippedNative: Boolean = false,
     val loadError: MainFrameLoadError? = null,
     val sessionRevision: Int = 0,
@@ -163,8 +167,13 @@ data class BrowserUiState(
     val zenPinnedItems: List<ZenPinnedItemEntity> = emptyList(),
     val pendingPinCloseTarget: PendingPinCloseTarget? = null,
     val fxaAuthUrl: String? = null,
-    val isQrPairingOpen: Boolean = false
+    val isQrPairingOpen: Boolean = false,
+    val webApps: List<WebAppEntity> = emptyList(),
+    val pwaCandidatesByTab: Map<String, PageInstallCandidate> = emptyMap(),
+    val installSheetCandidate: PageInstallCandidate? = null
 ) {
+    val activeTabPwaCandidate: PageInstallCandidate?
+        get() = activeTab?.id?.let { pwaCandidatesByTab[it] }
     val activeTab: BrowserTabUi?
         get() = tabs.firstOrNull { it.id == activeTabId && !it.isUnloaded }
             ?: visibleRegularTabs.firstOrNull()

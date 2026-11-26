@@ -271,3 +271,35 @@ data class ZenPinnedItemEntity(
     val sortOrder: Int = 0,
     val customIcon: String? = null
 )
+
+@Entity(
+    tableName = "web_apps",
+    indices = [
+        Index(value = ["startUrl"], name = "index_web_apps_startUrl"),
+        Index(value = ["host"], name = "index_web_apps_host")
+    ]
+)
+data class WebAppEntity(
+    @PrimaryKey val id: String,
+    val name: String,
+    val shortName: String = "",
+    val startUrl: String,
+    val scopeUrl: String = "",
+    val manifestUrl: String? = null,
+    val host: String,
+    val displayMode: String = "standalone",
+    val openAsStandalone: Boolean = true,
+    val showSlimHeader: Boolean = false,
+    val drawBehindStatusBar: Boolean = false,
+    val themeColorHex: String? = null,
+    val backgroundColorHex: String? = null,
+    val iconUrl: String? = null,
+    val iconPath: String? = null,
+    val iconMaskable: Boolean = false,
+    val customIcon: String? = null,
+    val shortcutsJson: String = "[]",
+    val isPwaCapable: Boolean = false,
+    val pinnedShortcutId: String,
+    val createdAt: Long = System.currentTimeMillis(),
+    val lastLaunchedAt: Long = System.currentTimeMillis()
+)

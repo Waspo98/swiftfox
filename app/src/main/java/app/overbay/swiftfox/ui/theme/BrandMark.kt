@@ -44,6 +44,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -65,10 +66,51 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import app.overbay.swiftfox.BuildConfig
+import app.overbay.swiftfox.data.prefs.AppIconPalette
+import app.overbay.swiftfox.data.prefs.ResolvedAppIcon
 
 enum class SwiftfoxEmblemVariant {
     ORANGE,
-    PURPLE
+    PURPLE,
+    INDIGO,
+    FOREST,
+    MONOCHROME
+}
+
+fun AppIconPalette.toEmblemVariant(): SwiftfoxEmblemVariant = when (this) {
+    AppIconPalette.FOX_AMBER -> SwiftfoxEmblemVariant.ORANGE
+    AppIconPalette.BETA_VIOLET -> SwiftfoxEmblemVariant.PURPLE
+    AppIconPalette.MIDNIGHT_INDIGO -> SwiftfoxEmblemVariant.INDIGO
+    AppIconPalette.FOREST -> SwiftfoxEmblemVariant.FOREST
+    AppIconPalette.MONOCHROME -> SwiftfoxEmblemVariant.MONOCHROME
+}
+
+@Immutable
+data class SwiftfoxBrandAppearance(
+    val syncInApp: Boolean = false,
+    val isLightChrome: Boolean = false,
+    val resolvedIcon: ResolvedAppIcon = ResolvedAppIcon(
+        palette = SwiftfoxBrand.defaultAppIconPalette,
+        isLightBackground = false,
+        usesChannelDefaultAlias = true
+    )
+) {
+    val effectiveEmblemVariant: SwiftfoxEmblemVariant
+        get() = if (syncInApp) {
+            resolvedIcon.palette.toEmblemVariant()
+        } else {
+            SwiftfoxEmblemVariant.ORANGE
+        }
+
+    val effectiveAppIconVariant: SwiftfoxEmblemVariant
+        get() = if (syncInApp) {
+            resolvedIcon.palette.toEmblemVariant()
+        } else {
+            SwiftfoxBrand.appChannelVariant
+        }
+
+    val effectiveAppIconLightBackground: Boolean
+        get() = syncInApp && resolvedIcon.isLightBackground
 }
 
 private data class EmblemPalette(
@@ -81,7 +123,7 @@ private data class EmblemPalette(
     val iconHorizon: Color
 )
 
-private val OrangeEmblemPalette = EmblemPalette(
+private val OrangeDarkEmblemPalette = EmblemPalette(
     base = Color(0xFFE86A17),
     highlight = Color(0xFFFF964A),
     shadow = Color(0xFFC6500A),
@@ -91,7 +133,13 @@ private val OrangeEmblemPalette = EmblemPalette(
     iconHorizon = Color(0xFF261A14)
 )
 
-private val PurpleEmblemPalette = EmblemPalette(
+private val OrangeLightEmblemPalette = OrangeDarkEmblemPalette.copy(
+    muzzle = Color(0xFFFFE3CC),
+    iconBackdrop = Color(0xFFFAF8F6),
+    iconHorizon = Color(0xFFEFE4DA)
+)
+
+private val PurpleDarkEmblemPalette = EmblemPalette(
     base = Color(0xFF8B5CF6),
     highlight = Color(0xFFB794FF),
     shadow = Color(0xFF6034B8),
@@ -101,6 +149,64 @@ private val PurpleEmblemPalette = EmblemPalette(
     iconHorizon = Color(0xFF231934)
 )
 
+private val PurpleLightEmblemPalette = PurpleDarkEmblemPalette.copy(
+    muzzle = Color(0xFFE8DCFF),
+    iconBackdrop = Color(0xFFFAF8F6),
+    iconHorizon = Color(0xFFEAE2FA)
+)
+
+private val IndigoDarkEmblemPalette = EmblemPalette(
+    base = Color(0xFF5B6CFA),
+    highlight = Color(0xFF8B9BFF),
+    shadow = Color(0xFF3848C4),
+    muzzle = Color(0xFFEEF1FF),
+    nose = Color(0xFF18161B),
+    iconBackdrop = Color(0xFF18161B),
+    iconHorizon = Color(0xFF1B1E38)
+)
+
+private val IndigoLightEmblemPalette = IndigoDarkEmblemPalette.copy(
+    muzzle = Color(0xFFDCE3FF),
+    iconBackdrop = Color(0xFFFAF8F6),
+    iconHorizon = Color(0xFFE3E7FC)
+)
+
+private val ForestDarkEmblemPalette = EmblemPalette(
+    base = Color(0xFF2E8B57),
+    highlight = Color(0xFF57B882),
+    shadow = Color(0xFF1B633B),
+    muzzle = Color(0xFFEAF7F0),
+    nose = Color(0xFF18161B),
+    iconBackdrop = Color(0xFF18161B),
+    iconHorizon = Color(0xFF15291E)
+)
+
+private val ForestLightEmblemPalette = ForestDarkEmblemPalette.copy(
+    muzzle = Color(0xFFD4EEDF),
+    iconBackdrop = Color(0xFFFAF8F6),
+    iconHorizon = Color(0xFFDFEFE6)
+)
+
+private val MonochromeDarkEmblemPalette = EmblemPalette(
+    base = Color(0xFF96919E),
+    highlight = Color(0xFFD4CFD9),
+    shadow = Color(0xFF635F6A),
+    muzzle = Color(0xFFF2EFF6),
+    nose = Color(0xFF18161B),
+    iconBackdrop = Color(0xFF18161B),
+    iconHorizon = Color(0xFF242129)
+)
+
+private val MonochromeLightEmblemPalette = EmblemPalette(
+    base = Color(0xFF54505B),
+    highlight = Color(0xFF7A7583),
+    shadow = Color(0xFF312E36),
+    muzzle = Color(0xFFDDD8E4),
+    nose = Color(0xFF18161B),
+    iconBackdrop = Color(0xFFFAF8F6),
+    iconHorizon = Color(0xFFE8E5EE)
+)
+
 object SwiftfoxBrand {
     val isBetaBuild: Boolean
         get() = BuildConfig.APPLICATION_ID.endsWith(".beta") ||
@@ -108,20 +214,32 @@ object SwiftfoxBrand {
 
     val appChannelVariant: SwiftfoxEmblemVariant
         get() = if (isBetaBuild) SwiftfoxEmblemVariant.PURPLE else SwiftfoxEmblemVariant.ORANGE
+
+    val defaultAppIconPalette: AppIconPalette
+        get() = if (isBetaBuild) AppIconPalette.BETA_VIOLET else AppIconPalette.FOX_AMBER
 }
 
-private fun paletteFor(variant: SwiftfoxEmblemVariant): EmblemPalette = when (variant) {
-    SwiftfoxEmblemVariant.ORANGE -> OrangeEmblemPalette
-    SwiftfoxEmblemVariant.PURPLE -> PurpleEmblemPalette
+private fun paletteFor(
+    variant: SwiftfoxEmblemVariant,
+    isLightBackground: Boolean = false
+): EmblemPalette = when (variant) {
+    SwiftfoxEmblemVariant.ORANGE -> if (isLightBackground) OrangeLightEmblemPalette else OrangeDarkEmblemPalette
+    SwiftfoxEmblemVariant.PURPLE -> if (isLightBackground) PurpleLightEmblemPalette else PurpleDarkEmblemPalette
+    SwiftfoxEmblemVariant.INDIGO -> if (isLightBackground) IndigoLightEmblemPalette else IndigoDarkEmblemPalette
+    SwiftfoxEmblemVariant.FOREST -> if (isLightBackground) ForestLightEmblemPalette else ForestDarkEmblemPalette
+    SwiftfoxEmblemVariant.MONOCHROME -> {
+        if (isLightBackground) MonochromeLightEmblemPalette else MonochromeDarkEmblemPalette
+    }
 }
 
 @Composable
 fun SwiftfoxEmblem(
     modifier: Modifier = Modifier,
     size: Dp = 36.dp,
-    variant: SwiftfoxEmblemVariant = SwiftfoxEmblemVariant.ORANGE
+    variant: SwiftfoxEmblemVariant = SwiftfoxEmblemVariant.ORANGE,
+    isLightBackground: Boolean = false
 ) {
-    val palette = paletteFor(variant)
+    val palette = paletteFor(variant, isLightBackground = isLightBackground)
     Spacer(
         modifier = modifier
             .size(size)
@@ -187,14 +305,20 @@ fun SwiftfoxEmblem(
 fun SwiftfoxAppIcon(
     modifier: Modifier = Modifier,
     size: Dp = 56.dp,
-    variant: SwiftfoxEmblemVariant = SwiftfoxBrand.appChannelVariant
+    variant: SwiftfoxEmblemVariant = SwiftfoxBrand.appChannelVariant,
+    isLightBackground: Boolean = false
 ) {
-    val palette = paletteFor(variant)
+    val palette = paletteFor(variant, isLightBackground = isLightBackground)
     val shape = RoundedCornerShape(size * 0.24f)
+    val borderColor = if (isLightBackground) {
+        Color(0xFF1C1917).copy(alpha = 0.12f)
+    } else {
+        Color.White.copy(alpha = 0.09f)
+    }
     Surface(
         shape = shape,
         color = palette.iconBackdrop,
-        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.09f)),
+        border = BorderStroke(1.dp, borderColor),
         modifier = modifier
             .size(size)
             .clip(shape)
@@ -325,6 +449,8 @@ fun SwiftfoxBrandLockup(
     emblemSize: Dp = 38.dp,
     wordmarkSize: TextUnit = 32.sp,
     variant: SwiftfoxEmblemVariant = SwiftfoxEmblemVariant.ORANGE,
+    useAppIconTile: Boolean = false,
+    isLightIconBackground: Boolean = false,
     wordmarkColor: Color = MaterialTheme.colorScheme.primary,
     showBetaBadge: Boolean = SwiftfoxBrand.isBetaBuild,
     spacing: Dp = 10.dp
@@ -337,10 +463,19 @@ fun SwiftfoxBrandLockup(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(spacing)
     ) {
-        SwiftfoxEmblem(
-            size = emblemSize,
-            variant = variant
-        )
+        if (useAppIconTile) {
+            SwiftfoxAppIcon(
+                size = emblemSize,
+                variant = variant,
+                isLightBackground = isLightIconBackground
+            )
+        } else {
+            SwiftfoxEmblem(
+                size = emblemSize,
+                variant = variant,
+                isLightBackground = isLightIconBackground
+            )
+        }
         SwiftfoxWordmark(
             fontSize = wordmarkSize,
             color = wordmarkColor

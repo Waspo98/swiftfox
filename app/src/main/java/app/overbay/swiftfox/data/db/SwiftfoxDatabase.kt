@@ -25,9 +25,10 @@ import kotlinx.coroutines.sync.withLock
         UserscriptEntity::class,
         UserscriptStorageEntity::class,
         SyncedRemoteTabEntity::class,
-        ZenPinnedItemEntity::class
+        ZenPinnedItemEntity::class,
+        WebAppEntity::class
     ],
-    version = 7,
+    version = 9,
     exportSchema = true
 )
 abstract class SwiftfoxDatabase : RoomDatabase() {
@@ -44,6 +45,7 @@ abstract class SwiftfoxDatabase : RoomDatabase() {
     abstract fun userscriptStorageDao(): UserscriptStorageDao
     abstract fun syncedRemoteTabDao(): SyncedRemoteTabDao
     abstract fun zenPinnedItemDao(): ZenPinnedItemDao
+    abstract fun webAppDao(): WebAppDao
 
     private val seedMutex = Mutex()
 
@@ -317,6 +319,46 @@ abstract class SwiftfoxDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_7_8: Migration = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `web_apps` (" +
+                        "`id` TEXT NOT NULL, " +
+                        "`name` TEXT NOT NULL, " +
+                        "`shortName` TEXT NOT NULL, " +
+                        "`startUrl` TEXT NOT NULL, " +
+                        "`scopeUrl` TEXT NOT NULL, " +
+                        "`manifestUrl` TEXT, " +
+                        "`host` TEXT NOT NULL, " +
+                        "`displayMode` TEXT NOT NULL, " +
+                        "`openAsStandalone` INTEGER NOT NULL, " +
+                        "`showSlimHeader` INTEGER NOT NULL, " +
+                        "`themeColorHex` TEXT, " +
+                        "`backgroundColorHex` TEXT, " +
+                        "`iconUrl` TEXT, " +
+                        "`iconPath` TEXT, " +
+                        "`iconMaskable` INTEGER NOT NULL, " +
+                        "`customIcon` TEXT, " +
+                        "`shortcutsJson` TEXT NOT NULL, " +
+                        "`isPwaCapable` INTEGER NOT NULL, " +
+                        "`pinnedShortcutId` TEXT NOT NULL, " +
+                        "`createdAt` INTEGER NOT NULL, " +
+                        "`lastLaunchedAt` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`id`))"
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_web_apps_startUrl` ON `web_apps` (`startUrl`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_web_apps_host` ON `web_apps` (`host`)")
+            }
+        }
+
+        val MIGRATION_8_9: Migration = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE `web_apps` ADD COLUMN `drawBehindStatusBar` INTEGER NOT NULL DEFAULT 0"
+                )
+            }
+        }
+
         @Volatile
         private var instance: SwiftfoxDatabase? = null
 
@@ -332,7 +374,9 @@ abstract class SwiftfoxDatabase : RoomDatabase() {
                     MIGRATION_3_4,
                     MIGRATION_4_5,
                     MIGRATION_5_6,
-                    MIGRATION_6_7
+                    MIGRATION_6_7,
+                    MIGRATION_7_8,
+                    MIGRATION_8_9
                 )
                     .fallbackToDestructiveMigrationOnDowngrade(dropAllTables = true)
                     .build()

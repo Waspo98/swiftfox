@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Application
 import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
 import android.net.Uri
 import android.os.Build
 import android.os.Message
@@ -27,8 +28,11 @@ import app.overbay.swiftfox.data.db.SpaceEntity
 import app.overbay.swiftfox.data.db.SwiftfoxDatabase
 import app.overbay.swiftfox.data.db.TabEntity
 import app.overbay.swiftfox.data.db.UserscriptEntity
+import app.overbay.swiftfox.data.db.WebAppEntity
 import app.overbay.swiftfox.data.db.ZappedRuleEntity
 import app.overbay.swiftfox.data.prefs.AccentPreset
+import app.overbay.swiftfox.data.prefs.AppIconBackgroundMode
+import app.overbay.swiftfox.data.prefs.AppIconColorStyle
 import app.overbay.swiftfox.data.prefs.DevicePosture
 import app.overbay.swiftfox.data.prefs.ExternalAppLinkPolicy
 import app.overbay.swiftfox.data.prefs.NightSurfaceStyle
@@ -56,6 +60,7 @@ import app.overbay.swiftfox.features.foldable.FoldableWindowState
 import app.overbay.swiftfox.features.foldable.SiteModeResolver
 import app.overbay.swiftfox.features.icons.CustomIconSpec
 import app.overbay.swiftfox.features.icons.FaviconRepository
+import app.overbay.swiftfox.features.icons.LauncherIconManager
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
 import app.overbay.swiftfox.features.omnibox.OmniboxSearchScope
 import app.overbay.swiftfox.features.sharing.CleanUrlSanitizer
@@ -63,6 +68,10 @@ import app.overbay.swiftfox.features.sync.ChromeBookmarkHtmlCodec
 import app.overbay.swiftfox.features.userscripts.UserscriptParser
 import app.overbay.swiftfox.features.userscripts.UserscriptRunAt
 import app.overbay.swiftfox.features.userscripts.UserscriptUrlMatcher
+import app.overbay.swiftfox.features.webapps.PageInstallCandidate
+import app.overbay.swiftfox.features.webapps.WebAppDetector
+import app.overbay.swiftfox.features.webapps.WebAppManifestParser
+import app.overbay.swiftfox.features.webapps.WebAppShortcutManager
 import app.overbay.swiftfox.features.zapper.ZapperUiState
 import app.overbay.swiftfox.ui.reader.clearGlobalReaderImageCache
 import app.overbay.swiftfox.ui.tabs.AutoClearedTabsSnapshot
@@ -70,6 +79,7 @@ import app.overbay.swiftfox.ui.tabs.PendingPinCloseTarget
 import app.overbay.swiftfox.ui.tabs.PinnedTabKind
 import app.overbay.swiftfox.ui.tabs.TabAutoClearPolicy
 import app.overbay.swiftfox.ui.tabs.WorkspaceTabResolver
+import app.overbay.swiftfox.ui.theme.SwiftfoxBrand
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Dispatchers
@@ -104,7 +114,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private val prefs = app.preferencesRepository
     private val pool = app.tabSessionPool
 
-    private val _uiState = MutableStateFlow(BrowserUiState())
+    private val _uiState = MutableStateFlow(
+        BrowserUiState(
+            isSystemDark = (application.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+                Configuration.UI_MODE_NIGHT_YES
+        )
+    )
     val uiState: StateFlow<BrowserUiState> = _uiState.asStateFlow()
 
     private val omniboxHolder = OmniboxStateHolder(
@@ -266,14 +281,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             } else {
                 state.siteOverrides[cachedPageHost]?.adblockDisabled == true
             }
-            if (siteDisabled) return false
-            val resourceType = app.adblockEngine.inferResourceType(requestUrl, headers)
-            val blocked = app.adblockEngine.shouldBlock(
+            val blocked = app.sessionEngineCoordinator.shouldBlockNetworkRequest(
                 requestUrl = requestUrl,
                 pageUrl = pageUrl,
-                resourceType = resourceType,
+                headers = headers,
                 globalEnabled = true,
-                siteDisabled = false
+                siteDisabled = siteDisabled
             )
             if (blocked) {
                 val newTotal = blockedCountByTab
@@ -330,9 +343,17 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     isPlayingMedia = if (isSameUrl) tab.isPlayingMedia else false,
                     isPlayingVideo = if (isSameUrl) tab.isPlayingVideo else false,
                     isReaderAvailable = false,
+                    isPwaInstallAvailable = false,
                     darkReaderSkippedNative = false,
                     loadError = null
                 )
+            }
+            _uiState.update { s ->
+                if (tabId in s.pwaCandidatesByTab) {
+                    s.copy(pwaCandidatesByTab = s.pwaCandidatesByTab - tabId)
+                } else {
+                    s
+                }
             }
             if (_uiState.value.activeTabId == tabId) {
                 _activeTabProgress.value = 12
@@ -396,13 +417,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             )
             pageStartedInjectJobByTab.remove(tabId)?.cancel()
             pageStartedInjectJobByTab[tabId] = viewModelScope.launch(Dispatchers.IO + ioExceptionHandler) {
-                val cosmetic = app.adblockEngine.cosmeticForUrl(
-                    url = url,
-                    globalEnabled = state.settings.adblockEnabled,
-                    cosmeticEnabled = state.settings.adblockCosmeticEnabled,
-                    siteDisabled = siteAdblockDisabled
-                )
-                cosmeticExceptionsByTab[tabId] = cosmetic.exceptions.toSet()
                 val persistedZapped = if (normalizedHost.isNotBlank()) {
                     enabledZappedRulesByHost[normalizedHost].orEmpty()
                 } else {
@@ -413,40 +427,17 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 } else {
                     persistedZapped
                 }
-                val rawOriginDocStart = if (state.settings.userscriptsEnabled) {
-                    app.userscriptRepository.originCandidateDocumentStartScriptsFor(url)
-                } else {
-                    emptyList()
-                }
-                val originDocStart = if (tabIsPrivate) {
-                    mergePrivateUserscriptStorage(rawOriginDocStart)
-                } else {
-                    rawOriginDocStart
-                }
-                val docStartUserscripts = if (originDocStart.isEmpty()) {
-                    emptyList()
-                } else {
-                    originDocStart.filter { (script, _) ->
-                        UserscriptUrlMatcher.matches(
-                            url,
-                            UserscriptParser.decodeStringList(script.matchesJson),
-                            UserscriptParser.decodeStringList(script.excludesJson)
-                        )
+                val payload = app.sessionEngineCoordinator.preparePageStartedPayload(
+                    url = url,
+                    tokens = tokens,
+                    settings = state.settings,
+                    siteAdblockDisabled = siteAdblockDisabled,
+                    zappedRules = zappedRules,
+                    mergePrivateStorage = { list ->
+                        if (tabIsPrivate) mergePrivateUserscriptStorage(list) else list
                     }
-                }
-                val gmShimInitJs = if (originDocStart.isNotEmpty()) {
-                    app.userscriptBridge.buildShimInitScript(tokens.gmToken, tokens.gmKey)
-                } else {
-                    ""
-                }
-                val docStartSnippets = app.userscriptBridge.buildPerScriptSnippets(
-                    scriptsWithStorage = originDocStart,
-                    runAt = UserscriptRunAt.DOCUMENT_START,
-                    bridgeToken = tokens.gmToken,
-                    runtimeKey = tokens.gmKey,
-                    includeUrlGuard = true
                 )
-                val zappedCss = app.zapperController.buildCssForRules(zappedRules)
+                cosmeticExceptionsByTab[tabId] = payload.cosmetic.exceptions.toSet()
                 withContext(Dispatchers.Main) {
                     if (session.isDestroyed) return@withContext
                     // Do not run stale page-started injection after page-finished has already committed
@@ -456,18 +447,18 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     }
                     session.updateDocumentStartScripts(
                         origin = expectedOrigin,
-                        cosmeticCss = cosmetic.css,
-                        zappedCss = zappedCss,
-                        gmShimInitJs = gmShimInitJs,
-                        documentStartUserscriptSnippets = docStartSnippets
+                        cosmeticCss = payload.cosmetic.css,
+                        zappedCss = payload.zappedCss,
+                        gmShimInitJs = payload.gmShimInitJs,
+                        documentStartUserscriptSnippets = payload.docStartSnippets
                     )
                     ScriptInjector.injectOnPageStarted(
                         webView = session.webView,
                         tokens = tokens,
-                        cosmetic = cosmetic,
-                        zappedRules = zappedRules,
+                        cosmetic = payload.cosmetic,
+                        zappedRules = payload.zappedRules,
                         zapperController = app.zapperController,
-                        docStartUserscripts = docStartUserscripts,
+                        docStartUserscripts = payload.docStartUserscripts,
                         userscriptBridge = app.userscriptBridge,
                         isDestroyed = { session.isDestroyed }
                     )
@@ -554,13 +545,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             pageStartedInjectJobByTab.remove(tabId)?.cancel()
             pageFinishedInjectJobByTab.remove(tabId)?.cancel()
             pageFinishedInjectJobByTab[tabId] = viewModelScope.launch(Dispatchers.IO + ioExceptionHandler) {
-                val cosmetic = app.adblockEngine.cosmeticForUrl(
-                    url = url,
-                    globalEnabled = state.settings.adblockEnabled,
-                    cosmeticEnabled = state.settings.adblockCosmeticEnabled,
-                    siteDisabled = siteAdblockDisabled
-                )
-                cosmeticExceptionsByTab[tabId] = cosmetic.exceptions.toSet()
                 val persistedZapped = if (normalizedHost.isNotBlank()) {
                     enabledZappedRulesByHost[normalizedHost].orEmpty()
                 } else {
@@ -571,18 +555,16 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 } else {
                     persistedZapped
                 }
-                val rawDocEnd = if (state.settings.userscriptsEnabled) {
-                    app.userscriptRepository.matchingScriptsFor(url, UserscriptRunAt.DOCUMENT_END)
-                } else {
-                    emptyList()
-                }
-                val rawDocIdle = if (state.settings.userscriptsEnabled) {
-                    app.userscriptRepository.matchingScriptsFor(url, UserscriptRunAt.DOCUMENT_IDLE)
-                } else {
-                    emptyList()
-                }
-                val docEndUserscripts = if (tabIsPrivate) mergePrivateUserscriptStorage(rawDocEnd) else rawDocEnd
-                val docIdleUserscripts = if (tabIsPrivate) mergePrivateUserscriptStorage(rawDocIdle) else rawDocIdle
+                val payload = app.sessionEngineCoordinator.preparePageFinishedPayload(
+                    url = url,
+                    settings = state.settings,
+                    siteAdblockDisabled = siteAdblockDisabled,
+                    zappedRules = zappedRules,
+                    mergePrivateStorage = { list ->
+                        if (tabIsPrivate) mergePrivateUserscriptStorage(list) else list
+                    }
+                )
+                cosmeticExceptionsByTab[tabId] = payload.cosmetic.exceptions.toSet()
                 withContext(Dispatchers.Main) {
                     if (session.isDestroyed) return@withContext
                     val liveUrl = session.webView.url.orEmpty()
@@ -592,12 +574,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     ScriptInjector.injectOnPageFinished(
                         webView = session.webView,
                         tokens = tokens,
-                        cosmetic = cosmetic,
+                        cosmetic = payload.cosmetic,
                         runGenericCosmeticScan = runGenericScan,
-                        zappedRules = zappedRules,
+                        zappedRules = payload.zappedRules,
                         zapperController = app.zapperController,
-                        docEndUserscripts = docEndUserscripts,
-                        docIdleUserscripts = docIdleUserscripts,
+                        docEndUserscripts = payload.docEndUserscripts,
+                        docIdleUserscripts = payload.docIdleUserscripts,
                         userscriptBridge = app.userscriptBridge,
                         isDestroyed = { session.isDestroyed }
                     )
@@ -609,6 +591,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                         }
                         val readable = raw?.trim().equals("true", ignoreCase = true)
                         updateTab(tabId) { it.copy(isReaderAvailable = readable) }
+                    }
+                    if (!tabIsPrivate) {
+                        session.evaluateJavascript(
+                            WebAppDetector.buildInspectPageScript(tokens.pwaToken, expectedOrigin)
+                        )
                     }
                 }
             }
@@ -721,39 +708,16 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             }
             val isPrivate = _uiState.value.tabs.firstOrNull { it.id == tabId }?.isPrivate == true
             val saved = effectiveSiteOverride(normalizedHost, isPrivate)
-            if (normalizedPrompt.isGeolocation && saved?.allowLocation != null) {
-                if (saved.allowLocation) {
+            val decision = app.sessionEngineCoordinator.resolvePermissionPolicyDecision(normalizedPrompt, saved)
+            if (decision != null) {
+                if (decision) {
                     grantPermissionWithRuntimeCheck(normalizedPrompt, rememberForSite = false)
-                } else {
+                } else if (normalizedPrompt.isGeolocation) {
                     normalizedPrompt.geoCallback?.invoke(normalizedPrompt.geoOrigin, false, false)
+                } else {
+                    normalizedPrompt.webRequest?.deny()
                 }
                 return
-            }
-            if (!normalizedPrompt.isGeolocation && saved != null) {
-                val allApproved = normalizedPrompt.resources.all { res ->
-                    when (res) {
-                        PermissionRequest.RESOURCE_VIDEO_CAPTURE -> saved.allowCamera == true
-                        PermissionRequest.RESOURCE_AUDIO_CAPTURE -> saved.allowMic == true
-                        PermissionRequest.RESOURCE_PROTECTED_MEDIA_ID -> saved.allowProtectedMedia == true
-                        else -> false
-                    }
-                }
-                val anyDenied = normalizedPrompt.resources.any { res ->
-                    when (res) {
-                        PermissionRequest.RESOURCE_VIDEO_CAPTURE -> saved.allowCamera == false
-                        PermissionRequest.RESOURCE_AUDIO_CAPTURE -> saved.allowMic == false
-                        PermissionRequest.RESOURCE_PROTECTED_MEDIA_ID -> saved.allowProtectedMedia == false
-                        else -> false
-                    }
-                }
-                if (allApproved) {
-                    grantPermissionWithRuntimeCheck(normalizedPrompt, rememberForSite = false)
-                    return
-                }
-                if (anyDenied) {
-                    normalizedPrompt.webRequest?.deny()
-                    return
-                }
             }
             // Deny any superseded pending prompt so WebView never leaks a hanging callback
             _uiState.value.permissionPrompt?.let { previous ->
@@ -1008,9 +972,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 if (isPlaying && _uiState.value.settings.backgroundMediaEnabled) {
                     maybeRequestNotificationPermissionOnce()
                     activeMediaTabId = tabId
-                    attachMediaController(tabId)
-                    BackgroundMediaService.updateState(
+                    BackgroundMediaService.claimPlayback(
+                        owner = this@BrowserViewModel,
                         context = app,
+                        controller = createMediaCommandController(tabId),
                         title = title.ifBlank { tab?.title ?: "Media playback" },
                         host = tab?.displayHost.orEmpty().ifBlank { "Swiftfox" },
                         isPlaying = true,
@@ -1020,9 +985,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     val otherPlaying = _uiState.value.tabs.firstOrNull { it.id != tabId && it.isPlayingMedia }
                     if (otherPlaying != null && _uiState.value.settings.backgroundMediaEnabled) {
                         activeMediaTabId = otherPlaying.id
-                        attachMediaController(otherPlaying.id)
-                        BackgroundMediaService.updateState(
+                        BackgroundMediaService.claimPlayback(
+                            owner = this@BrowserViewModel,
                             context = app,
+                            controller = createMediaCommandController(otherPlaying.id),
                             title = otherPlaying.title.ifBlank { "Media playback" },
                             host = otherPlaying.displayHost.ifBlank { "Swiftfox" },
                             isPlaying = true,
@@ -1030,7 +996,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                         )
                     } else if (_uiState.value.settings.backgroundMediaEnabled) {
                         // Keep notification alive in paused state so user can tap Play to resume
-                        BackgroundMediaService.updateState(
+                        BackgroundMediaService.updatePlaybackIfOwner(
+                            owner = this@BrowserViewModel,
                             context = app,
                             title = title.ifBlank { tab?.title ?: "Media playback" },
                             host = tab?.displayHost.orEmpty().ifBlank { "Swiftfox" },
@@ -1039,7 +1006,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                         )
                     } else {
                         activeMediaTabId = null
-                        BackgroundMediaService.stop(app)
+                        BackgroundMediaService.releasePlaybackOwner(
+                            owner = this@BrowserViewModel,
+                            context = app,
+                            stopService = true
+                        )
                     }
                 }
             }
@@ -1383,6 +1354,56 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         override fun onUserscriptAbortXmlHttpRequest(tabId: String, reqId: String) {
             app.userscriptBridge.handleAbortXmlHttpRequest(reqId = reqId, tabId = tabId)
         }
+
+        override fun onPwaChannelMessage(tabId: String, pageUrl: String, event: String, json: String) {
+            val tab = _uiState.value.tabs.firstOrNull { it.id == tabId } ?: return
+            if (tab.isPrivate) return
+            when (event) {
+                "metadata" -> {
+                    val meta = WebAppDetector.parseMetadataMessage(json) ?: return
+                    val expectedOrigin = ScriptInjector.extractOrigin(meta.pageUrl) ?: return
+                    viewModelScope.launch(Dispatchers.IO + ioExceptionHandler) {
+                        val candidate = app.webAppRepository.resolveInstallCandidate(meta)
+                        withContext(Dispatchers.Main) {
+                            val session = pool.getExisting(tabId)
+                            val liveUrl = session?.webView?.url.orEmpty()
+                            if (liveUrl.isNotBlank() && ScriptInjector.extractOrigin(liveUrl) != expectedOrigin) {
+                                return@withContext
+                            }
+                            val canInstallPrompt = candidate.isStandaloneCapable &&
+                                candidate.existingInstalledAppId == null
+                            var tabStillOpen = false
+                            _uiState.update { state ->
+                                if (state.tabs.none { it.id == tabId }) {
+                                    state
+                                } else {
+                                    tabStillOpen = true
+                                    state.copy(
+                                        pwaCandidatesByTab = state.pwaCandidatesByTab + (tabId to candidate),
+                                        tabs = state.tabs.map { t ->
+                                            if (t.id == tabId) t.copy(isPwaInstallAvailable = canInstallPrompt) else t
+                                        }
+                                    )
+                                }
+                            }
+                            if (tabStillOpen && canInstallPrompt && session != null && !session.isDestroyed) {
+                                session.evaluateJavascript(
+                                    WebAppDetector.buildDispatchBeforeInstallPromptScript(
+                                        bridgeToken = session.tokens.pwaToken,
+                                        expectedOrigin = expectedOrigin
+                                    )
+                                )
+                            }
+                        }
+                    }
+                }
+                "promptInstall" -> {
+                    if (_uiState.value.activeTabId == tabId) {
+                        openInstallWebAppSheet()
+                    }
+                }
+            }
+        }
     }
 
     init {
@@ -1425,8 +1446,17 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     startupTabReconciliationDone.get() &&
                     newSettings.tabAutoClearDuration != oldSettings.tabAutoClearDuration &&
                     newSettings.tabAutoClearDuration.isMoreAggressiveThan(oldSettings.tabAutoClearDuration)
+                val iconChanged = !wasLoaded ||
+                    oldSettings.themeMode != newSettings.themeMode ||
+                    oldSettings.accentPreset != newSettings.accentPreset ||
+                    oldSettings.appIconBackgroundMode != newSettings.appIconBackgroundMode ||
+                    oldSettings.appIconColorStyle != newSettings.appIconColorStyle ||
+                    oldSettings.appIconMatchAccent != newSettings.appIconMatchAccent
 
                 _uiState.update { it.copy(settings = newSettings, hasLoadedSettings = true) }
+                if (iconChanged) {
+                    syncLauncherIconIfLoaded()
+                }
                 if (!newSettings.backgroundMediaEnabled && oldSettings.backgroundMediaEnabled) {
                     activeMediaTabId = null
                     BackgroundMediaService.stop(app)
@@ -1567,6 +1597,39 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             db.downloadRecordDao().observeAll().distinctUntilChanged().collectLatest { downloads ->
                 _uiState.update { it.copy(downloads = downloads) }
+            }
+        }
+
+        viewModelScope.launch {
+            app.webAppRepository.observeAll().distinctUntilChanged().collectLatest { apps ->
+                val byUrl = apps.associateBy { it.startUrl }
+                _uiState.update { state ->
+                    val updatedCandidates = if (state.pwaCandidatesByTab.isEmpty()) {
+                        state.pwaCandidatesByTab
+                    } else {
+                        state.pwaCandidatesByTab.mapValues { (_, cand) ->
+                            val matchedId = (byUrl[cand.startUrl] ?: byUrl[cand.pageUrl])?.id
+                            if (cand.existingInstalledAppId != matchedId) {
+                                cand.copy(existingInstalledAppId = matchedId)
+                            } else {
+                                cand
+                            }
+                        }
+                    }
+                    state.copy(
+                        webApps = apps,
+                        pwaCandidatesByTab = updatedCandidates,
+                        tabs = state.tabs.map { tab ->
+                            val cand = updatedCandidates[tab.id]
+                            val avail = cand != null && cand.isStandaloneCapable && cand.existingInstalledAppId == null
+                            if (tab.isPwaInstallAvailable != avail) {
+                                tab.copy(isPwaInstallAvailable = avail)
+                            } else {
+                                tab
+                            }
+                        }
+                    )
+                }
             }
         }
 
@@ -1767,13 +1830,17 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun updateSystemDarkTheme(isDark: Boolean) {
         if (_uiState.value.isSystemDark == isDark) return
         _uiState.update { it.copy(isSystemDark = isDark) }
-        if (_uiState.value.settings.themeMode == ThemeMode.SYSTEM) {
+        val settings = _uiState.value.settings
+        if (settings.themeMode == ThemeMode.SYSTEM) {
             syncAllWarmSessionsWithSettings(
                 reloadActiveOnSiteModeChange = false,
                 updateSiteOverrides = false,
                 updateWebDark = true,
                 updateBgMedia = false
             )
+            if (settings.appIconBackgroundMode == AppIconBackgroundMode.FOLLOW_THEME) {
+                syncLauncherIconIfLoaded()
+            }
         }
     }
 
@@ -2308,6 +2375,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             current.copy(
                 tabs = remaining,
                 activeTabId = nextActiveId,
+                pwaCandidatesByTab = current.pwaCandidatesByTab - tabId,
                 privateSiteOverrides = if (clearAllPrivateState) emptyMap() else current.privateSiteOverrides,
                 privateZappedRules = if (clearAllPrivateState) emptyMap() else current.privateZappedRules,
                 recentlyClosedTab = if (showClosedSnackbar) closing else null,
@@ -2560,6 +2628,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 activeSpaceId = nextActiveSpaceId,
                 activeTabId = nextActiveTabId,
                 tabs = remainingAfter,
+                pwaCandidatesByTab = state.pwaCandidatesByTab - affectedIds,
                 zenPinnedItems = state.zenPinnedItems.filterNot { it.spaceId == spaceId },
                 externalAppPrompt = if (wasViewingDeletedSpace || state.externalAppPrompt?.tabId in affectedIds) null else state.externalAppPrompt,
                 httpsErrorPrompt = if (wasViewingDeletedSpace || state.httpsErrorPrompt?.tabId in affectedIds) null else state.httpsErrorPrompt,
@@ -2995,6 +3064,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             current.copy(
                 tabs = updatedTabs,
                 activeTabId = nextActiveId,
+                pwaCandidatesByTab = current.pwaCandidatesByTab - tabId,
                 pendingPinCloseTarget = if (current.pendingPinCloseTarget?.tabId == tabId) null else current.pendingPinCloseTarget,
                 recentlyClosedTab = null,
                 recentlyAutoClearedTabs = if (showClosedSnackbar) null else current.recentlyAutoClearedTabs,
@@ -3069,6 +3139,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             current.copy(
                 tabs = remaining,
                 activeTabId = nextActiveId,
+                pwaCandidatesByTab = current.pwaCandidatesByTab - orphanSet,
                 pendingPinCloseTarget = if (current.pendingPinCloseTarget?.tabId in orphanSet) null else current.pendingPinCloseTarget,
                 zapper = if (wasActiveRemoved) ZapperUiState() else current.zapper,
                 readerArticle = if (wasActiveRemoved) null else current.readerArticle,
@@ -3150,6 +3221,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             current.copy(
                 tabs = updatedTabs,
                 activeTabId = nextActiveId,
+                pwaCandidatesByTab = current.pwaCandidatesByTab - targetIds,
                 pendingPinCloseTarget = if (current.pendingPinCloseTarget?.tabId in targetIds) null else current.pendingPinCloseTarget,
                 recentlyClosedTab = null,
                 recentlyAutoClearedTabs = null,
@@ -3233,6 +3305,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 current.copy(
                     tabs = remaining,
                     activeTabId = null,
+                    pwaCandidatesByTab = current.pwaCandidatesByTab - targetIds,
                     privateSiteOverrides = emptyMap(),
                     privateZappedRules = emptyMap(),
                     pendingPinCloseTarget = null,
@@ -3269,6 +3342,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             current.copy(
                 tabs = remaining,
                 activeTabId = nextActiveId,
+                pwaCandidatesByTab = current.pwaCandidatesByTab - targetIds,
                 recentlyClosedTab = null,
                 recentlyAutoClearedTabs = null,
                 snackbarMessage = "Closed $count open ${if (count == 1) "tab" else "tabs"}",
@@ -3357,6 +3431,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             current.copy(
                 tabs = updatedTabs,
                 activeTabId = if (wasActiveClosed) null else current.activeTabId,
+                pwaCandidatesByTab = current.pwaCandidatesByTab - allAffectedIds,
                 pendingPinCloseTarget = null,
                 recentlyClosedTab = null,
                 recentlyAutoClearedTabs = null,
@@ -3688,6 +3763,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             state.essentials.any { it.customIcon == oldSpec } ||
             state.tabs.any { it.customIcon == oldSpec } ||
             state.zenPinnedItems.any { it.customIcon == oldSpec } ||
+            state.webApps.any { it.customIcon == oldSpec } ||
             state.recentlyClosedTab?.customIcon == oldSpec ||
             state.recentlyAutoClearedTabs?.allCustomIcons?.contains(oldSpec) == true
         if (!stillReferenced) {
@@ -3812,6 +3888,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun openExternalIncomingIntent(intent: Intent?) {
         if (intent == null) return
+        val launchedWebAppId = intent.getStringExtra(WebAppShortcutManager.EXTRA_WEB_APP_ID)
+            ?.takeIf { it.isNotBlank() }
+        if (launchedWebAppId != null) {
+            viewModelScope.launch(Dispatchers.IO) {
+                app.webAppRepository.markLaunched(launchedWebAppId)
+            }
+        }
         val targetUrl = when (intent.action) {
             Intent.ACTION_VIEW -> {
                 val uri = intent.dataString ?: return
@@ -4058,7 +4141,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                         BrowserOverlay.SYNCED_TABS,
                         BrowserOverlay.BOOKMARKS,
                         BrowserOverlay.HISTORY,
-                        BrowserOverlay.DOWNLOADS
+                        BrowserOverlay.DOWNLOADS,
+                        BrowserOverlay.WEB_APPS
                     ) -> current.overlayBackStack + BrowserOverlay.SETTINGS
                 current.activeOverlay == BrowserOverlay.SYNC &&
                     overlay == BrowserOverlay.SYNCED_TABS ->
@@ -4079,7 +4163,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                         BrowserOverlay.SYNCED_TABS,
                         BrowserOverlay.BOOKMARKS,
                         BrowserOverlay.HISTORY,
-                        BrowserOverlay.DOWNLOADS
+                        BrowserOverlay.DOWNLOADS,
+                        BrowserOverlay.WEB_APPS
                     ) -> true
                 else -> false
             }
@@ -4143,6 +4228,157 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             app.downloadCoordinator.clearAllRecords()
             showSnackbar("Cleared download history")
+        }
+    }
+
+    fun openInstallWebAppSheet() {
+        val state = _uiState.value
+        val active = state.activeTab ?: return
+        val isHttpUrl = active.url.startsWith("http://", ignoreCase = true) ||
+            active.url.startsWith("https://", ignoreCase = true)
+        if (active.isPrivate || active.isStartPage || !isHttpUrl) {
+            showSnackbar(
+                if (active.isPrivate) "Switch out of Private mode to install web apps"
+                else "Open a webpage first"
+            )
+            return
+        }
+        val existingCandidate = state.pwaCandidatesByTab[active.id]
+        if (existingCandidate != null) {
+            val matchedApp = state.webApps.firstOrNull {
+                it.startUrl == existingCandidate.startUrl || it.startUrl == active.url
+            }
+            _uiState.update {
+                it.copy(
+                    installSheetCandidate = existingCandidate.copy(
+                        existingInstalledAppId = matchedApp?.id ?: existingCandidate.existingInstalledAppId
+                    ),
+                    activeOverlay = BrowserOverlay.NONE,
+                    overlayBackStack = emptyList(),
+                    isSiteRulesOpen = false,
+                    isFoldedSidebarOpen = false
+                )
+            }
+            return
+        }
+        val fallbackName = active.title.trim()
+            .takeUnless { it.isBlank() || it.equals("New Tab", ignoreCase = true) }
+            ?: active.displayHost.ifBlank { "Web App" }
+        val existingApp = state.webApps.firstOrNull { it.startUrl == active.url }
+        val fallback = PageInstallCandidate(
+            pageUrl = active.url,
+            pageTitle = active.title,
+            suggestedName = fallbackName,
+            suggestedShortName = fallbackName,
+            startUrl = active.url,
+            scopeUrl = WebAppManifestParser.defaultScopeForStartUrl(active.url),
+            existingInstalledAppId = existingApp?.id
+        )
+        _uiState.update {
+            it.copy(
+                installSheetCandidate = fallback,
+                activeOverlay = BrowserOverlay.NONE,
+                overlayBackStack = emptyList(),
+                isSiteRulesOpen = false,
+                isFoldedSidebarOpen = false
+            )
+        }
+    }
+
+    fun dismissInstallWebAppSheet(installed: Boolean = false) {
+        val activeId = _uiState.value.activeTabId
+        _uiState.update { it.copy(installSheetCandidate = null) }
+        if (activeId != null) {
+            pool.getExisting(activeId)?.evaluateJavascript(
+                WebAppDetector.buildResolveBeforeInstallChoiceScript(installed)
+            )
+        }
+    }
+
+    fun confirmInstallWebApp(
+        candidate: PageInstallCandidate,
+        name: String,
+        openAsStandalone: Boolean,
+        showSlimHeader: Boolean,
+        drawBehindStatusBar: Boolean = false,
+        customIconSpec: String?
+    ) {
+        val activeId = _uiState.value.activeTabId
+        _uiState.update { it.copy(installSheetCandidate = null) }
+        if (activeId != null) {
+            pool.getExisting(activeId)?.evaluateJavascript(
+                WebAppDetector.buildResolveBeforeInstallChoiceScript(accepted = true)
+            )
+        }
+        viewModelScope.launch {
+            val result = app.webAppRepository.installOrUpdateFromCandidate(
+                candidate = candidate,
+                customName = name,
+                openAsStandalone = openAsStandalone,
+                showSlimHeader = showSlimHeader,
+                drawBehindStatusBar = drawBehindStatusBar,
+                customIconSpec = customIconSpec,
+                pinToHomeScreen = true
+            )
+            result.onSuccess { (entity, pinned) ->
+                showSnackbar(
+                    if (pinned) "Adding ${entity.name} to Home screen"
+                    else "Saved ${entity.name} in Web Apps"
+                )
+            }.onFailure { err ->
+                showSnackbar("Could not install web app: ${err.message ?: "error"}")
+            }
+        }
+    }
+
+    fun launchWebApp(webApp: WebAppEntity) {
+        viewModelScope.launch {
+            app.webAppRepository.markLaunched(webApp.id)
+        }
+        if (webApp.openAsStandalone) {
+            if (!WebAppShortcutManager.launchWebApp(app, webApp)) {
+                showSnackbar("Could not launch ${webApp.name}")
+            }
+        } else {
+            navigateActiveTab(webApp.startUrl)
+        }
+    }
+
+    fun repinWebApp(webApp: WebAppEntity) {
+        viewModelScope.launch {
+            val ok = app.webAppRepository.repinWebApp(webApp)
+            showSnackbar(
+                if (ok) "Requested Home screen pin for ${webApp.name}"
+                else "Home screen pinning is unsupported on this launcher"
+            )
+        }
+    }
+
+    fun updateWebApp(
+        existing: WebAppEntity,
+        name: String,
+        openAsStandalone: Boolean,
+        showSlimHeader: Boolean,
+        drawBehindStatusBar: Boolean = existing.drawBehindStatusBar,
+        customIconSpec: String?
+    ) {
+        viewModelScope.launch {
+            val updated = app.webAppRepository.updateExistingWebApp(
+                existing = existing,
+                name = name,
+                openAsStandalone = openAsStandalone,
+                showSlimHeader = showSlimHeader,
+                drawBehindStatusBar = drawBehindStatusBar,
+                customIconSpec = customIconSpec
+            )
+            showSnackbar("Updated ${updated.name}")
+        }
+    }
+
+    fun removeWebApp(webApp: WebAppEntity) {
+        viewModelScope.launch {
+            app.webAppRepository.removeWebApp(webApp)
+            showSnackbar("Removed ${webApp.name}")
         }
     }
 
@@ -5229,6 +5465,14 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun setNightSurfaceStyle(style: NightSurfaceStyle) = viewModelScope.launch { prefs.setNightSurfaceStyle(style) }
     fun setAccentPreset(preset: AccentPreset) = viewModelScope.launch { prefs.setAccentPreset(preset) }
     fun setUseDynamicColor(enabled: Boolean) = viewModelScope.launch { prefs.setUseDynamicColor(enabled) }
+    fun setAppIconBackgroundMode(mode: AppIconBackgroundMode) =
+        viewModelScope.launch { prefs.setAppIconBackgroundMode(mode) }
+    fun setAppIconColorStyle(style: AppIconColorStyle) =
+        viewModelScope.launch { prefs.setAppIconColorStyle(style) }
+    fun setAppIconMatchAccent(enabled: Boolean) =
+        viewModelScope.launch { prefs.setAppIconMatchAccent(enabled) }
+    fun setSyncAppIconInApp(enabled: Boolean) =
+        viewModelScope.launch { prefs.setSyncAppIconInApp(enabled) }
     fun setWebDarkMode(pref: WebDarkModePreference) = viewModelScope.launch { prefs.setWebDarkMode(pref) }
     fun setDarkReaderAmoled(enabled: Boolean) = viewModelScope.launch { prefs.setDarkReaderAmoled(enabled) }
     fun setDarkReaderBrightness(value: Int) = viewModelScope.launch { prefs.setDarkReaderBrightness(value) }
@@ -5416,6 +5660,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             current.copy(
                 tabs = updatedTabs,
                 activeTabId = nextActiveId,
+                pwaCandidatesByTab = current.pwaCandidatesByTab - allAffectedIds,
                 activeSpaceId = if (exitedPrivateView) validSpaceId else current.activeSpaceId,
                 isPrivateView = nextIsPrivateView,
                 privateSiteOverrides = if (clearAllPrivateState) emptyMap() else current.privateSiteOverrides,
@@ -5504,7 +5749,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             siteModeOverride: SiteMode? = source.siteModeOverride,
             nextRevision: Int = source.sessionRevision + 1
         ): BrowserTabUi {
-            val host = OmniboxEngine.extractHost(url)
+            val host = OmniboxEngine.normalizeHost(OmniboxEngine.extractHost(url))
             val siteOverride = SiteModeResolver.parseOrNull(effectiveSiteOverride(host, false)?.siteModeOverride)
             return source.copy(
                 spaceId = spaceId,
@@ -5553,7 +5798,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     }
                 }
                 tab.isPinned -> {
-                    val currentUnloaded = state.tabs.firstOrNull { it.id == tab.id && !it.isPrivate && it.isPinned }
+                    val currentUnloaded = state.tabs.firstOrNull {
+                        it.id == tab.id && !it.isPrivate && it.isPinned && it.isUnloaded
+                    }
                     if (currentUnloaded != null) {
                         wokenLocalPinsById[tab.id] = restoreTabSnapshot(
                             source = currentUnloaded,
@@ -5811,50 +6058,34 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         discardedAutoClearedIcons.forEach(::cleanupUnusedCustomImage)
     }
 
-    private fun isChromeDark(): Boolean = when (_uiState.value.settings.themeMode) {
-        ThemeMode.DAY -> false
-        ThemeMode.NIGHT -> true
-        ThemeMode.SYSTEM -> onSystemDarkThemeProvider?.invoke() ?: _uiState.value.isSystemDark
+    private fun isChromeDark(): Boolean =
+        _uiState.value.settings.themeMode.isDarkActive(
+            onSystemDarkThemeProvider?.invoke() ?: _uiState.value.isSystemDark
+        )
+
+    private fun syncLauncherIconIfLoaded() {
+        val state = _uiState.value
+        if (!state.hasLoadedSettings) return
+        val resolved = state.settings.resolveAppIcon(
+            isChromeDark = isChromeDark(),
+            isBetaBuild = SwiftfoxBrand.isBetaBuild
+        )
+        viewModelScope.launch {
+            LauncherIconManager.syncIcon(app, resolved)
+        }
     }
 
-    private fun resolveWebSurfaceDarkColors(darkState: ResolvedWebDarkState): Pair<Boolean, Boolean> {
-        return darkState.enabled to (darkState.enabled && darkState.amoled)
-    }
+    private fun resolveWebSurfaceDarkColors(darkState: ResolvedWebDarkState): Pair<Boolean, Boolean> =
+        app.sessionEngineCoordinator.resolveWebSurfaceDarkColors(darkState)
 
     private fun buildGlobalPrepaintDarkConfig(isPrivate: Boolean): GlobalPrepaintDarkConfig {
         val state = _uiState.value
-        val settings = state.settings
-        val globalDark = DarkReaderConfig.resolve(
-            settings = settings,
-            siteOverride = null,
-            isChromeDark = isChromeDark()
-        )
-        val effectiveOverrides = if (isPrivate) {
-            state.siteOverrides + state.privateSiteOverrides
-        } else {
-            state.siteOverrides
-        }
-        val excluded = mutableSetOf<String>()
-        val included = mutableSetOf<String>()
-        effectiveOverrides.forEach { (hostKey, entity) ->
-            val normalized = OmniboxEngine.normalizeHost(hostKey.ifBlank { entity.host })
-            if (normalized.isNotBlank()) {
-                when (entity.webDarkModeOverride) {
-                    false -> excluded += normalized
-                    true -> included += normalized
-                    null -> Unit
-                }
-            }
-        }
-        return GlobalPrepaintDarkConfig(
-            amoled = settings.darkReaderAmoled,
-            brightness = settings.darkReaderBrightness,
-            contrast = settings.darkReaderContrast,
-            sepia = settings.darkReaderSepia,
-            skipNativeDark = settings.darkReaderSkipNativeDark,
-            globalEnabled = globalDark.enabled,
-            excludedHosts = excluded,
-            includedHosts = included
+        return app.sessionEngineCoordinator.buildGlobalPrepaintDarkConfig(
+            settings = state.settings,
+            isChromeDark = isChromeDark(),
+            siteOverrides = state.siteOverrides,
+            privateSiteOverrides = state.privateSiteOverrides,
+            isPrivate = isPrivate
         )
     }
 
@@ -5980,9 +6211,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         val otherPlaying = candidateTabs.firstOrNull { it.id != stoppingTabId && it.isPlayingMedia }
         if (otherPlaying != null && _uiState.value.settings.backgroundMediaEnabled) {
             activeMediaTabId = otherPlaying.id
-            attachMediaController(otherPlaying.id)
-            BackgroundMediaService.updateState(
+            BackgroundMediaService.claimPlayback(
+                owner = this@BrowserViewModel,
                 context = app,
+                controller = createMediaCommandController(otherPlaying.id),
                 title = otherPlaying.title.ifBlank { "Media playback" },
                 host = otherPlaying.displayHost.ifBlank { "Swiftfox" },
                 isPlaying = true,
@@ -5990,12 +6222,16 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             )
         } else if (activeMediaTabId == stoppingTabId || candidateTabs.none { it.id != stoppingTabId && it.isPlayingMedia }) {
             activeMediaTabId = null
-            BackgroundMediaService.stop(app)
+            BackgroundMediaService.releasePlaybackOwner(
+                owner = this@BrowserViewModel,
+                context = app,
+                stopService = true
+            )
         }
     }
 
-    private fun attachMediaController(targetTabId: String) {
-        BackgroundMediaService.activeController = BackgroundMediaService.MediaCommandController { cmd ->
+    private fun createMediaCommandController(targetTabId: String): BackgroundMediaService.MediaCommandController =
+        BackgroundMediaService.MediaCommandController { cmd ->
             viewModelScope.launch(Dispatchers.Main) {
                 val session = pool.getExisting(targetTabId)
                 when (cmd) {
@@ -6009,7 +6245,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 }
             }
         }
-    }
 
     private fun recordHistory(url: String, title: String) {
         if (url == OmniboxEngine.NEW_TAB_URL ||
@@ -6153,6 +6388,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 val readable = raw?.trim().equals("true", ignoreCase = true)
                 updateTab(tabId) { it.copy(isReaderAvailable = readable) }
             }
+            if (!tabIsPrivate) {
+                session.evaluateJavascript(
+                    WebAppDetector.buildInspectPageScript(tokens.pwaToken, expectedOrigin)
+                )
+            }
         }
     }
 
@@ -6295,7 +6535,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         pool.onThumbnailsEvicted = null
         pool.onThumbnailCaptured = null
         pool.detachCallbacksOnCleared(destroyPrivateSessions = false)
-        BackgroundMediaService.activeController = null
+        BackgroundMediaService.releasePlaybackOwner(
+            owner = this@BrowserViewModel,
+            context = app,
+            stopService = false
+        )
         omniboxHolder.reset()
         readerExtractJob?.cancel()
         subframeDarkWarmupJob?.cancel()

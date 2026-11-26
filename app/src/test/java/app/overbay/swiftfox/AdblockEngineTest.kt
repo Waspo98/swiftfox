@@ -4,6 +4,7 @@ import app.overbay.swiftfox.data.db.FilterListEntity
 import app.overbay.swiftfox.features.adblock.AdblockEngine
 import app.overbay.swiftfox.features.adblock.BuiltInFilterLists
 import app.overbay.swiftfox.features.adblock.FallbackKotlinAdblockMatcher
+import app.overbay.swiftfox.features.adblock.ServiceWorkerAdblockHelper
 import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -517,5 +518,63 @@ class AdblockEngineTest {
         // Reddit mobile xpromo app-banner rule fires on reddit.com
         val redditCosmetic = matcher.cosmeticResources("https://www.reddit.com/r/android/")
         assertTrue(redditCosmetic.css.contains("xpromo-app-selector{display:none!important}"))
+    }
+
+    @Test
+    fun serviceWorkerAdblockHelperRespectsMainFrameGlobalAndSiteDisablePolicy() {
+        val engine = AdblockEngine.createForTesting(
+            """
+            ||ads.example.com^
+            ||tracker.test/pixel.js${'$'}third-party
+            """.trimIndent()
+        )
+        val helper = ServiceWorkerAdblockHelper(engine)
+
+        // Subresource fetched via Service Worker on an enabled host is blocked
+        assertTrue(
+            helper.shouldBlockServiceWorkerRequest(
+                requestUrl = "https://tracker.test/pixel.js",
+                isForMainFrame = false,
+                headers = mapOf("Referer" to "https://news.example.org/story")
+            )
+        )
+
+        // Top-level main-frame navigation must never be blocked by SW helper
+        assertFalse(
+            helper.shouldBlockServiceWorkerRequest(
+                requestUrl = "https://ads.example.com/landing",
+                isForMainFrame = true,
+                headers = emptyMap()
+            )
+        )
+
+        // Non-HTTP(S) URLs are ignored
+        assertFalse(
+            helper.shouldBlockServiceWorkerRequest(
+                requestUrl = "data:text/javascript,console.log(1)",
+                isForMainFrame = false,
+                headers = emptyMap()
+            )
+        )
+
+        // Per-site exception via normalized Origin/Referer disables SW blocking on that host
+        helper.updatePolicy(globalEnabled = true, disabledHosts = setOf("news.example.org"))
+        assertFalse(
+            helper.shouldBlockServiceWorkerRequest(
+                requestUrl = "https://tracker.test/pixel.js",
+                isForMainFrame = false,
+                headers = mapOf("Origin" to "https://www.news.example.org")
+            )
+        )
+
+        // Global disable turns off SW blocking across all hosts
+        helper.updatePolicy(globalEnabled = false, disabledHosts = emptySet())
+        assertFalse(
+            helper.shouldBlockServiceWorkerRequest(
+                requestUrl = "https://ads.example.com/banner.js",
+                isForMainFrame = false,
+                headers = mapOf("Referer" to "https://other.example.org/")
+            )
+        )
     }
 }

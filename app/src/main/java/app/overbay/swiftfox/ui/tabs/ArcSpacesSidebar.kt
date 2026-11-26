@@ -107,7 +107,9 @@ import app.overbay.swiftfox.ui.components.dragReorderItem
 import app.overbay.swiftfox.ui.components.horizontalFadingEdges
 import app.overbay.swiftfox.ui.components.parseSpaceColorHexOrNull
 import app.overbay.swiftfox.ui.components.rememberDragReorderController
+import app.overbay.swiftfox.ui.theme.LocalSwiftfoxBrandAppearance
 import app.overbay.swiftfox.ui.theme.LocalSwiftfoxColors
+import app.overbay.swiftfox.ui.theme.SwiftfoxAppIcon
 import app.overbay.swiftfox.ui.theme.SwiftfoxEmblem
 import app.overbay.swiftfox.ui.theme.SwiftfoxEmblemVariant
 import app.overbay.swiftfox.ui.theme.rememberReduceMotion
@@ -600,6 +602,7 @@ fun ArcSpacesSidebar(
             subtitle = tabSubtitle,
             leadingIcon = {
                 if (target.isStartPage && target.customIcon == null) {
+                    val brandAppearance = LocalSwiftfoxBrandAppearance.current
                     Surface(
                         shape = RoundedCornerShape(12.dp),
                         color = MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -608,7 +611,12 @@ fun ArcSpacesSidebar(
                         Box(contentAlignment = Alignment.Center) {
                             SwiftfoxEmblem(
                                 size = 22.dp,
-                                variant = if (isPrivate) SwiftfoxEmblemVariant.PURPLE else SwiftfoxEmblemVariant.ORANGE
+                                variant = if (isPrivate) {
+                                    SwiftfoxEmblemVariant.PURPLE
+                                } else {
+                                    brandAppearance.effectiveEmblemVariant
+                                },
+                                isLightBackground = !isPrivate && brandAppearance.isLightChrome
                             )
                         }
                     }
@@ -790,10 +798,11 @@ private fun ColumnScope.ArcExpandedSidebarContent(
     itemCallbacks: WorkspaceItemCallbacks
 ) {
     val foxColors = LocalSwiftfoxColors.current
+    val brandAppearance = LocalSwiftfoxBrandAppearance.current
     val emblemVariant = if (state.isPrivateView) {
         SwiftfoxEmblemVariant.PURPLE
     } else {
-        SwiftfoxEmblemVariant.ORANGE
+        brandAppearance.effectiveEmblemVariant
     }
     val activeSpace = state.activeSpace
 
@@ -879,10 +888,19 @@ private fun ColumnScope.ArcExpandedSidebarContent(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        SwiftfoxEmblem(
-            size = 24.dp,
-            variant = emblemVariant
-        )
+        if (!state.isPrivateView && brandAppearance.syncInApp) {
+            SwiftfoxAppIcon(
+                size = 26.dp,
+                variant = brandAppearance.effectiveAppIconVariant,
+                isLightBackground = brandAppearance.effectiveAppIconLightBackground
+            )
+        } else {
+            SwiftfoxEmblem(
+                size = 24.dp,
+                variant = emblemVariant,
+                isLightBackground = !state.isPrivateView && brandAppearance.isLightChrome
+            )
+        }
         Row(
             modifier = Modifier.weight(1f),
             verticalAlignment = Alignment.CenterVertically,
@@ -1631,6 +1649,7 @@ private fun SidebarTabRow(
         ) {
             val iconAlpha = if (isLoaded || isActive || isReorderMode || !isPinnedStyle) 1f else 0.68f
             if (tab.isStartPage && tab.customIcon == null) {
+                val brandAppearance = LocalSwiftfoxBrandAppearance.current
                 Box(
                     modifier = Modifier
                         .size(28.dp)
@@ -1641,7 +1660,12 @@ private fun SidebarTabRow(
                 ) {
                     SwiftfoxEmblem(
                         size = 16.dp,
-                        variant = if (isPrivate) SwiftfoxEmblemVariant.PURPLE else SwiftfoxEmblemVariant.ORANGE
+                        variant = if (isPrivate) {
+                            SwiftfoxEmblemVariant.PURPLE
+                        } else {
+                            brandAppearance.effectiveEmblemVariant
+                        },
+                        isLightBackground = !isPrivate && brandAppearance.isLightChrome
                     )
                 }
             } else {
@@ -1772,10 +1796,11 @@ private fun ColumnScope.ArcCollapsedSidebarRail(
     itemCallbacks: WorkspaceItemCallbacks
 ) {
     val foxColors = LocalSwiftfoxColors.current
+    val brandAppearance = LocalSwiftfoxBrandAppearance.current
     val emblemVariant = if (state.isPrivateView) {
         SwiftfoxEmblemVariant.PURPLE
     } else {
-        SwiftfoxEmblemVariant.ORANGE
+        brandAppearance.effectiveEmblemVariant
     }
 
     Column(
@@ -1783,10 +1808,19 @@ private fun ColumnScope.ArcCollapsedSidebarRail(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        SwiftfoxEmblem(
-            size = 26.dp,
-            variant = emblemVariant
-        )
+        if (!state.isPrivateView && brandAppearance.syncInApp) {
+            SwiftfoxAppIcon(
+                size = 28.dp,
+                variant = brandAppearance.effectiveAppIconVariant,
+                isLightBackground = brandAppearance.effectiveAppIconLightBackground
+            )
+        } else {
+            SwiftfoxEmblem(
+                size = 26.dp,
+                variant = emblemVariant,
+                isLightBackground = !state.isPrivateView && brandAppearance.isLightChrome
+            )
+        }
         IconButton(
             onClick = onToggleExpanded,
             modifier = Modifier.size(48.dp)
@@ -2013,9 +2047,15 @@ private fun ColumnScope.ArcCollapsedSidebarRail(
                 Box(contentAlignment = Alignment.Center) {
                     val iconAlpha = if (isLoaded || isActive || !tab.isPinned) 1f else 0.66f
                     if (tab.isStartPage && tab.customIcon == null) {
+                        val brandAppearance = LocalSwiftfoxBrandAppearance.current
                         SwiftfoxEmblem(
                             size = 22.dp,
-                            variant = if (tab.isPrivate) SwiftfoxEmblemVariant.PURPLE else SwiftfoxEmblemVariant.ORANGE,
+                            variant = if (tab.isPrivate) {
+                                SwiftfoxEmblemVariant.PURPLE
+                            } else {
+                                brandAppearance.effectiveEmblemVariant
+                            },
+                            isLightBackground = !tab.isPrivate && brandAppearance.isLightChrome,
                             modifier = Modifier.graphicsLayer { alpha = iconAlpha }
                         )
                     } else {

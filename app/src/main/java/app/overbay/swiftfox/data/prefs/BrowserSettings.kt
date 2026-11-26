@@ -3,7 +3,13 @@ package app.overbay.swiftfox.data.prefs
 enum class ThemeMode(val label: String) {
     SYSTEM("System"),
     DAY("Day"),
-    NIGHT("Night")
+    NIGHT("Night");
+
+    fun isDarkActive(isSystemDark: Boolean): Boolean = when (this) {
+        DAY -> false
+        NIGHT -> true
+        SYSTEM -> isSystemDark
+    }
 }
 
 enum class NightSurfaceStyle(val label: String) {
@@ -17,6 +23,34 @@ enum class AccentPreset(val label: String, val previewHex: Long) {
     FOREST("Forest", 0xFF2E8B57),
     MONOCHROME("Monochrome", 0xFF6B6A70)
 }
+
+enum class AppIconBackgroundMode(val label: String) {
+    DARK("Dark"),
+    LIGHT("Light"),
+    FOLLOW_THEME("Follow theme")
+}
+
+enum class AppIconColorStyle(val label: String) {
+    CHANNEL_DEFAULT("Default"),
+    FOX_AMBER("Fox Amber"),
+    MIDNIGHT_INDIGO("Midnight Indigo"),
+    FOREST("Forest"),
+    MONOCHROME("Monochrome")
+}
+
+enum class AppIconPalette(val label: String) {
+    FOX_AMBER("Fox Amber"),
+    BETA_VIOLET("Beta Violet"),
+    MIDNIGHT_INDIGO("Midnight Indigo"),
+    FOREST("Forest"),
+    MONOCHROME("Monochrome")
+}
+
+data class ResolvedAppIcon(
+    val palette: AppIconPalette,
+    val isLightBackground: Boolean,
+    val usesChannelDefaultAlias: Boolean
+)
 
 enum class DevicePosture(val label: String) {
     FOLDED("Folded"),
@@ -184,6 +218,10 @@ data class BrowserSettings(
     val nightSurfaceStyle: NightSurfaceStyle = NightSurfaceStyle.DARK,
     val accentPreset: AccentPreset = AccentPreset.FOX_AMBER,
     val useDynamicColor: Boolean = false,
+    val appIconBackgroundMode: AppIconBackgroundMode = AppIconBackgroundMode.DARK,
+    val appIconColorStyle: AppIconColorStyle = AppIconColorStyle.CHANNEL_DEFAULT,
+    val appIconMatchAccent: Boolean = false,
+    val syncAppIconInApp: Boolean = false,
     val webDarkMode: WebDarkModePreference = WebDarkModePreference.FOLLOW_APP,
     val darkReaderAmoled: Boolean = false,
     val darkReaderBrightness: Int = 100,
@@ -238,5 +276,39 @@ data class BrowserSettings(
 
     fun resolvedSearchTemplate(engineOverride: SearchEngineId? = null): String {
         return (engineOverride ?: searchEngine).resolveSearchTemplate(customSearchUrlTemplate)
+    }
+
+    fun resolveAppIcon(isChromeDark: Boolean, isBetaBuild: Boolean): ResolvedAppIcon {
+        val isLightBackground = when (appIconBackgroundMode) {
+            AppIconBackgroundMode.DARK -> false
+            AppIconBackgroundMode.LIGHT -> true
+            AppIconBackgroundMode.FOLLOW_THEME -> !isChromeDark
+        }
+        val effectiveStyle = if (appIconMatchAccent) {
+            when (accentPreset) {
+                AccentPreset.FOX_AMBER -> AppIconColorStyle.FOX_AMBER
+                AccentPreset.MIDNIGHT_INDIGO -> AppIconColorStyle.MIDNIGHT_INDIGO
+                AccentPreset.FOREST -> AppIconColorStyle.FOREST
+                AccentPreset.MONOCHROME -> AppIconColorStyle.MONOCHROME
+            }
+        } else {
+            appIconColorStyle
+        }
+        val palette = when (effectiveStyle) {
+            AppIconColorStyle.CHANNEL_DEFAULT -> {
+                if (isBetaBuild) AppIconPalette.BETA_VIOLET else AppIconPalette.FOX_AMBER
+            }
+            AppIconColorStyle.FOX_AMBER -> AppIconPalette.FOX_AMBER
+            AppIconColorStyle.MIDNIGHT_INDIGO -> AppIconPalette.MIDNIGHT_INDIGO
+            AppIconColorStyle.FOREST -> AppIconPalette.FOREST
+            AppIconColorStyle.MONOCHROME -> AppIconPalette.MONOCHROME
+        }
+        val usesChannelDefaultAlias = effectiveStyle == AppIconColorStyle.CHANNEL_DEFAULT ||
+            (!isBetaBuild && effectiveStyle == AppIconColorStyle.FOX_AMBER)
+        return ResolvedAppIcon(
+            palette = palette,
+            isLightBackground = isLightBackground,
+            usesChannelDefaultAlias = usesChannelDefaultAlias
+        )
     }
 }

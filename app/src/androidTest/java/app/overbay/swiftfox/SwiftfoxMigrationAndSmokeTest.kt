@@ -11,6 +11,7 @@ import app.overbay.swiftfox.data.db.SiteOverrideEntity
 import app.overbay.swiftfox.data.db.SwiftfoxDatabase
 import app.overbay.swiftfox.data.db.SyncedRemoteTabEntity
 import app.overbay.swiftfox.data.db.UserscriptEntity
+import app.overbay.swiftfox.data.db.WebAppEntity
 import app.overbay.swiftfox.data.db.ZappedRuleEntity
 import app.overbay.swiftfox.data.db.ZenPinnedItemEntity
 import kotlinx.coroutines.flow.first
@@ -115,7 +116,9 @@ class SwiftfoxMigrationAndSmokeTest {
                 SwiftfoxDatabase.MIGRATION_3_4,
                 SwiftfoxDatabase.MIGRATION_4_5,
                 SwiftfoxDatabase.MIGRATION_5_6,
-                SwiftfoxDatabase.MIGRATION_6_7
+                SwiftfoxDatabase.MIGRATION_6_7,
+                SwiftfoxDatabase.MIGRATION_7_8,
+                SwiftfoxDatabase.MIGRATION_8_9
             )
             .build()
         try {
@@ -173,6 +176,22 @@ class SwiftfoxMigrationAndSmokeTest {
                 )
             )
             assertEquals(1, migrated.zenPinnedItemDao().observeAll().first().size)
+
+            migrated.webAppDao().upsert(
+                WebAppEntity(
+                    id = "pwa_test1",
+                    name = "Demo PWA",
+                    shortName = "Demo",
+                    startUrl = "https://app.example.com/",
+                    scopeUrl = "https://app.example.com/",
+                    host = "app.example.com",
+                    pinnedShortcutId = "sf_webapp_pwa_test1",
+                    isPwaCapable = true
+                )
+            )
+            val storedApp = migrated.webAppDao().getById("pwa_test1")
+            assertEquals("Demo PWA", storedApp?.name)
+            assertEquals(false, storedApp?.drawBehindStatusBar)
         } finally {
             migrated.close()
             context.deleteDatabase(dbName)
@@ -289,7 +308,9 @@ class SwiftfoxMigrationAndSmokeTest {
                 SwiftfoxDatabase.MIGRATION_3_4,
                 SwiftfoxDatabase.MIGRATION_4_5,
                 SwiftfoxDatabase.MIGRATION_5_6,
-                SwiftfoxDatabase.MIGRATION_6_7
+                SwiftfoxDatabase.MIGRATION_6_7,
+                SwiftfoxDatabase.MIGRATION_7_8,
+                SwiftfoxDatabase.MIGRATION_8_9
             )
             .build()
         try {
@@ -460,7 +481,9 @@ class SwiftfoxMigrationAndSmokeTest {
                 SwiftfoxDatabase.MIGRATION_3_4,
                 SwiftfoxDatabase.MIGRATION_4_5,
                 SwiftfoxDatabase.MIGRATION_5_6,
-                SwiftfoxDatabase.MIGRATION_6_7
+                SwiftfoxDatabase.MIGRATION_6_7,
+                SwiftfoxDatabase.MIGRATION_7_8,
+                SwiftfoxDatabase.MIGRATION_8_9
             )
             .build()
         try {
@@ -599,7 +622,9 @@ class SwiftfoxMigrationAndSmokeTest {
                 SwiftfoxDatabase.MIGRATION_3_4,
                 SwiftfoxDatabase.MIGRATION_4_5,
                 SwiftfoxDatabase.MIGRATION_5_6,
-                SwiftfoxDatabase.MIGRATION_6_7
+                SwiftfoxDatabase.MIGRATION_6_7,
+                SwiftfoxDatabase.MIGRATION_7_8,
+                SwiftfoxDatabase.MIGRATION_8_9
             )
             .build()
         try {
@@ -740,7 +765,9 @@ class SwiftfoxMigrationAndSmokeTest {
                 SwiftfoxDatabase.MIGRATION_3_4,
                 SwiftfoxDatabase.MIGRATION_4_5,
                 SwiftfoxDatabase.MIGRATION_5_6,
-                SwiftfoxDatabase.MIGRATION_6_7
+                SwiftfoxDatabase.MIGRATION_6_7,
+                SwiftfoxDatabase.MIGRATION_7_8,
+                SwiftfoxDatabase.MIGRATION_8_9
             )
             .build()
         try {
@@ -866,7 +893,9 @@ class SwiftfoxMigrationAndSmokeTest {
                 SwiftfoxDatabase.MIGRATION_3_4,
                 SwiftfoxDatabase.MIGRATION_4_5,
                 SwiftfoxDatabase.MIGRATION_5_6,
-                SwiftfoxDatabase.MIGRATION_6_7
+                SwiftfoxDatabase.MIGRATION_6_7,
+                SwiftfoxDatabase.MIGRATION_7_8,
+                SwiftfoxDatabase.MIGRATION_8_9
             )
             .build()
         try {
@@ -940,5 +969,238 @@ class SwiftfoxMigrationAndSmokeTest {
         } finally {
             db.close()
         }
+    }
+
+    @Test
+    fun roomDatabaseMigratesCleanlyFromV7ToV9() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val dbName = "swiftfox_migration_v7_v9_test.db"
+        context.deleteDatabase(dbName)
+
+        val v7Helper = object : SQLiteOpenHelper(context, dbName, null, 7) {
+            override fun onCreate(db: SQLiteDatabase) {
+                seedV7SchemaAndIndices(db)
+                db.execSQL(
+                    "INSERT INTO `spaces` (`id`, `name`, `iconKey`, `sortOrder`, `createdAt`, `syncGuid`, `themeColorHex`, `zenContainerGuid`) " +
+                        "VALUES ('space_v7', 'Main', 'fox', 0, 1000, NULL, NULL, NULL)"
+                )
+            }
+
+            override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+        }
+        v7Helper.writableDatabase.close()
+        v7Helper.close()
+
+        val migrated = Room.databaseBuilder(context, SwiftfoxDatabase::class.java, dbName)
+            .addMigrations(
+                SwiftfoxDatabase.MIGRATION_1_2,
+                SwiftfoxDatabase.MIGRATION_2_3,
+                SwiftfoxDatabase.MIGRATION_3_4,
+                SwiftfoxDatabase.MIGRATION_4_5,
+                SwiftfoxDatabase.MIGRATION_5_6,
+                SwiftfoxDatabase.MIGRATION_6_7,
+                SwiftfoxDatabase.MIGRATION_7_8,
+                SwiftfoxDatabase.MIGRATION_8_9
+            )
+            .build()
+        try {
+            assertEquals("space_v7", migrated.spaceDao().getAll().single().id)
+            migrated.webAppDao().upsert(
+                WebAppEntity(
+                    id = "pwa_from_v7",
+                    name = "Mail",
+                    shortName = "Mail",
+                    startUrl = "https://mail.example.com/",
+                    scopeUrl = "https://mail.example.com/",
+                    host = "mail.example.com",
+                    drawBehindStatusBar = true,
+                    customIcon = "img:mail.png",
+                    pinnedShortcutId = "sf_webapp_pwa_from_v7"
+                )
+            )
+            val stored = migrated.webAppDao().getById("pwa_from_v7")
+            assertNotNull(stored)
+            assertTrue(stored!!.drawBehindStatusBar)
+            assertEquals(1, migrated.webAppDao().countByCustomIcon("img:mail.png"))
+        } finally {
+            migrated.close()
+            context.deleteDatabase(dbName)
+        }
+    }
+
+    @Test
+    fun roomDatabaseMigratesCleanlyFromV8ToV9() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val dbName = "swiftfox_migration_v8_v9_test.db"
+        context.deleteDatabase(dbName)
+
+        val v8Helper = object : SQLiteOpenHelper(context, dbName, null, 8) {
+            override fun onCreate(db: SQLiteDatabase) {
+                seedV7SchemaAndIndices(db)
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `web_apps` (" +
+                        "`id` TEXT NOT NULL, `name` TEXT NOT NULL, `shortName` TEXT NOT NULL, " +
+                        "`startUrl` TEXT NOT NULL, `scopeUrl` TEXT NOT NULL, `manifestUrl` TEXT, " +
+                        "`host` TEXT NOT NULL, `displayMode` TEXT NOT NULL, " +
+                        "`openAsStandalone` INTEGER NOT NULL, `showSlimHeader` INTEGER NOT NULL, " +
+                        "`themeColorHex` TEXT, `backgroundColorHex` TEXT, `iconUrl` TEXT, " +
+                        "`iconPath` TEXT, `iconMaskable` INTEGER NOT NULL, `customIcon` TEXT, " +
+                        "`shortcutsJson` TEXT NOT NULL, `isPwaCapable` INTEGER NOT NULL, " +
+                        "`pinnedShortcutId` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, " +
+                        "`lastLaunchedAt` INTEGER NOT NULL, PRIMARY KEY(`id`))"
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_web_apps_startUrl` ON `web_apps` (`startUrl`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_web_apps_host` ON `web_apps` (`host`)")
+                db.execSQL(
+                    "INSERT INTO `web_apps` (`id`, `name`, `shortName`, `startUrl`, `scopeUrl`, " +
+                        "`manifestUrl`, `host`, `displayMode`, `openAsStandalone`, `showSlimHeader`, " +
+                        "`themeColorHex`, `backgroundColorHex`, `iconUrl`, `iconPath`, `iconMaskable`, " +
+                        "`customIcon`, `shortcutsJson`, `isPwaCapable`, `pinnedShortcutId`, `createdAt`, `lastLaunchedAt`) " +
+                        "VALUES ('pwa_v8', 'Docs', 'Docs', 'https://docs.example.com/', 'https://docs.example.com/', " +
+                        "NULL, 'docs.example.com', 'standalone', 1, 0, NULL, NULL, NULL, NULL, 0, " +
+                        "'img:docs.png', '[]', 1, 'sf_webapp_pwa_v8', 1000, 1000)"
+                )
+            }
+
+            override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+        }
+        v8Helper.writableDatabase.close()
+        v8Helper.close()
+
+        val migrated = Room.databaseBuilder(context, SwiftfoxDatabase::class.java, dbName)
+            .addMigrations(
+                SwiftfoxDatabase.MIGRATION_1_2,
+                SwiftfoxDatabase.MIGRATION_2_3,
+                SwiftfoxDatabase.MIGRATION_3_4,
+                SwiftfoxDatabase.MIGRATION_4_5,
+                SwiftfoxDatabase.MIGRATION_5_6,
+                SwiftfoxDatabase.MIGRATION_6_7,
+                SwiftfoxDatabase.MIGRATION_7_8,
+                SwiftfoxDatabase.MIGRATION_8_9
+            )
+            .build()
+        try {
+            val stored = migrated.webAppDao().getById("pwa_v8")
+            assertNotNull(stored)
+            assertEquals("Docs", stored!!.name)
+            assertEquals(false, stored.drawBehindStatusBar)
+            assertEquals(1, migrated.webAppDao().countByCustomIcon("img:docs.png"))
+        } finally {
+            migrated.close()
+            context.deleteDatabase(dbName)
+        }
+    }
+
+    private fun seedV7SchemaAndIndices(db: SQLiteDatabase) {
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `spaces` (" +
+                "`id` TEXT NOT NULL, `name` TEXT NOT NULL, `iconKey` TEXT NOT NULL, " +
+                "`sortOrder` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, `syncGuid` TEXT, " +
+                "`themeColorHex` TEXT, `zenContainerGuid` TEXT, PRIMARY KEY(`id`))"
+        )
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `essentials` (" +
+                "`id` TEXT NOT NULL, `spaceId` TEXT, `title` TEXT NOT NULL, " +
+                "`url` TEXT NOT NULL, `domain` TEXT NOT NULL, `sortOrder` INTEGER NOT NULL, " +
+                "`syncGuid` TEXT, `zenContainerGuid` TEXT, `customIcon` TEXT, PRIMARY KEY(`id`))"
+        )
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `tabs` (" +
+                "`id` TEXT NOT NULL, `spaceId` TEXT NOT NULL, `title` TEXT NOT NULL, " +
+                "`url` TEXT NOT NULL, `isPrivate` INTEGER NOT NULL, `isPinned` INTEGER NOT NULL, " +
+                "`siteModeOverride` TEXT, `lastAccessedAt` INTEGER NOT NULL, `sortOrder` INTEGER NOT NULL, " +
+                "`customIcon` TEXT, `customTitle` TEXT, `essentialId` TEXT, `zenPinnedId` TEXT, " +
+                "`isUnloaded` INTEGER NOT NULL, `pinnedUrl` TEXT, PRIMARY KEY(`id`))"
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_tabs_spaceId` ON `tabs` (`spaceId`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_tabs_essentialId` ON `tabs` (`essentialId`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_tabs_zenPinnedId` ON `tabs` (`zenPinnedId`)")
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS `index_tabs_isPrivate_isPinned_sortOrder` ON `tabs` (`isPrivate`, `isPinned`, `sortOrder`)"
+        )
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `bookmarks` (" +
+                "`id` TEXT NOT NULL, `title` TEXT NOT NULL, `url` TEXT NOT NULL, " +
+                "`folder` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `syncGuid` TEXT, " +
+                "`parentGuid` TEXT, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`id`))"
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_bookmarks_url` ON `bookmarks` (`url`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_bookmarks_createdAt` ON `bookmarks` (`createdAt`)")
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS `index_bookmarks_updatedAt_createdAt` ON `bookmarks` (`updatedAt`, `createdAt`)"
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_bookmarks_syncGuid` ON `bookmarks` (`syncGuid`)")
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `history` (" +
+                "`url` TEXT NOT NULL, `title` TEXT NOT NULL, `visitCount` INTEGER NOT NULL, " +
+                "`lastVisitedAt` INTEGER NOT NULL, PRIMARY KEY(`url`))"
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_history_lastVisitedAt` ON `history` (`lastVisitedAt`)")
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS `index_history_visitCount_lastVisitedAt` ON `history` (`visitCount`, `lastVisitedAt`)"
+        )
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `site_overrides` (" +
+                "`host` TEXT NOT NULL, `siteModeOverride` TEXT, `httpsOnlyBypass` INTEGER NOT NULL, " +
+                "`externalAppPolicyOverride` TEXT, `allowCamera` INTEGER, `allowMic` INTEGER, " +
+                "`allowLocation` INTEGER, `allowNotifications` INTEGER, `allowProtectedMedia` INTEGER, " +
+                "`javascriptEnabled` INTEGER NOT NULL, `webDarkModeOverride` INTEGER, " +
+                "`adblockDisabled` INTEGER NOT NULL, `cookiesEnabled` INTEGER NOT NULL, " +
+                "`customUserAgent` TEXT, PRIMARY KEY(`host`))"
+        )
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `downloads` (" +
+                "`id` TEXT NOT NULL, `fileName` TEXT NOT NULL, `url` TEXT NOT NULL, " +
+                "`mimeType` TEXT NOT NULL, `systemDownloadId` INTEGER NOT NULL, " +
+                "`status` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, PRIMARY KEY(`id`))"
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_downloads_createdAt` ON `downloads` (`createdAt`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_downloads_systemDownloadId` ON `downloads` (`systemDownloadId`)")
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `filter_lists` (" +
+                "`id` TEXT NOT NULL, `name` TEXT NOT NULL, `url` TEXT NOT NULL, " +
+                "`enabled` INTEGER NOT NULL, `isBuiltIn` INTEGER NOT NULL, " +
+                "`ruleCount` INTEGER NOT NULL, `lastUpdatedAt` INTEGER NOT NULL, " +
+                "`etag` TEXT, `lastError` TEXT, PRIMARY KEY(`id`))"
+        )
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `zapped_rules` (" +
+                "`id` TEXT NOT NULL, `host` TEXT NOT NULL, `selector` TEXT NOT NULL, " +
+                "`label` TEXT NOT NULL, `enabled` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, " +
+                "PRIMARY KEY(`id`))"
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS `index_zapped_rules_host_enabled_createdAt` ON `zapped_rules` (`host`, `enabled`, `createdAt`)"
+        )
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `userscripts` (" +
+                "`id` TEXT NOT NULL, `name` TEXT NOT NULL, `namespace` TEXT NOT NULL, " +
+                "`version` TEXT NOT NULL, `description` TEXT NOT NULL, `sourceUrl` TEXT, " +
+                "`code` TEXT NOT NULL, `matchesJson` TEXT NOT NULL, `excludesJson` TEXT NOT NULL, " +
+                "`runAt` TEXT NOT NULL, `grantsJson` TEXT NOT NULL, `enabled` INTEGER NOT NULL, " +
+                "`installedAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`id`))"
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_userscripts_enabled_installedAt` ON `userscripts` (`enabled`, `installedAt`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_userscripts_sourceUrl` ON `userscripts` (`sourceUrl`)")
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `userscript_storage` (" +
+                "`scriptId` TEXT NOT NULL, `storageKey` TEXT NOT NULL, `valueJson` TEXT NOT NULL, " +
+                "`updatedAt` INTEGER NOT NULL, PRIMARY KEY(`scriptId`, `storageKey`))"
+        )
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `synced_remote_tabs` (" +
+                "`id` TEXT NOT NULL, `deviceId` TEXT NOT NULL, `deviceName` TEXT NOT NULL, " +
+                "`deviceType` TEXT NOT NULL, `title` TEXT NOT NULL, `url` TEXT NOT NULL, " +
+                "`iconUrl` TEXT, `lastUsedAt` INTEGER NOT NULL, `position` INTEGER NOT NULL, " +
+                "PRIMARY KEY(`id`))"
+        )
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `zen_pinned_items` (" +
+                "`id` TEXT NOT NULL, `spaceId` TEXT NOT NULL, `zenWorkspaceUuid` TEXT NOT NULL, " +
+                "`title` TEXT NOT NULL, `url` TEXT NOT NULL, `folderName` TEXT, " +
+                "`isPinned` INTEGER NOT NULL, `sortOrder` INTEGER NOT NULL, `customIcon` TEXT, PRIMARY KEY(`id`))"
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_zen_pinned_items_spaceId` ON `zen_pinned_items` (`spaceId`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_zen_pinned_items_sortOrder` ON `zen_pinned_items` (`sortOrder`)")
     }
 }

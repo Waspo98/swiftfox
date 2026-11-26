@@ -83,11 +83,11 @@ fun SiteRulesSheet(
     onDismiss: () -> Unit,
     onSetAdblockDisabled: (Boolean) -> Unit,
     onSetWebDarkOverride: (Boolean?) -> Unit,
-    onSetSiteModeOverride: (SiteMode?) -> Unit,
+    onSetSiteModeOverride: (SiteMode?) -> Unit = {},
     onSetJavascriptEnabled: (Boolean) -> Unit,
     onSetCookiesEnabled: (Boolean) -> Unit,
     onSetHttpsBypass: (Boolean) -> Unit,
-    onSetCustomUserAgent: (String?) -> Unit,
+    onSetCustomUserAgent: (String?) -> Unit = {},
     onDeleteZappedRule: (String) -> Unit,
     onLaunchZapper: () -> Unit,
     onResetAll: () -> Unit,
@@ -95,6 +95,7 @@ fun SiteRulesSheet(
     isNativeRust: Boolean = true,
     isPrivate: Boolean = false,
     darkReaderSkippedNative: Boolean = false,
+    allowLayoutAndUaOverrides: Boolean = true,
     persistentRuleIds: Set<String> = emptySet(),
     snackbarMessage: String? = null,
     snackbarId: Long = 0L,
@@ -256,101 +257,103 @@ fun SiteRulesSheet(
                 )
             }
 
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    text = "Site layout",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                val layoutOptions = remember { listOf<SiteMode?>(null, SiteMode.MOBILE, SiteMode.DESKTOP) }
-                val selectedMode = when (override?.siteModeOverride) {
-                    SiteMode.MOBILE.name -> SiteMode.MOBILE
-                    SiteMode.DESKTOP.name -> SiteMode.DESKTOP
-                    else -> null
+            if (allowLayoutAndUaOverrides) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "Site layout",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    val layoutOptions = remember { listOf<SiteMode?>(null, SiteMode.MOBILE, SiteMode.DESKTOP) }
+                    val selectedMode = when (override?.siteModeOverride) {
+                        SiteMode.MOBILE.name -> SiteMode.MOBILE
+                        SiteMode.DESKTOP.name -> SiteMode.DESKTOP
+                        else -> null
+                    }
+                    SwiftfoxSegmentedControl(
+                        options = layoutOptions,
+                        selected = selectedMode,
+                        onSelect = onSetSiteModeOverride,
+                        labelFor = { choice ->
+                            when (choice) {
+                                null -> "Posture"
+                                SiteMode.MOBILE -> "Mobile"
+                                SiteMode.DESKTOP -> "Desktop"
+                            }
+                        }
+                    )
                 }
-                SwiftfoxSegmentedControl(
-                    options = layoutOptions,
-                    selected = selectedMode,
-                    onSelect = onSetSiteModeOverride,
-                    labelFor = { choice ->
-                        when (choice) {
-                            null -> "Posture"
-                            SiteMode.MOBILE -> "Mobile"
-                            SiteMode.DESKTOP -> "Desktop"
+
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "Custom User-Agent",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    FlowRow(
+                        modifier = Modifier.selectableGroup(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        UserAgentPreset.entries.forEach { preset ->
+                            SwiftfoxSelectablePill(
+                                label = preset.label,
+                                selected = selectedUaPreset == preset,
+                                onClick = {
+                                    selectedUaPreset = preset
+                                    when (preset) {
+                                        UserAgentPreset.DEFAULT -> {
+                                            customUaDraft = ""
+                                            onSetCustomUserAgent(null)
+                                        }
+                                        UserAgentPreset.CUSTOM -> Unit
+                                        else -> {
+                                            customUaDraft = preset.uaString.orEmpty()
+                                            onSetCustomUserAgent(preset.uaString)
+                                        }
+                                    }
+                                }
+                            )
                         }
                     }
-                )
-            }
-
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    text = "Custom User-Agent",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                FlowRow(
-                    modifier = Modifier.selectableGroup(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    UserAgentPreset.entries.forEach { preset ->
-                        SwiftfoxSelectablePill(
-                            label = preset.label,
-                            selected = selectedUaPreset == preset,
-                            onClick = {
-                                selectedUaPreset = preset
-                                when (preset) {
-                                    UserAgentPreset.DEFAULT -> {
-                                        customUaDraft = ""
-                                        onSetCustomUserAgent(null)
-                                    }
-                                    UserAgentPreset.CUSTOM -> Unit
-                                    else -> {
-                                        customUaDraft = preset.uaString.orEmpty()
-                                        onSetCustomUserAgent(preset.uaString)
-                                    }
-                                }
-                            }
-                        )
-                    }
-                }
-                if (selectedUaPreset == UserAgentPreset.CUSTOM) {
-                    val trimmedCustomUa = customUaDraft.trim()
-                    val customUaValid = trimmedCustomUa.all { it in '\u0020'..'\u007E' }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.Top
-                    ) {
-                        OutlinedTextField(
-                            value = customUaDraft,
-                            onValueChange = { customUaDraft = it },
-                            label = { Text("User-Agent string") },
-                            isError = trimmedCustomUa.isNotEmpty() && !customUaValid,
-                            supportingText = if (trimmedCustomUa.isNotEmpty() && !customUaValid) {
-                                { Text("Use printable ASCII characters only") }
-                            } else {
-                                null
-                            },
-                            singleLine = true,
-                            shape = RoundedCornerShape(16.dp),
-                            modifier = Modifier.weight(1f)
-                        )
-                        OutlinedButton(
-                            onClick = {
-                                val nextUa = trimmedCustomUa.takeIf { it.isNotEmpty() }
-                                if (nextUa == null) {
-                                    selectedUaPreset = UserAgentPreset.DEFAULT
-                                }
-                                onSetCustomUserAgent(nextUa)
-                            },
-                            enabled = customUaValid && (trimmedCustomUa.isNotEmpty() || savedUa != null),
-                            shape = RoundedCornerShape(20.dp),
-                            modifier = Modifier
-                                .padding(top = 6.dp)
-                                .heightIn(min = 48.dp)
+                    if (selectedUaPreset == UserAgentPreset.CUSTOM) {
+                        val trimmedCustomUa = customUaDraft.trim()
+                        val customUaValid = trimmedCustomUa.all { it in '\u0020'..'\u007E' }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.Top
                         ) {
-                            Text("Apply")
+                            OutlinedTextField(
+                                value = customUaDraft,
+                                onValueChange = { customUaDraft = it },
+                                label = { Text("User-Agent string") },
+                                isError = trimmedCustomUa.isNotEmpty() && !customUaValid,
+                                supportingText = if (trimmedCustomUa.isNotEmpty() && !customUaValid) {
+                                    { Text("Use printable ASCII characters only") }
+                                } else {
+                                    null
+                                },
+                                singleLine = true,
+                                shape = RoundedCornerShape(16.dp),
+                                modifier = Modifier.weight(1f)
+                            )
+                            OutlinedButton(
+                                onClick = {
+                                    val nextUa = trimmedCustomUa.takeIf { it.isNotEmpty() }
+                                    if (nextUa == null) {
+                                        selectedUaPreset = UserAgentPreset.DEFAULT
+                                    }
+                                    onSetCustomUserAgent(nextUa)
+                                },
+                                enabled = customUaValid && (trimmedCustomUa.isNotEmpty() || savedUa != null),
+                                shape = RoundedCornerShape(20.dp),
+                                modifier = Modifier
+                                    .padding(top = 6.dp)
+                                    .heightIn(min = 48.dp)
+                            ) {
+                                Text("Apply")
+                            }
                         }
                     }
                 }

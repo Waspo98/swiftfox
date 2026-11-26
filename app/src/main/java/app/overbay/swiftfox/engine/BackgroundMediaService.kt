@@ -36,6 +36,7 @@ class BackgroundMediaService : Service() {
     private var isPlaying: Boolean = false
     private var pendingPlayConfirmation: Boolean = false
     private var isPrivate: Boolean = false
+    private var currentWebAppId: String? = null
     @Volatile
     private var isForeground: Boolean = false
     private var pendingPlayRevertRunnable: Runnable? = null
@@ -106,11 +107,13 @@ class BackgroundMediaService : Service() {
                 val nextHost = intent.getStringExtra(EXTRA_HOST).orEmpty()
                 val nextPlaying = intent.getBooleanExtra(EXTRA_IS_PLAYING, true)
                 val nextPrivate = intent.getBooleanExtra(EXTRA_IS_PRIVATE, false)
+                val nextWebAppId = intent.getStringExtra(EXTRA_WEB_APP_ID)?.takeIf { it.isNotBlank() }
                 applyStateUpdate(
                     rawTitle = nextTitle,
                     rawHost = nextHost,
                     playing = nextPlaying,
                     privateTab = nextPrivate,
+                    webAppId = nextWebAppId,
                     allowStartForeground = nextPlaying,
                     mustFulfillForegroundContract = startedViaForegroundIntent
                 )
@@ -215,12 +218,14 @@ class BackgroundMediaService : Service() {
         rawHost: String,
         playing: Boolean,
         privateTab: Boolean,
+        webAppId: String? = null,
         allowStartForeground: Boolean,
         mustFulfillForegroundContract: Boolean = false
     ) {
         cancelPendingPlayRevert()
         pendingPlayConfirmation = false
         isPrivate = privateTab
+        currentWebAppId = if (privateTab) null else webAppId?.takeIf { it.isNotBlank() }
         isPlaying = playing
         currentTitle = if (privateTab) {
             "Private media"
@@ -354,12 +359,25 @@ class BackgroundMediaService : Service() {
 
     private fun buildNotification(playingOverride: Boolean? = null): Notification {
         val effectivePlaying = playingOverride ?: isPlaying
+        val targetAppId = currentWebAppId
+        val launchIntent = if (targetAppId != null) {
+            Intent(this, app.overbay.swiftfox.ui.webapps.WebAppActivity::class.java).apply {
+                action = app.overbay.swiftfox.features.webapps.WebAppShortcutManager.ACTION_LAUNCH_WEB_APP
+                data = android.net.Uri.parse("swiftfox-pwa://app/$targetAppId")
+                putExtra(app.overbay.swiftfox.features.webapps.WebAppShortcutManager.EXTRA_WEB_APP_ID, targetAppId)
+                flags = Intent.FLAG_ACTIVITY_NEW_DOCUMENT or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                    Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+        } else {
+            Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            }
+        }
         val openIntent = PendingIntent.getActivity(
             this,
             0,
-            Intent(this, MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            },
+            launchIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
@@ -484,6 +502,7 @@ class BackgroundMediaService : Service() {
         private const val EXTRA_HOST = "extra_host"
         private const val EXTRA_IS_PLAYING = "extra_is_playing"
         private const val EXTRA_IS_PRIVATE = "extra_is_private"
+        private const val EXTRA_WEB_APP_ID = "extra_web_app_id"
         private const val EXTRA_EXPECT_FOREGROUND = "extra_expect_foreground"
         private const val PLAY_CONFIRM_TIMEOUT_MS = 3_000L
 
@@ -500,6 +519,9 @@ class BackgroundMediaService : Service() {
         var activeController: MediaCommandController? = null
 
         @Volatile
+        private var activeOwner: Any? = null
+
+        @Volatile
         private var isServiceRunning: Boolean = false
 
         @Volatile
@@ -510,12 +532,82 @@ class BackgroundMediaService : Service() {
 
         private val mainHandler: Handler by lazy { Handler(Looper.getMainLooper()) }
 
+        fun claimPlayback(
+            owner: Any,
+            context: Context,
+            title: String,
+            host: String,
+            isPlaying: Boolean,
+            isPrivate: Boolean = false,
+            webAppId: String? = null,
+            controller: MediaCommandController
+        ) {
+            claimControllerForOwner(owner = owner, controller = controller)
+            updateState(
+                context = context,
+                title = title,
+                host = host,
+                isPlaying = isPlaying,
+                isPrivate = isPrivate,
+                webAppId = webAppId
+            )
+        }
+
+        fun updatePlaybackIfOwner(
+            owner: Any,
+            context: Context,
+            title: String,
+            host: String,
+            isPlaying: Boolean,
+            isPrivate: Boolean = false,
+            webAppId: String? = null
+        ) {
+            if (activeOwner !== owner) return
+            updateState(
+                context = context,
+                title = title,
+                host = host,
+                isPlaying = isPlaying,
+                isPrivate = isPrivate,
+                webAppId = webAppId
+            )
+        }
+
+        fun releasePlaybackOwner(
+            owner: Any,
+            context: Context,
+            stopService: Boolean
+        ) {
+            if (!releaseControllerIfOwner(owner)) return
+            if (stopService) {
+                stop(context)
+            }
+        }
+
+        internal fun claimControllerForOwner(
+            owner: Any,
+            controller: MediaCommandController
+        ) {
+            activeOwner = owner
+            activeController = controller
+        }
+
+        internal fun releaseControllerIfOwner(owner: Any): Boolean {
+            if (activeOwner !== owner) return false
+            activeOwner = null
+            activeController = null
+            return true
+        }
+
+        fun isOwner(owner: Any): Boolean = activeOwner === owner
+
         fun updateState(
             context: Context,
             title: String,
             host: String,
             isPlaying: Boolean,
-            isPrivate: Boolean = false
+            isPrivate: Boolean = false,
+            webAppId: String? = null
         ) {
             if (!isPlaying && !isServiceRunning && !isStartPending) return
             val existing = runningInstance?.get()
@@ -528,6 +620,7 @@ class BackgroundMediaService : Service() {
                         rawHost = host,
                         playing = isPlaying,
                         privateTab = isPrivate,
+                        webAppId = webAppId,
                         allowStartForeground = isPlaying
                     )
                 }
@@ -539,6 +632,9 @@ class BackgroundMediaService : Service() {
                 putExtra(EXTRA_HOST, host)
                 putExtra(EXTRA_IS_PLAYING, isPlaying)
                 putExtra(EXTRA_IS_PRIVATE, isPrivate)
+                if (!webAppId.isNullOrBlank()) {
+                    putExtra(EXTRA_WEB_APP_ID, webAppId)
+                }
                 putExtra(EXTRA_EXPECT_FOREGROUND, isPlaying)
             }
             runCatching {

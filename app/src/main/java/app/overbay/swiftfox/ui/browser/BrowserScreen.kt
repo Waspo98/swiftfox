@@ -75,6 +75,7 @@ import androidx.compose.material.icons.rounded.Close
 import app.overbay.swiftfox.ui.icons.rounded.ContentCopy
 import app.overbay.swiftfox.ui.icons.rounded.DesktopWindows
 import app.overbay.swiftfox.ui.icons.rounded.Download
+import app.overbay.swiftfox.ui.icons.rounded.InstallMobile
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.Lock
@@ -154,6 +155,10 @@ import app.overbay.swiftfox.features.omnibox.OmniboxEngine
 import app.overbay.swiftfox.features.omnibox.OmniboxSearchScope
 import app.overbay.swiftfox.features.omnibox.OmniboxSuggestion
 import app.overbay.swiftfox.features.reader.ReaderArticle
+import app.overbay.swiftfox.ui.components.ContextMenuBottomSheet
+import app.overbay.swiftfox.ui.components.ExternalAppDialog
+import app.overbay.swiftfox.ui.components.HttpsFallbackDialog
+import app.overbay.swiftfox.ui.components.SitePermissionDialog
 import app.overbay.swiftfox.ui.reader.ReaderModeOverlay
 import app.overbay.swiftfox.ui.settings.BookmarksOverlay
 import app.overbay.swiftfox.ui.settings.DownloadsOverlay
@@ -172,6 +177,8 @@ import app.overbay.swiftfox.ui.tabs.SpacesTabSwitcher
 import app.overbay.swiftfox.ui.tabs.WorkspaceItemCallbacks
 import app.overbay.swiftfox.ui.theme.LocalSwiftfoxColors
 import app.overbay.swiftfox.ui.theme.rememberReduceMotion
+import app.overbay.swiftfox.ui.webapps.WebAppInstallSheet
+import app.overbay.swiftfox.ui.webapps.WebAppsOverlay
 import app.overbay.swiftfox.ui.zapper.ZappedRulesOverlay
 import app.overbay.swiftfox.ui.zapper.ZapperHudOverlay
 import java.util.Locale
@@ -539,6 +546,7 @@ fun BrowserScreen(
             onReloadOrStop = { viewModel.reloadOrStop() },
             onDismissLoadError = { viewModel.dismissActiveLoadError() },
             onOpenReaderMode = { viewModel.openReaderMode() },
+            onInstallWebApp = { viewModel.openInstallWebAppSheet() },
             onOpenTabSwitcher = { viewModel.setOverlay(BrowserOverlay.TAB_SWITCHER) },
             onOpenSettings = { viewModel.setOverlay(BrowserOverlay.SETTINGS) },
             onSwitchAdjacentTab = { dir -> viewModel.switchAdjacentTab(dir) },
@@ -887,6 +895,25 @@ fun BrowserScreen(
                         onClearAll = { viewModel.clearAllDownloads() }
                     )
                 }
+                BrowserOverlay.WEB_APPS -> {
+                    WebAppsOverlay(
+                        webApps = state.webApps,
+                        onBack = { viewModel.navigateBackFromOverlay() },
+                        onLaunchWebApp = { viewModel.launchWebApp(it) },
+                        onRepinWebApp = { viewModel.repinWebApp(it) },
+                        onUpdateWebApp = { existing, name, standalone, slimHeader, drawBehindStatusBar, customIcon ->
+                            viewModel.updateWebApp(
+                                existing = existing,
+                                name = name,
+                                openAsStandalone = standalone,
+                                showSlimHeader = slimHeader,
+                                drawBehindStatusBar = drawBehindStatusBar,
+                                customIconSpec = customIcon
+                            )
+                        },
+                        onRemoveWebApp = { viewModel.removeWebApp(it) }
+                    )
+                }
                 BrowserOverlay.FILTER_LISTS -> {
                     FilterListsOverlay(
                         filterLists = state.filterLists,
@@ -1203,6 +1230,30 @@ fun BrowserScreen(
             )
         }
 
+        // Install PWA / Add to Home Screen Sheet
+        state.installSheetCandidate?.let { candidate ->
+            val existingApp = remember(candidate.existingInstalledAppId, state.webApps) {
+                candidate.existingInstalledAppId?.let { id ->
+                    state.webApps.firstOrNull { it.id == id }
+                }
+            }
+            WebAppInstallSheet(
+                candidate = candidate,
+                existingApp = existingApp,
+                onDismiss = { viewModel.dismissInstallWebAppSheet(installed = false) },
+                onConfirm = { name, openAsStandalone, showSlimHeader, drawBehindStatusBar, customIconSpec ->
+                    viewModel.confirmInstallWebApp(
+                        candidate = candidate,
+                        name = name,
+                        openAsStandalone = openAsStandalone,
+                        showSlimHeader = showSlimHeader,
+                        drawBehindStatusBar = drawBehindStatusBar,
+                        customIconSpec = customIconSpec
+                    )
+                }
+            )
+        }
+
         // Root SnackbarHost rendered above all fullscreen overlays so Sync, Bookmarks, and Settings feedback is always visible
         RootBrowserSnackbarHost(
             snackbarHostState = snackbarHostState,
@@ -1332,6 +1383,7 @@ internal fun BrowserShellLayout(
     onReloadOrStop: () -> Unit,
     onDismissLoadError: () -> Unit = {},
     onOpenReaderMode: () -> Unit,
+    onInstallWebApp: () -> Unit = {},
     onOpenTabSwitcher: () -> Unit,
     onOpenSettings: () -> Unit,
     onSwitchAdjacentTab: (Int) -> Unit,
@@ -1548,6 +1600,7 @@ internal fun BrowserShellLayout(
                                     onGoForward = onGoForward,
                                     onReloadOrStop = onReloadOrStop,
                                     onOpenReaderMode = onOpenReaderMode,
+                                    onInstallWebApp = onInstallWebApp,
                                     onOpenSettings = onOpenSettings,
                                     onOpenTabSwitcher = onOpenTabSwitcher,
                                     onSwitchAdjacentTab = onSwitchAdjacentTab
@@ -1572,6 +1625,7 @@ internal fun BrowserShellLayout(
                                         onGoForward = onGoForward,
                                         onReloadOrStop = onReloadOrStop,
                                         onOpenReaderMode = onOpenReaderMode,
+                                        onInstallWebApp = onInstallWebApp,
                                         onOpenSettings = onOpenSettings,
                                         onOpenTabSwitcher = onOpenTabSwitcher,
                                         onSwitchAdjacentTab = onSwitchAdjacentTab
@@ -1623,6 +1677,7 @@ internal fun BrowserShellLayout(
                                     onGoForward = onGoForward,
                                     onReloadOrStop = onReloadOrStop,
                                     onOpenReaderMode = onOpenReaderMode,
+                                    onInstallWebApp = onInstallWebApp,
                                     onOpenSettings = onOpenSettings,
                                     onOpenTabSwitcher = onOpenTabSwitcher,
                                     onSwitchAdjacentTab = onSwitchAdjacentTab
@@ -1891,6 +1946,7 @@ internal fun BrowserShellLayout(
                     onGoForward = onGoForward,
                     onReloadOrStop = onReloadOrStop,
                     onOpenReaderMode = onOpenReaderMode,
+                    onInstallWebApp = onInstallWebApp,
                     onOpenSettings = onOpenSettings,
                     onOpenTabSwitcher = onOpenTabSwitcher,
                     onCreateTab = onCreateTab
@@ -2043,6 +2099,7 @@ private fun FullOmniboxToolbar(
     onGoForward: () -> Unit,
     onReloadOrStop: () -> Unit,
     onOpenReaderMode: () -> Unit,
+    onInstallWebApp: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenTabSwitcher: () -> Unit,
     onSwitchAdjacentTab: (Int) -> Unit,
@@ -2221,6 +2278,11 @@ private fun FullOmniboxToolbar(
                         val showStopButton = activeTab != null &&
                             !activeTab.isStartPage &&
                             activeTab.isLoading
+                        val showInstallPwaButton = activeTab != null &&
+                            !activeTab.isStartPage &&
+                            !isPrivate &&
+                            !showStopButton &&
+                            activeTab.isPwaInstallAvailable
                         val showReaderButton = activeTab != null &&
                             !activeTab.isStartPage &&
                             !showStopButton &&
@@ -2230,7 +2292,7 @@ private fun FullOmniboxToolbar(
                                 .fillMaxWidth()
                                 .padding(
                                     start = 12.dp,
-                                    end = if (showReaderButton || showStopButton) 4.dp else 12.dp
+                                    end = if (showReaderButton || showStopButton || showInstallPwaButton) 4.dp else 12.dp
                                 ),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -2282,6 +2344,20 @@ private fun FullOmniboxToolbar(
                                     tint = MaterialTheme.colorScheme.primary,
                                     modifier = Modifier.size(16.dp)
                                 )
+                            }
+
+                            if (showInstallPwaButton) {
+                                IconButton(
+                                    onClick = onInstallWebApp,
+                                    modifier = Modifier.size(48.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.InstallMobile,
+                                        contentDescription = "Install web app",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
                             }
 
                             if (showReaderButton) {
@@ -2529,6 +2605,7 @@ private fun ErgonomicSideRail(
     onGoForward: () -> Unit,
     onReloadOrStop: () -> Unit,
     onOpenReaderMode: () -> Unit,
+    onInstallWebApp: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenTabSwitcher: () -> Unit,
     onCreateTab: () -> Unit
@@ -2584,6 +2661,18 @@ private fun ErgonomicSideRail(
                     modifier = Modifier.size(48.dp)
                 ) {
                     Icon(Icons.Rounded.Add, contentDescription = "New tab")
+                }
+                if (activeTab != null && !activeTab.isStartPage && !isPrivate && activeTab.isPwaInstallAvailable) {
+                    IconButton(
+                        onClick = onInstallWebApp,
+                        modifier = Modifier.size(48.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.InstallMobile,
+                            contentDescription = "Install web app",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
                 }
                 if (activeTab != null && !activeTab.isStartPage && activeTab.isReaderAvailable) {
                     IconButton(
@@ -2813,179 +2902,4 @@ private fun FindInPageBar(
             }
         }
     }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun ContextMenuBottomSheet(
-    hit: ContextMenuHit,
-    onDismiss: () -> Unit,
-    onOpenInNewTab: () -> Unit,
-    onOpenInPrivateTab: () -> Unit,
-    onCopyCleanLink: () -> Unit,
-    onShareCleanLink: () -> Unit,
-    onDownloadImage: (() -> Unit)?
-) {
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
-        containerColor = MaterialTheme.colorScheme.surfaceContainerLow
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .navigationBarsPadding()
-                .padding(horizontal = 20.dp)
-                .padding(bottom = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Text(
-                text = hit.url,
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(bottom = 8.dp)
-            )
-
-            ContextActionRow("Open in new tab", Icons.AutoMirrored.Rounded.OpenInNew, onOpenInNewTab)
-            ContextActionRow("Open in private tab", Icons.Rounded.Shield, onOpenInPrivateTab)
-            ContextActionRow("Copy clean link", Icons.Rounded.ContentCopy, onCopyCleanLink)
-            ContextActionRow("Share clean link", Icons.Rounded.Share, onShareCleanLink)
-            if (onDownloadImage != null) {
-                ContextActionRow("Save image", Icons.Rounded.Download, onDownloadImage)
-            }
-        }
-    }
-}
-
-@Composable
-private fun ContextActionRow(
-    label: String,
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    onClick: () -> Unit
-) {
-    Surface(
-        onClick = onClick,
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(min = 52.dp)
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(20.dp)
-            )
-            Text(text = label, style = MaterialTheme.typography.bodyLarge)
-        }
-    }
-}
-
-@Composable
-private fun ExternalAppDialog(
-    prompt: ExternalAppPrompt,
-    onOpenApp: () -> Unit,
-    onStayInSwiftfox: () -> Unit
-) {
-    AlertDialog(
-        onDismissRequest = onStayInSwiftfox,
-        title = { Text("Open in ${prompt.appLabel}?") },
-        text = {
-            Text(
-                text = "This link wants to leave Swiftfox and open in ${prompt.appLabel}.",
-                style = MaterialTheme.typography.bodyMedium
-            )
-        },
-        confirmButton = {
-            TextButton(onClick = onOpenApp) {
-                Text("Open app")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onStayInSwiftfox) {
-                Text("Stay in Swiftfox")
-            }
-        }
-    )
-}
-
-@Composable
-private fun HttpsFallbackDialog(
-    prompt: HttpsUpgradeErrorPrompt,
-    onAllowHttp: () -> Unit,
-    onCancel: () -> Unit
-) {
-    AlertDialog(
-        onDismissRequest = onCancel,
-        title = { Text("HTTPS unavailable for ${prompt.host}") },
-        text = {
-            Text(
-                text = "${prompt.reason}. Swiftfox upgraded this request to HTTPS. Continue over unencrypted HTTP for this site?",
-                style = MaterialTheme.typography.bodyMedium
-            )
-        },
-        confirmButton = {
-            TextButton(onClick = onAllowHttp) {
-                Text("Load HTTP")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onCancel) {
-                Text("Go back")
-            }
-        }
-    )
-}
-
-@Composable
-private fun SitePermissionDialog(
-    prompt: SitePermissionPrompt,
-    onAllowOnce: () -> Unit,
-    onAlwaysAllow: () -> Unit,
-    onDeny: () -> Unit,
-    onDismiss: () -> Unit
-) {
-    val label = if (prompt.isGeolocation) {
-        "your location"
-    } else {
-        prompt.resources.joinToString(", ") { res ->
-            when {
-                res.contains("VIDEO", true) -> "camera"
-                res.contains("AUDIO", true) -> "microphone"
-                res.contains("PROTECTED", true) -> "protected media (DRM)"
-                else -> "device capability"
-            }
-        }
-    }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("${prompt.host} requests access") },
-        text = {
-            Text("Allow ${prompt.host} to use $label?")
-        },
-        confirmButton = {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = onAllowOnce) {
-                    Text("Once")
-                }
-                TextButton(onClick = onAlwaysAllow) {
-                    Text("Always")
-                }
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDeny) {
-                Text("Deny")
-            }
-        }
-    )
 }

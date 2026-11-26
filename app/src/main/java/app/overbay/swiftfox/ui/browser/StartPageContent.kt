@@ -71,6 +71,7 @@ import app.overbay.swiftfox.data.db.EssentialEntity
 import app.overbay.swiftfox.data.db.SpaceEntity
 import app.overbay.swiftfox.data.db.ZenPinnedItemEntity
 import app.overbay.swiftfox.data.prefs.AccentPreset
+import app.overbay.swiftfox.data.prefs.AppIconPalette
 import app.overbay.swiftfox.data.prefs.DevicePosture
 import app.overbay.swiftfox.data.prefs.SiteMode
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
@@ -91,6 +92,7 @@ import app.overbay.swiftfox.ui.components.horizontalFadingEdges
 import app.overbay.swiftfox.ui.components.rememberDragReorderController
 import app.overbay.swiftfox.ui.tabs.DeleteSpaceDialog
 import app.overbay.swiftfox.ui.tabs.WorkspaceItemCallbacks
+import app.overbay.swiftfox.ui.theme.LocalSwiftfoxBrandAppearance
 import app.overbay.swiftfox.ui.theme.LocalSwiftfoxColors
 import app.overbay.swiftfox.ui.theme.SwiftfoxBrand
 import app.overbay.swiftfox.ui.theme.SwiftfoxBrandLockup
@@ -270,18 +272,35 @@ fun StartPageContent(
                         textAlign = TextAlign.Center
                     )
                 } else {
+                    val brandAppearance = LocalSwiftfoxBrandAppearance.current
+                    val accentMatchesIcon = when (state.settings.accentPreset) {
+                        AccentPreset.FOX_AMBER -> brandAppearance.resolvedIcon.palette == AppIconPalette.FOX_AMBER
+                        AccentPreset.MIDNIGHT_INDIGO ->
+                            brandAppearance.resolvedIcon.palette == AppIconPalette.MIDNIGHT_INDIGO
+                        AccentPreset.FOREST -> brandAppearance.resolvedIcon.palette == AppIconPalette.FOREST
+                        AccentPreset.MONOCHROME -> brandAppearance.resolvedIcon.palette == AppIconPalette.MONOCHROME
+                    }
                     val wordmarkColor = if (
-                        state.settings.accentPreset == AccentPreset.FOX_AMBER &&
-                        !state.settings.useDynamicColor
+                        !state.settings.useDynamicColor &&
+                        (
+                            (!brandAppearance.syncInApp && state.settings.accentPreset == AccentPreset.FOX_AMBER) ||
+                                (brandAppearance.syncInApp && accentMatchesIcon)
+                            )
                     ) {
                         MaterialTheme.colorScheme.primary
                     } else {
                         MaterialTheme.colorScheme.onBackground
                     }
                     SwiftfoxBrandLockup(
-                        emblemSize = 40.dp,
+                        emblemSize = if (brandAppearance.syncInApp) 42.dp else 40.dp,
                         wordmarkSize = 32.sp,
-                        variant = SwiftfoxEmblemVariant.ORANGE,
+                        variant = brandAppearance.effectiveEmblemVariant,
+                        useAppIconTile = brandAppearance.syncInApp,
+                        isLightIconBackground = if (brandAppearance.syncInApp) {
+                            brandAppearance.effectiveAppIconLightBackground
+                        } else {
+                            brandAppearance.isLightChrome
+                        },
                         wordmarkColor = wordmarkColor,
                         showBetaBadge = SwiftfoxBrand.isBetaBuild
                     )

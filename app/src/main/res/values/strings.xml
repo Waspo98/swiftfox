@@ -3,4 +3,6 @@
     <string name="app_name">Swiftfox</string>
     <string name="media_channel_name">Background Media Playback</string>
     <string name="media_channel_desc">Controls for active audio and video playback in Swiftfox</string>
+    <string name="pwa_controls_channel_name">Web App Controls</string>
+    <string name="pwa_controls_channel_desc">Quick controls while using an installed web app in standalone mode</string>
 </resources>

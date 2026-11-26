@@ -3023,3 +3023,107 @@ val Icons.Rounded.WorkOutline: ImageVector
             }
         }.also { _workOutline = it }
     }
+
+private var _apps: ImageVector? = null
+val Icons.Rounded.Apps: ImageVector
+    get() {
+        _apps?.let { return it }
+        return materialIcon(name = "Rounded.Apps") {
+            materialPath {
+                moveTo(4.0f, 8.0f)
+                horizontalLineToRelative(4.0f)
+                verticalLineTo(4.0f)
+                horizontalLineTo(4.0f)
+                verticalLineTo(8.0f)
+                close()
+                moveTo(10.0f, 20.0f)
+                horizontalLineToRelative(4.0f)
+                verticalLineToRelative(-4.0f)
+                horizontalLineToRelative(-4.0f)
+                verticalLineTo(20.0f)
+                close()
+                moveTo(4.0f, 20.0f)
+                horizontalLineToRelative(4.0f)
+                verticalLineToRelative(-4.0f)
+                horizontalLineTo(4.0f)
+                verticalLineTo(20.0f)
+                close()
+                moveTo(4.0f, 14.0f)
+                horizontalLineToRelative(4.0f)
+                verticalLineToRelative(-4.0f)
+                horizontalLineTo(4.0f)
+                verticalLineTo(14.0f)
+                close()
+                moveTo(10.0f, 14.0f)
+                horizontalLineToRelative(4.0f)
+                verticalLineToRelative(-4.0f)
+                horizontalLineToRelative(-4.0f)
+                verticalLineTo(14.0f)
+                close()
+                moveTo(16.0f, 4.0f)
+                verticalLineToRelative(4.0f)
+                horizontalLineToRelative(4.0f)
+                verticalLineTo(4.0f)
+                horizontalLineTo(16.0f)
+                close()
+                moveTo(10.0f, 8.0f)
+                horizontalLineToRelative(4.0f)
+                verticalLineTo(4.0f)
+                horizontalLineToRelative(-4.0f)
+                verticalLineTo(8.0f)
+                close()
+                moveTo(16.0f, 14.0f)
+                horizontalLineToRelative(4.0f)
+                verticalLineToRelative(-4.0f)
+                horizontalLineToRelative(-4.0f)
+                verticalLineTo(14.0f)
+                close()
+                moveTo(16.0f, 20.0f)
+                horizontalLineToRelative(4.0f)
+                verticalLineToRelative(-4.0f)
+                horizontalLineToRelative(-4.0f)
+                verticalLineTo(20.0f)
+                close()
+            }
+        }.also { _apps = it }
+    }
+
+private var _installMobile: ImageVector? = null
+val Icons.Rounded.InstallMobile: ImageVector
+    get() {
+        _installMobile?.let { return it }
+        return materialIcon(name = "Rounded.InstallMobile") {
+            materialPath {
+                moveTo(18.71f, 13.29f)
+                lineToRelative(3.59f, -3.59f)
+                curveToRelative(0.39f, -0.39f, 0.39f, -1.02f, 0.0f, -1.41f)
+                curveToRelative(-0.39f, -0.39f, -1.02f, -0.39f, -1.41f, 0.0f)
+                lineTo(19.0f, 10.17f)
+                verticalLineTo(4.0f)
+                curveToRelative(0.0f, -0.55f, -0.45f, -1.0f, -1.0f, -1.0f)
+                reflectiveCurveToRelative(-1.0f, 0.45f, -1.0f, 1.0f)
+                verticalLineToRelative(6.17f)
+                lineToRelative(-1.89f, -1.88f)
+                curveToRelative(-0.39f, -0.39f, -1.02f, -0.39f, -1.41f, 0.0f)
+                curveToRelative(-0.39f, 0.39f, -0.39f, 1.02f, 0.0f, 1.41f)
+                lineToRelative(3.59f, 3.59f)
+                curveTo(17.69f, 13.68f, 18.32f, 13.68f, 18.71f, 13.29f)
+                close()
+                moveTo(17.0f, 18.0f)
+                horizontalLineTo(7.0f)
+                verticalLineTo(6.0f)
+                horizontalLineToRelative(7.0f)
+                verticalLineTo(1.0f)
+                horizontalLineTo(7.0f)
+                curveTo(5.9f, 1.0f, 5.0f, 1.9f, 5.0f, 3.0f)
+                verticalLineToRelative(18.0f)
+                curveToRelative(0.0f, 1.1f, 0.9f, 2.0f, 2.0f, 2.0f)
+                horizontalLineToRelative(10.0f)
+                curveToRelative(1.1f, 0.0f, 2.0f, -0.9f, 2.0f, -2.0f)
+                verticalLineToRelative(-5.0f)
+                horizontalLineToRelative(-2.0f)
+                verticalLineTo(18.0f)
+                close()
+            }
+        }.also { _installMobile = it }
+    }

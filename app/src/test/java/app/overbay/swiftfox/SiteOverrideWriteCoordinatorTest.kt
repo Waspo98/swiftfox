@@ -10,6 +10,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -196,5 +197,37 @@ class SiteOverrideWriteCoordinatorTest {
         assertFalse(base.copy(adblockDisabled = true).isDefault())
         assertFalse(base.copy(cookiesEnabled = false).isDefault())
         assertFalse(base.copy(customUserAgent = "CustomUA/1.0").isDefault())
+    }
+
+    @Test
+    fun backgroundMediaOwnershipPreventsCrossHostClobbering() {
+        val browserOwner = Any()
+        val webAppOwner = Any()
+        val browserController = BackgroundMediaService.MediaCommandController {}
+        val webAppController = BackgroundMediaService.MediaCommandController {}
+
+        BackgroundMediaService.claimControllerForOwner(webAppOwner, webAppController)
+        assertTrue(BackgroundMediaService.isOwner(webAppOwner))
+        assertFalse(BackgroundMediaService.isOwner(browserOwner))
+        assertEquals(webAppController, BackgroundMediaService.activeController)
+
+        // Clearing BrowserViewModel must not wipe WebAppViewModel's active playback controller
+        assertFalse(BackgroundMediaService.releaseControllerIfOwner(browserOwner))
+        assertTrue(BackgroundMediaService.isOwner(webAppOwner))
+        assertEquals(webAppController, BackgroundMediaService.activeController)
+
+        // Switching to BrowserViewModel moves ownership and clears previous owner
+        BackgroundMediaService.claimControllerForOwner(browserOwner, browserController)
+        assertTrue(BackgroundMediaService.isOwner(browserOwner))
+        assertFalse(BackgroundMediaService.isOwner(webAppOwner))
+        assertEquals(browserController, BackgroundMediaService.activeController)
+
+        // Closing the old WebAppViewModel must not clear the new BrowserViewModel controller
+        assertFalse(BackgroundMediaService.releaseControllerIfOwner(webAppOwner))
+        assertEquals(browserController, BackgroundMediaService.activeController)
+
+        // Current owner releases cleanly
+        assertTrue(BackgroundMediaService.releaseControllerIfOwner(browserOwner))
+        assertNull(BackgroundMediaService.activeController)
     }
 }

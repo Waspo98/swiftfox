@@ -75,6 +75,8 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.overbay.swiftfox.BuildConfig
+import app.overbay.swiftfox.data.prefs.AppIconBackgroundMode
+import app.overbay.swiftfox.data.prefs.AppIconColorStyle
 import app.overbay.swiftfox.data.prefs.BrowserSettings
 import app.overbay.swiftfox.data.prefs.ExternalAppLinkPolicy
 import app.overbay.swiftfox.data.prefs.ThemeMode
@@ -88,7 +90,9 @@ import app.overbay.swiftfox.ui.browser.BrowserViewModel
 import app.overbay.swiftfox.ui.browser.EmphasizedAccelerateEasing
 import app.overbay.swiftfox.ui.browser.EmphasizedDecelerateEasing
 import app.overbay.swiftfox.ui.browser.SettingsCategory
+import app.overbay.swiftfox.ui.icons.rounded.Apps
 import app.overbay.swiftfox.ui.theme.BetaChannelPill
+import app.overbay.swiftfox.ui.theme.LocalSwiftfoxBrandAppearance
 import app.overbay.swiftfox.ui.theme.SwiftfoxAppIcon
 import app.overbay.swiftfox.ui.theme.SwiftfoxBrand
 import app.overbay.swiftfox.ui.theme.SwiftfoxWordmark
@@ -260,6 +264,7 @@ fun SettingsScreen(
                                 onOpenSiteRules = { viewModel.toggleSiteRulesSheet(true) },
                                 onFindInPage = { viewModel.openFindInPage() },
                                 onPinEssential = { viewModel.pinCurrentTabToEssentials() },
+                                onInstallWebApp = { viewModel.openInstallWebAppSheet() },
                                 onSendToZenSpace = { viewModel.sendActiveTabToZenSpace() },
                                 externalAppLabel = externalAppTarget?.appLabel,
                                 onOpenInApp = {
@@ -347,6 +352,13 @@ fun SettingsScreen(
                                     subtitle = "${state.downloads.size} downloads",
                                     icon = Icons.Rounded.Download,
                                     onClick = { viewModel.setOverlay(BrowserOverlay.DOWNLOADS) }
+                                )
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+                                SettingsNavigationRow(
+                                    title = "Web Apps",
+                                    subtitle = "${state.webApps.size} installed · PWAs & shortcuts",
+                                    icon = Icons.Rounded.Apps,
+                                    onClick = { viewModel.setOverlay(BrowserOverlay.WEB_APPS) }
                                 )
                             }
                         }
@@ -472,6 +484,19 @@ private fun appearanceSummary(settings: BrowserSettings): String = buildList {
         add(settings.nightSurfaceStyle.label)
     }
     add(if (settings.useDynamicColor) "Material You" else settings.accentPreset.label)
+    if (settings.appIconBackgroundMode != AppIconBackgroundMode.DARK ||
+        settings.appIconMatchAccent ||
+        settings.appIconColorStyle != AppIconColorStyle.CHANNEL_DEFAULT
+    ) {
+        add(
+            when {
+                settings.appIconBackgroundMode == AppIconBackgroundMode.FOLLOW_THEME -> "Auto icon"
+                settings.appIconBackgroundMode == AppIconBackgroundMode.LIGHT -> "Light icon"
+                settings.appIconMatchAccent -> "Accent icon"
+                else -> "${settings.appIconColorStyle.label} icon"
+            }
+        )
+    }
     when (settings.webDarkMode) {
         WebDarkModePreference.OFF -> add("Web dark off")
         WebDarkModePreference.FOLLOW_APP -> add(if (settings.darkReaderAmoled) "Dark Reader AMOLED" else "Dark Reader")
@@ -549,13 +574,15 @@ private fun AboutAndSystemCard(
             modifier = Modifier.padding(18.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            val brandAppearance = LocalSwiftfoxBrandAppearance.current
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 SwiftfoxAppIcon(
                     size = 54.dp,
-                    variant = SwiftfoxBrand.appChannelVariant
+                    variant = brandAppearance.effectiveAppIconVariant,
+                    isLightBackground = brandAppearance.effectiveAppIconLightBackground
                 )
                 Column(
                     modifier = Modifier.weight(1f),

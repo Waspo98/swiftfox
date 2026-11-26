@@ -595,6 +595,117 @@ object ScriptInjector {
         }.getOrNull()
     }
 
+    /**
+     * Ensures standalone PWAs report the device's CSS width (`width=device-width`) rather than
+     * falling back to Chromium's 980px desktop virtual viewport when pages omit or hardcode a
+     * wider viewport tag. Existing `width=device-width` directives (e.g. `viewport-fit=cover`)
+     * are preserved untouched.
+     */
+    fun buildEnsureMobileViewportScript(): String = """
+        (function() {
+          if (window !== window.top) return;
+          if (!location || (location.protocol !== 'http:' && location.protocol !== 'https:')) return;
+          if (window.__sfMobileVp) return;
+          window.__sfMobileVp = true;
+
+          function normalizeMeta(meta) {
+            var raw = meta.getAttribute('content') || '';
+            var parts = raw.split(',');
+            var kept = [];
+            var hasValidWidth = false;
+            var scaleAdjusted = false;
+            for (var i = 0; i < parts.length; i++) {
+              var item = parts[i].trim();
+              if (!item) continue;
+              var eq = item.indexOf('=');
+              if (eq <= 0) {
+                kept.push(item);
+                continue;
+              }
+              var key = item.slice(0, eq).trim().toLowerCase();
+              var value = item.slice(eq + 1).trim();
+              if (key === 'width') {
+                if (value.toLowerCase() === 'device-width') {
+                  hasValidWidth = true;
+                }
+                continue;
+              }
+              if (key === 'initial-scale') {
+                var scale = parseFloat(value);
+                if (!isFinite(scale) || scale < 1) {
+                  scaleAdjusted = true;
+                  kept.push('initial-scale=1');
+                } else {
+                  kept.push(item);
+                }
+                continue;
+              }
+              kept.push(item);
+            }
+            if (hasValidWidth && !scaleAdjusted) return;
+            var next = ['width=device-width'];
+            var hasScale = false;
+            for (var j = 0; j < kept.length; j++) {
+              if (/^initial-scale\s*=/i.test(kept[j])) hasScale = true;
+              next.push(kept[j]);
+            }
+            if (!hasScale) next.push('initial-scale=1');
+            var joined = next.join(', ');
+            if (joined !== raw) {
+              meta.setAttribute('content', joined);
+            }
+          }
+
+          function ensure(insertIfMissing) {
+            var metas = document.querySelectorAll('meta[name="viewport" i]');
+            if (metas.length > 0) {
+              for (var i = 0; i < metas.length; i++) {
+                normalizeMeta(metas[i]);
+              }
+              return true;
+            }
+            if (!insertIfMissing) return false;
+            var target = document.head || document.documentElement;
+            if (!target) return false;
+            var el = document.createElement('meta');
+            el.setAttribute('name', 'viewport');
+            el.setAttribute('content', 'width=device-width, initial-scale=1');
+            if (target.firstChild) target.insertBefore(el, target.firstChild);
+            else target.appendChild(el);
+            return true;
+          }
+
+          ensure(false);
+          if (typeof MutationObserver === 'function') {
+            var root = document.documentElement || document;
+            if (root) {
+              new MutationObserver(function() {
+                ensure(false);
+              }).observe(root, {
+                childList: true,
+                subtree: true,
+                attributes: true,
+                attributeFilter: ['content', 'name']
+              });
+            }
+          }
+          if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', function() { ensure(true); }, { once: true });
+          } else {
+            ensure(true);
+          }
+        })();
+    """.trimIndent()
+
+    fun registerGlobalMobileViewportScript(webView: WebView): ScriptHandler? {
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            return null
+        }
+        return runCatching {
+            WebViewCompat.addDocumentStartJavaScript(webView, buildEnsureMobileViewportScript(), setOf("*"))
+        }.getOrNull()
+    }
+
     fun registerDocumentStartScripts(
         webView: WebView,
         previousHandlers: List<ScriptHandler>,

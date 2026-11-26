@@ -30,6 +30,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -46,6 +47,8 @@ import app.overbay.swiftfox.features.foldable.PostureObserver
 import app.overbay.swiftfox.ui.browser.BrowserScreen
 import app.overbay.swiftfox.ui.browser.BrowserViewModel
 import app.overbay.swiftfox.ui.components.LocalFaviconRepository
+import app.overbay.swiftfox.ui.theme.SwiftfoxBrand
+import app.overbay.swiftfox.ui.theme.SwiftfoxBrandAppearance
 import app.overbay.swiftfox.ui.theme.SwiftfoxTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -186,11 +189,21 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            val isChromeDark = state.settings.themeMode.isDarkActive(isSystemInDarkTheme())
+            val brandAppearance = SwiftfoxBrandAppearance(
+                syncInApp = state.settings.syncAppIconInApp,
+                isLightChrome = !isChromeDark,
+                resolvedIcon = state.settings.resolveAppIcon(
+                    isChromeDark = isChromeDark,
+                    isBetaBuild = SwiftfoxBrand.isBetaBuild
+                )
+            )
             SwiftfoxTheme(
                 themeMode = state.settings.themeMode,
                 nightSurfaceStyle = state.settings.nightSurfaceStyle,
                 accentPreset = state.settings.accentPreset,
-                useDynamicColor = state.settings.useDynamicColor
+                useDynamicColor = state.settings.useDynamicColor,
+                brandAppearance = brandAppearance
             ) {
                 CompositionLocalProvider(
                     LocalFaviconRepository provides (application as SwiftfoxApp).faviconRepository

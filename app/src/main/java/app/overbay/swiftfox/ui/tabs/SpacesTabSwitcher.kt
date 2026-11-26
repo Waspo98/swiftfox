@@ -104,7 +104,9 @@ import app.overbay.swiftfox.ui.components.SheetActionItem
 import app.overbay.swiftfox.ui.components.SiteIconBadge
 import app.overbay.swiftfox.ui.components.SpaceIconGlyph
 import app.overbay.swiftfox.ui.components.rememberDragReorderController
+import app.overbay.swiftfox.ui.theme.LocalSwiftfoxBrandAppearance
 import app.overbay.swiftfox.ui.theme.LocalSwiftfoxColors
+import app.overbay.swiftfox.ui.theme.SwiftfoxAppIcon
 import app.overbay.swiftfox.ui.theme.SwiftfoxEmblem
 import app.overbay.swiftfox.ui.theme.SwiftfoxEmblemVariant
 import app.overbay.swiftfox.ui.theme.rememberReduceMotion
@@ -380,10 +382,24 @@ fun SpacesTabSwitcher(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        SwiftfoxEmblem(
-                            size = 42.dp,
-                            variant = if (state.isPrivateView) SwiftfoxEmblemVariant.PURPLE else SwiftfoxEmblemVariant.ORANGE
-                        )
+                        val brandAppearance = LocalSwiftfoxBrandAppearance.current
+                        if (!state.isPrivateView && brandAppearance.syncInApp) {
+                            SwiftfoxAppIcon(
+                                size = 44.dp,
+                                variant = brandAppearance.effectiveAppIconVariant,
+                                isLightBackground = brandAppearance.effectiveAppIconLightBackground
+                            )
+                        } else {
+                            SwiftfoxEmblem(
+                                size = 42.dp,
+                                variant = if (state.isPrivateView) {
+                                    SwiftfoxEmblemVariant.PURPLE
+                                } else {
+                                    brandAppearance.effectiveEmblemVariant
+                                },
+                                isLightBackground = !state.isPrivateView && brandAppearance.isLightChrome
+                            )
+                        }
                         Text(
                             text = if (state.isPrivateView) "No open private tabs" else "No tabs in this Space",
                             style = MaterialTheme.typography.titleMedium,
@@ -1091,9 +1107,15 @@ private fun TabPreviewCard(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 if (tab.isStartPage && tab.customIcon == null) {
+                    val brandAppearance = LocalSwiftfoxBrandAppearance.current
                     SwiftfoxEmblem(
                         size = 18.dp,
-                        variant = if (tab.isPrivate) SwiftfoxEmblemVariant.PURPLE else SwiftfoxEmblemVariant.ORANGE
+                        variant = if (tab.isPrivate) {
+                            SwiftfoxEmblemVariant.PURPLE
+                        } else {
+                            brandAppearance.effectiveEmblemVariant
+                        },
+                        isLightBackground = !tab.isPrivate && brandAppearance.isLightChrome
                     )
                 } else {
                     SiteIconBadge(
@@ -1168,10 +1190,24 @@ private fun TabPreviewCard(
                     )
                 } else {
                     if (tab.isStartPage && tab.customIcon == null) {
-                        SwiftfoxEmblem(
-                            size = 34.dp,
-                            variant = if (tab.isPrivate) SwiftfoxEmblemVariant.PURPLE else SwiftfoxEmblemVariant.ORANGE
-                        )
+                        val brandAppearance = LocalSwiftfoxBrandAppearance.current
+                        if (!tab.isPrivate && brandAppearance.syncInApp) {
+                            SwiftfoxAppIcon(
+                                size = 40.dp,
+                                variant = brandAppearance.effectiveAppIconVariant,
+                                isLightBackground = brandAppearance.effectiveAppIconLightBackground
+                            )
+                        } else {
+                            SwiftfoxEmblem(
+                                size = 34.dp,
+                                variant = if (tab.isPrivate) {
+                                    SwiftfoxEmblemVariant.PURPLE
+                                } else {
+                                    brandAppearance.effectiveEmblemVariant
+                                },
+                                isLightBackground = !tab.isPrivate && brandAppearance.isLightChrome
+                            )
+                        }
                     } else {
                         SiteIconBadge(
                             url = tab.url,

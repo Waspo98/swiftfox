@@ -6,11 +6,13 @@ import android.os.Looper
 import android.webkit.WebView
 import app.overbay.swiftfox.data.db.SwiftfoxDatabase
 import app.overbay.swiftfox.data.prefs.PreferencesRepository
+import app.overbay.swiftfox.engine.SessionEngineCoordinator
 import app.overbay.swiftfox.engine.TabSessionPool
 import app.overbay.swiftfox.features.adblock.AdblockEngine
 import app.overbay.swiftfox.features.adblock.FilterListRepository
 import app.overbay.swiftfox.features.adblock.FilterListUpdateWorker
 import app.overbay.swiftfox.features.adblock.FilterListWorkerBridge
+import app.overbay.swiftfox.features.adblock.ServiceWorkerAdblockHelper
 import app.overbay.swiftfox.features.darkreader.DarkReaderInjector
 import app.overbay.swiftfox.features.downloads.DownloadCoordinator
 import app.overbay.swiftfox.features.icons.FaviconRepository
@@ -21,13 +23,19 @@ import app.overbay.swiftfox.features.sync.MozillaSyncCoordinator
 import app.overbay.swiftfox.features.sync.SyncWorkerBridge
 import app.overbay.swiftfox.features.userscripts.UserscriptBridge
 import app.overbay.swiftfox.features.userscripts.UserscriptRepository
+import app.overbay.swiftfox.features.webapps.WebAppIconHelper
+import app.overbay.swiftfox.features.webapps.WebAppRepository
 import app.overbay.swiftfox.features.zapper.ZapperController
 import app.overbay.swiftfox.ui.reader.clearGlobalReaderImageCache
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import mozilla.components.service.fxa.sync.SyncReason
 import okhttp3.OkHttpClient
@@ -85,6 +93,15 @@ class SwiftfoxApp : Application() {
     lateinit var topDomainsRepository: TopDomainsRepository
         private set
 
+    lateinit var webAppRepository: WebAppRepository
+        private set
+
+    lateinit var sessionEngineCoordinator: SessionEngineCoordinator
+        private set
+
+    lateinit var serviceWorkerAdblockHelper: ServiceWorkerAdblockHelper
+        private set
+
     val tabSessionPool = TabSessionPool(maxWarmSessions = 5)
 
     override fun onCreate() {
@@ -95,6 +112,24 @@ class SwiftfoxApp : Application() {
 
         faviconRepository = FaviconRepository(this, lazyClientProvider, appScope)
         topDomainsRepository = TopDomainsRepository(this)
+        webAppRepository = WebAppRepository(
+            context = this,
+            webAppDao = database.webAppDao(),
+            httpClientProvider = lazyClientProvider,
+            iconHelper = WebAppIconHelper(
+                context = this,
+                httpClientProvider = lazyClientProvider,
+                faviconRepository = faviconRepository
+            ),
+            isCustomIconReferenced = { spec ->
+                database.webAppDao().countByCustomIcon(spec) > 0 ||
+                    database.spaceDao().getAll().any { it.iconKey == spec } ||
+                    database.essentialDao().getAll().any { it.customIcon == spec } ||
+                    database.tabDao().getNormalTabs().any { it.customIcon == spec } ||
+                    database.zenPinnedItemDao().getAll().any { it.customIcon == spec }
+            }
+        )
+        sessionEngineCoordinator = SessionEngineCoordinator(this)
         OmniboxEngine.configureHttpClientProvider(lazyClientProvider)
         downloadCoordinator = DownloadCoordinator(
             context = this,
@@ -104,6 +139,7 @@ class SwiftfoxApp : Application() {
         )
 
         adblockEngine = AdblockEngine(this)
+        serviceWorkerAdblockHelper = ServiceWorkerAdblockHelper(adblockEngine)
         filterListRepository = FilterListRepository(
             context = this,
             dao = database.filterListDao(),
@@ -157,12 +193,29 @@ class SwiftfoxApp : Application() {
             if (BuildConfig.DEBUG) {
                 runCatching { WebView.setWebContentsDebuggingEnabled(true) }
             }
+            serviceWorkerAdblockHelper.installIfSupported()
             downloadCoordinator.registerCompletionReceiver(appScope)
             tabSessionPool.clearPrivateProfileData()
             appScope.launch {
                 downloadCoordinator.reconcileActiveSystemDownloads()
             }
             false
+        }
+
+        appScope.launch {
+            combine(
+                preferencesRepository.settingsFlow.map { it.adblockEnabled }.distinctUntilChanged(),
+                database.siteOverrideDao().observeAll().map { list ->
+                    list.asSequence()
+                        .filter { it.adblockDisabled }
+                        .map { OmniboxEngine.normalizeHost(it.host) }
+                        .filter { it.isNotBlank() }
+                        .toSet()
+                }.distinctUntilChanged()
+            ) { globalEnabled, disabledHosts -> globalEnabled to disabledHosts }
+                .collectLatest { (globalEnabled, disabledHosts) ->
+                    serviceWorkerAdblockHelper.updatePolicy(globalEnabled, disabledHosts)
+                }
         }
 
         // Warm core navigation assets & schedule periodic filter updates off the main thread.

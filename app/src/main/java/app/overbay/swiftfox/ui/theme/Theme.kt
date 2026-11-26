@@ -44,6 +44,8 @@ import app.overbay.swiftfox.data.prefs.ThemeMode
 
 internal val LocalReduceMotion = staticCompositionLocalOf { false }
 
+val LocalSwiftfoxBrandAppearance = staticCompositionLocalOf { SwiftfoxBrandAppearance() }
+
 private fun querySystemReduceMotion(context: Context): Boolean =
     runCatching {
         Settings.Global.getFloat(
@@ -320,6 +322,7 @@ fun SwiftfoxTheme(
     nightSurfaceStyle: NightSurfaceStyle = NightSurfaceStyle.DARK,
     accentPreset: AccentPreset = AccentPreset.FOX_AMBER,
     useDynamicColor: Boolean = false,
+    brandAppearance: SwiftfoxBrandAppearance = SwiftfoxBrandAppearance(),
     content: @Composable () -> Unit
 ) {
     val systemDark = isSystemInDarkTheme()
@@ -394,7 +397,8 @@ fun SwiftfoxTheme(
 
     CompositionLocalProvider(
         LocalSwiftfoxColors provides extendedColors,
-        LocalReduceMotion provides reduceMotion
+        LocalReduceMotion provides reduceMotion,
+        LocalSwiftfoxBrandAppearance provides brandAppearance
     ) {
         MaterialTheme(
             colorScheme = colorScheme,

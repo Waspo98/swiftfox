@@ -5,6 +5,7 @@ import app.overbay.swiftfox.data.db.FilterListEntity
 import app.overbay.swiftfox.data.db.SiteOverrideEntity
 import app.overbay.swiftfox.data.db.SpaceEntity
 import app.overbay.swiftfox.data.db.SwiftfoxDatabase
+import app.overbay.swiftfox.data.db.TabEntity
 import app.overbay.swiftfox.data.db.UserscriptEntity
 import app.overbay.swiftfox.data.db.ZappedRuleEntity
 import app.overbay.swiftfox.data.prefs.BrowserSettings
@@ -13,6 +14,7 @@ import app.overbay.swiftfox.features.adblock.FilterListRepository
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import java.util.Locale
 
 @Serializable
@@ -21,7 +23,8 @@ data class SwiftfoxBaselineItem(
     val kind: String,
     val contentHash: String,
     val updatedAt: Long,
-    val deleted: Boolean = false
+    val deleted: Boolean = false,
+    val localContentHash: String? = null
 )
 
 @Serializable
@@ -48,7 +51,9 @@ object SwiftfoxSyncReconciler {
         val localSpaces: List<SpaceEntity>,
         val zenSpacesCount: Int,
         val localEssentials: List<EssentialEntity>,
-        val zenEssentialsCount: Int
+        val zenEssentialsCount: Int,
+        val localPinnedTabs: List<TabEntity> = emptyList(),
+        val zenSpaceIds: Set<String> = emptySet()
     )
 
     data class SyncedSpacePlan(
@@ -59,6 +64,11 @@ object SwiftfoxSyncReconciler {
 
     data class SyncedEssentialPlan(
         val upserts: List<EssentialEntity>,
+        val deleteIds: List<String>
+    )
+
+    data class SyncedPinnedTabPlan(
+        val upserts: List<TabEntity>,
         val deleteIds: List<String>
     )
 
@@ -75,6 +85,7 @@ object SwiftfoxSyncReconciler {
         val userscriptIdsToDelete: List<String>,
         val spacesPlan: SyncedSpacePlan,
         val essentialsPlan: SyncedEssentialPlan,
+        val pinnedTabsPlan: SyncedPinnedTabPlan = SyncedPinnedTabPlan(emptyList(), emptyList()),
         val outgoingBsos: List<Pair<String, JsonObject>>,
         val nextBaseline: SwiftfoxSyncBaseline,
         val pulledCount: Int,
@@ -599,6 +610,133 @@ object SwiftfoxSyncReconciler {
             }
         }
 
+        // 8. Local Pinned Tabs (non-private, non-bound local pinned tabs, ordered per Space)
+        val syncableLocalPinned = local.localPinnedTabs.filter { tab ->
+            if (tab.isPrivate || !tab.isPinned || tab.essentialId != null || tab.zenPinnedId != null) {
+                return@filter false
+            }
+            val parsed = SwiftfoxSyncCodec.pinnedTabHomeUrl(tab).toHttpUrlOrNull() ?: return@filter false
+            parsed.scheme == "http" || parsed.scheme == "https"
+        }
+        val localPinnedWithOrder = mutableListOf<Pair<TabEntity, Int>>()
+        syncableLocalPinned
+            .groupBy { it.spaceId }
+            .values
+            .forEach { spaceTabs ->
+                spaceTabs.sortedBy { it.sortOrder }.forEachIndexed { idx, tab ->
+                    localPinnedWithOrder += tab to idx
+                }
+            }
+        val localPinnedMap = localPinnedWithOrder.associate { (tab, perSpaceIdx) ->
+            val bsoId = SwiftfoxSyncCodec.pinnedTabBsoId(tab.id)
+            bsoId to LocalItemWrapper(
+                bsoId = bsoId,
+                kind = SwiftfoxSyncCodec.KIND_PINNED_TAB,
+                value = tab to perSpaceIdx,
+                contentHash = SwiftfoxSyncCodec.pinnedTabContentHash(tab, perSpaceIdx),
+                explicitUpdatedAt = null,
+                isUnmodifiedSeed = false,
+                allowRemoteDelete = true,
+                encode = { ts -> SwiftfoxSyncCodec.encodePinnedTabRecord(tab, perSpaceIdx, ts) }
+            )
+        }
+        val remotePinnedMap = buildRemoteMap<SwiftfoxSyncCodec.DecodedSwiftfoxRecord.PinnedTab>(
+            decodedById = decodedById,
+            kind = SwiftfoxSyncCodec.KIND_PINNED_TAB,
+            extract = { rec ->
+                if (rec is SwiftfoxSyncCodec.DecodedSwiftfoxRecord.PinnedTab) {
+                    Triple(rec.updatedAt, rec.contentHash, rec)
+                } else null
+            }
+        )
+
+        val validSpaceIds = (sortedResultSpaces.map { it.id } + local.zenSpaceIds).toSet()
+        val defaultSpaceFallback = fallbackSpaceId
+            ?: local.zenSpaceIds.firstOrNull()
+            ?: SwiftfoxDatabase.DEFAULT_SPACE_ID
+
+        val pinnedMergeOutcomes = mergeCollection(
+            SwiftfoxSyncCodec.KIND_PINNED_TAB,
+            localPinnedMap,
+            baseline,
+            remotePinnedMap,
+            unsupportedFutureIds,
+            nowMs
+        )
+        val mergedPinnedById = linkedMapOf<String, Pair<TabEntity, Int>>()
+        localPinnedWithOrder.forEach { (tab, perSpaceIdx) ->
+            mergedPinnedById[tab.id] = tab to perSpaceIdx
+        }
+
+        val pinnedTabIdsToDelete = mutableListOf<String>()
+        val mutatedPinnedSpaces = mutableSetOf<String>()
+        val remappedSpacePinIds = mutableSetOf<String>()
+        for (outcome in pinnedMergeOutcomes) {
+            outcome.pullUpsert?.let { remote ->
+                val prev = mergedPinnedById[remote.entity.id]?.first
+                val resolvedSpaceId = if (remote.entity.spaceId in validSpaceIds) {
+                    remote.entity.spaceId
+                } else {
+                    remappedSpacePinIds += remote.entity.id
+                    defaultSpaceFallback
+                }
+                val mergedEntity = if (prev != null) {
+                    val prevHomeUrl = SwiftfoxSyncCodec.pinnedTabHomeUrl(prev)
+                    val remoteHomeUrl = SwiftfoxSyncCodec.pinnedTabHomeUrl(remote.entity)
+                    val homeUrlChanged = !prevHomeUrl.equals(remoteHomeUrl, ignoreCase = false)
+                    prev.copy(
+                        spaceId = resolvedSpaceId,
+                        title = if (homeUrlChanged || prev.isUnloaded) remote.entity.title else prev.title,
+                        url = if (homeUrlChanged || prev.isUnloaded) remoteHomeUrl else prev.url,
+                        customTitle = remote.entity.title,
+                        customIcon = remote.entity.customIcon,
+                        isUnloaded = if (homeUrlChanged) true else prev.isUnloaded,
+                        pinnedUrl = remoteHomeUrl
+                    )
+                } else {
+                    remote.entity.copy(spaceId = resolvedSpaceId)
+                }
+                mergedPinnedById[mergedEntity.id] = mergedEntity to remote.localOrder
+                mutatedPinnedSpaces += resolvedSpaceId
+                if (prev != null) mutatedPinnedSpaces += prev.spaceId
+            }
+            outcome.pullDelete?.let { (tab, _) ->
+                pinnedTabIdsToDelete += tab.id
+                mergedPinnedById.remove(tab.id)
+                mutatedPinnedSpaces += tab.spaceId
+            }
+            outcome.outgoingBso?.let { outgoingBsos += it }
+            outcome.baselineItem?.let { nextBaselineItems[it.bsoId] = it }
+            if (outcome.pulled) pulledCount++
+            if (outcome.pushed) pushedCount++
+        }
+
+        val localPinnedPrevById = localPinnedWithOrder.associate { (tab, _) -> tab.id to tab }
+        val pinnedTabUpserts = mutableListOf<TabEntity>()
+        mergedPinnedById.values
+            .groupBy { it.first.spaceId }
+            .forEach { (spaceId, items) ->
+                items.sortedBy { it.second }.forEachIndexed { idx, (tab, _) ->
+                    val finalTab = tab.copy(sortOrder = idx)
+                    val prev = localPinnedPrevById[finalTab.id]
+                    if (spaceId in mutatedPinnedSpaces || prev == null || prev != finalTab) {
+                        pinnedTabUpserts += finalTab
+                    }
+                    val bsoId = SwiftfoxSyncCodec.pinnedTabBsoId(finalTab.id)
+                    val base = nextBaselineItems[bsoId]
+                    if (base != null && !base.deleted &&
+                        (finalTab.id in remappedSpacePinIds || base.localContentHash != null)
+                    ) {
+                        val storedHash = SwiftfoxSyncCodec.pinnedTabContentHash(finalTab, idx)
+                        nextBaselineItems[bsoId] = if (storedHash == base.contentHash) {
+                            base.copy(localContentHash = null)
+                        } else {
+                            base.copy(localContentHash = storedHash)
+                        }
+                    }
+                }
+            }
+
         return SwiftfoxSyncPlan(
             settingsToApply = settingsToApply,
             settingsTimestampToRecord = settingsTimestampToRecord,
@@ -618,6 +756,10 @@ object SwiftfoxSyncReconciler {
             essentialsPlan = SyncedEssentialPlan(
                 upserts = essentialUpserts,
                 deleteIds = essentialIdsToDelete
+            ),
+            pinnedTabsPlan = SyncedPinnedTabPlan(
+                upserts = pinnedTabUpserts,
+                deleteIds = pinnedTabIdsToDelete
             ),
             outgoingBsos = outgoingBsos,
             nextBaseline = SwiftfoxSyncBaseline(
@@ -700,7 +842,8 @@ object SwiftfoxSyncReconciler {
 
             if (localItem != null) {
                 localDeleted = false
-                if (baseItem != null && !baseItem.deleted && localItem.contentHash == baseItem.contentHash) {
+                val expectedLocalHash = baseItem?.localContentHash ?: baseItem?.contentHash
+                if (baseItem != null && !baseItem.deleted && localItem.contentHash == expectedLocalHash) {
                     localChanged = false
                     localUpdatedAt = baseItem.updatedAt
                 } else if (localItem.isUnmodifiedSeed && !baseline.hasCompletedInitialSync && remoteItem != null) {
@@ -820,7 +963,8 @@ object SwiftfoxSyncReconciler {
                                     kind = itemKind,
                                     contentHash = remoteItem.contentHash,
                                     updatedAt = remoteItem.updatedAt,
-                                    deleted = false
+                                    deleted = false,
+                                    localContentHash = baseItem.localContentHash
                                 )
                             )
                         }

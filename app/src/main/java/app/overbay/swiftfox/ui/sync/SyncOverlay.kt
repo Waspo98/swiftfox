@@ -471,7 +471,7 @@ fun SyncOverlay(
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
                         SyncSwitchRow(
                             title = "Swiftfox client sync",
-                            subtitle = "Sync settings, rules, scripts, filter lists & local Spaces with other Swiftfox clients",
+                            subtitle = "Sync settings, pinned tabs, rules, scripts, filter lists & local Spaces with other Swiftfox clients",
                             checked = settings.syncSwiftfoxEnabled,
                             onCheckedChange = onToggleSyncSwiftfox
                         )

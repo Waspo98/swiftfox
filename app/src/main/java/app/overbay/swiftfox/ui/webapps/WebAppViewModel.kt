@@ -848,6 +848,7 @@ class WebAppViewModel(application: Application) : AndroidViewModel(application) 
                         )
                     db.zappedRuleDao().upsert(rule)
                 }
+                app.mozillaSyncCoordinator.scheduleSwiftfoxPush()
                 _uiState.update {
                     it.copy(
                         zapper = it.zapper.copy(
@@ -1448,6 +1449,7 @@ class WebAppViewModel(application: Application) : AndroidViewModel(application) 
         val host = _uiState.value.zappedRules.firstOrNull { it.id == id }?.host
         viewModelScope.launch {
             db.zappedRuleDao().deleteById(id)
+            app.mozillaSyncCoordinator.scheduleSwiftfoxPush()
             mainSession?.clearDocumentStartScripts()
             if (!host.isNullOrBlank()) refreshZappedCssForHost(host)
         }
@@ -1656,6 +1658,7 @@ class WebAppViewModel(application: Application) : AndroidViewModel(application) 
                     _uiState.update { it.copy(siteOverrides = settled) }
                 }
             )
+            app.mozillaSyncCoordinator.scheduleSwiftfoxPush()
         }
     }
 

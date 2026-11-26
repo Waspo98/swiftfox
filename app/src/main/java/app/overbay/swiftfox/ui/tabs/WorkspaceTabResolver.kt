@@ -1,8 +1,12 @@
 package app.overbay.swiftfox.ui.tabs
 
 import app.overbay.swiftfox.data.db.EssentialEntity
+import app.overbay.swiftfox.data.db.SiteOverrideEntity
 import app.overbay.swiftfox.data.db.SpaceEntity
+import app.overbay.swiftfox.data.db.TabEntity
 import app.overbay.swiftfox.data.prefs.BrowserSettings
+import app.overbay.swiftfox.data.prefs.PostureProfile
+import app.overbay.swiftfox.features.foldable.SiteModeResolver
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
 import app.overbay.swiftfox.ui.browser.BrowserOverlay
 import app.overbay.swiftfox.ui.browser.BrowserTabUi
@@ -18,6 +22,12 @@ data class PendingPinCloseTarget(
     val tabId: String,
     val title: String,
     val kind: PinnedTabKind
+)
+
+data class SyncedPinnedTabReconciliation(
+    val mergedTabs: List<BrowserTabUi>,
+    val removedTabIds: List<String>,
+    val updatedHomeUrlTabs: List<BrowserTabUi>
 )
 
 /**
@@ -215,5 +225,86 @@ object WorkspaceTabResolver {
         } else {
             activeTab.spaceId
         }
+    }
+
+    /**
+     * Merges synced local pinned tabs from Room into the live in-memory tab list while
+     * preserving active WebView state for unchanged pinned tabs and surfacing removed or
+     * re-targeted pinned tabs for session resource cleanup/reload.
+     */
+    fun reconcileSyncedPinnedTabs(
+        currentTabs: List<BrowserTabUi>,
+        dbPinnedTabs: List<TabEntity>,
+        siteOverrides: Map<String, SiteOverrideEntity>,
+        postureProfile: PostureProfile
+    ): SyncedPinnedTabReconciliation {
+        fun isLocalPinned(tab: BrowserTabUi): Boolean =
+            !tab.isPrivate && tab.isPinned && tab.essentialId == null && tab.zenPinnedId == null
+
+        val dbPinnedById = dbPinnedTabs.associateBy { it.id }
+        val removedTabIds = currentTabs
+            .filter { isLocalPinned(it) && it.id !in dbPinnedById }
+            .map { it.id }
+        val removedSet = removedTabIds.toSet()
+        val existingById = currentTabs
+            .filterNot { it.id in removedSet }
+            .associateBy { it.id }
+        val updatedHomeUrlTabs = mutableListOf<BrowserTabUi>()
+
+        val reconciledPinned = dbPinnedTabs
+            .sortedWith(compareBy<TabEntity> { it.spaceId }.thenBy { it.sortOrder }.thenByDescending { it.lastAccessedAt })
+            .map { entity ->
+                val homeUrl = entity.pinnedUrl?.takeIf { it.isNotBlank() } ?: entity.url
+                val displayTitle = entity.customTitle?.takeIf { it.isNotBlank() } ?: entity.title
+                val prev = existingById[entity.id]
+                if (prev != null) {
+                    val prevHomeUrl = prev.pinnedUrl?.takeIf { it.isNotBlank() } ?: prev.url
+                    val homeUrlChanged = !prevHomeUrl.equals(homeUrl, ignoreCase = false)
+                    val updated = prev.copy(
+                        spaceId = entity.spaceId,
+                        isPinned = true,
+                        title = if (homeUrlChanged || prev.isUnloaded) entity.title else prev.title,
+                        url = if (homeUrlChanged || prev.isUnloaded) homeUrl else prev.url,
+                        customTitle = displayTitle,
+                        customIcon = entity.customIcon,
+                        sortOrder = entity.sortOrder,
+                        pinnedUrl = homeUrl,
+                        isUnloaded = if (homeUrlChanged) true else prev.isUnloaded
+                    )
+                    if (homeUrlChanged && !prev.isUnloaded) {
+                        updatedHomeUrlTabs += updated
+                    }
+                    updated
+                } else {
+                    val host = OmniboxEngine.extractHost(homeUrl)
+                    val tabOverride = SiteModeResolver.parseOrNull(entity.siteModeOverride)
+                    val siteOverride = SiteModeResolver.parseOrNull(siteOverrides[host]?.siteModeOverride)
+                    BrowserTabUi(
+                        id = entity.id,
+                        spaceId = entity.spaceId,
+                        title = entity.title,
+                        url = homeUrl,
+                        isPrivate = false,
+                        isPinned = true,
+                        essentialId = null,
+                        zenPinnedId = null,
+                        isUnloaded = true,
+                        pinnedUrl = homeUrl,
+                        customIcon = entity.customIcon,
+                        customTitle = displayTitle,
+                        sortOrder = entity.sortOrder,
+                        siteModeOverride = tabOverride,
+                        resolvedSiteMode = SiteModeResolver.resolve(tabOverride, siteOverride, postureProfile),
+                        lastAccessedAt = entity.lastAccessedAt
+                    )
+                }
+            }
+
+        val otherTabs = currentTabs.filter { !isLocalPinned(it) && it.id !in dbPinnedById }
+        return SyncedPinnedTabReconciliation(
+            mergedTabs = reconciledPinned + otherTabs,
+            removedTabIds = removedTabIds,
+            updatedHomeUrlTabs = updatedHomeUrlTabs
+        )
     }
 }

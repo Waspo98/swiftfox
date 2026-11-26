@@ -1,11 +1,14 @@
 package app.overbay.swiftfox.features.sync
 
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.doubleOrNull
 import java.util.Locale
@@ -96,6 +99,38 @@ object ZenSpacesCodec {
         val normalTabsEnabled: Boolean,
         val separateEssentials: Boolean?
     )
+
+    @Serializable
+    sealed class ZenPendingOp {
+        abstract val workspaceUuid: String
+        abstract val updatedAtMs: Long
+
+        @Serializable
+        @SerialName("update_pin")
+        data class UpdatePin(
+            override val workspaceUuid: String,
+            val tabId: String,
+            val title: String,
+            val url: String,
+            override val updatedAtMs: Long
+        ) : ZenPendingOp()
+
+        @Serializable
+        @SerialName("delete_pin")
+        data class DeletePin(
+            override val workspaceUuid: String,
+            val tabId: String,
+            override val updatedAtMs: Long
+        ) : ZenPendingOp()
+
+        @Serializable
+        @SerialName("reorder_pins")
+        data class ReorderPins(
+            override val workspaceUuid: String,
+            val orderedTabIds: List<String>,
+            override val updatedAtMs: Long
+        ) : ZenPendingOp()
+    }
 
     /**
      * Strict tombstone rule: only JSON boolean `true` counts as deleted (string `"true"` does not).
@@ -358,6 +393,285 @@ object ZenSpacesCodec {
                 }
             }
         )
+    }
+
+    fun extractTabId(pinnedItemId: String, workspaceUuid: String): String? {
+        val prefix = "${workspaceUuid}_"
+        if (workspaceUuid.isBlank() || !pinnedItemId.startsWith(prefix)) return null
+        return pinnedItemId.removePrefix(prefix).takeIf { it.isNotBlank() }
+    }
+
+    fun encodeTabTombstone(bsoId: String): JsonObject = buildJsonObject {
+        put("id", JsonPrimitive(bsoId))
+        put("kind", JsonPrimitive("tab"))
+        put("deleted", JsonPrimitive(true))
+    }
+
+    fun rewriteTabRecordForUpdate(
+        existing: JsonObject,
+        newTitle: String,
+        newUrl: String
+    ): JsonObject? {
+        if (isDeletedTombstone(existing)) return null
+        if (stringOrNull(existing["kind"]) != "tab") return null
+        val cleanUrl = newUrl.trim()
+        if (!isHttpUrl(cleanUrl)) return null
+        val cleanTitle = newTitle.trim().ifBlank { extractHostFallback(cleanUrl) }
+        val dataObj = existing["data"] as? JsonObject ?: return null
+        val curUrl = stringOrNull(dataObj["url"]).orEmpty()
+        val curTitle = stringOrNull(dataObj["title"]).orEmpty()
+        val curStatic = stringOrNull(dataObj["staticLabel"])
+        if (curUrl == cleanUrl && curTitle == cleanTitle && curStatic == cleanTitle) {
+            return null
+        }
+
+        val updatedData = buildJsonObject {
+            for ((k, v) in dataObj) {
+                if (k != "url" && k != "title" && k != "staticLabel") {
+                    put(k, v)
+                }
+            }
+            put("url", JsonPrimitive(cleanUrl))
+            put("title", JsonPrimitive(cleanTitle))
+            put("staticLabel", JsonPrimitive(cleanTitle))
+        }
+        return replaceDataObject(existing, updatedData)
+    }
+
+    fun rewriteContainerRemovingTab(
+        existing: JsonObject,
+        tabId: String
+    ): JsonObject? {
+        if (isDeletedTombstone(existing)) return null
+        val listKey = when (stringOrNull(existing["kind"])) {
+            "space", "folder" -> "children"
+            "split" -> "tabs"
+            else -> return null
+        }
+        val dataObj = existing["data"] as? JsonObject ?: return null
+        val currentIds = stringList(dataObj[listKey])
+        if (tabId !in currentIds) return null
+        val updatedIds = currentIds.filterNot { it == tabId }
+        val updatedData = replaceStringListField(dataObj, listKey, updatedIds)
+        return replaceDataObject(existing, updatedData)
+    }
+
+    fun permuteChildIdsInPlace(
+        currentChildren: List<String>,
+        orderedIds: List<String>
+    ): List<String> {
+        if (currentChildren.size < 2 || orderedIds.size < 2) return currentChildren
+        val presentSet = currentChildren.toSet()
+        val orderedPresent = orderedIds.asSequence()
+            .filter { it in presentSet }
+            .distinct()
+            .toList()
+        if (orderedPresent.size < 2) return currentChildren
+        val targetSet = orderedPresent.toSet()
+        var cursor = 0
+        return currentChildren.map { child ->
+            if (child in targetSet && cursor < orderedPresent.size) {
+                orderedPresent[cursor++]
+            } else {
+                child
+            }
+        }
+    }
+
+    fun rewriteContainerWithReorderedChildren(
+        existing: JsonObject,
+        orderedTabIds: List<String>
+    ): JsonObject? {
+        if (isDeletedTombstone(existing)) return null
+        val kind = stringOrNull(existing["kind"])
+        if (kind != "space" && kind != "folder") return null
+        val dataObj = existing["data"] as? JsonObject ?: return null
+        val currentChildren = stringList(dataObj["children"])
+        val reordered = permuteChildIdsInPlace(currentChildren, orderedTabIds)
+        if (reordered == currentChildren) return null
+        val updatedData = replaceStringListField(dataObj, "children", reordered)
+        return replaceDataObject(existing, updatedData)
+    }
+
+    fun coalescePendingOps(
+        existing: List<ZenPendingOp>,
+        incoming: ZenPendingOp
+    ): List<ZenPendingOp> {
+        val next = existing.toMutableList()
+        when (incoming) {
+            is ZenPendingOp.UpdatePin -> {
+                next.removeAll {
+                    (it is ZenPendingOp.UpdatePin && it.tabId == incoming.tabId) ||
+                        (it is ZenPendingOp.DeletePin && it.tabId == incoming.tabId)
+                }
+                next += incoming
+            }
+            is ZenPendingOp.DeletePin -> {
+                next.removeAll {
+                    (it is ZenPendingOp.UpdatePin && it.tabId == incoming.tabId) ||
+                        (it is ZenPendingOp.DeletePin && it.tabId == incoming.tabId)
+                }
+                val idxIterator = next.listIterator()
+                while (idxIterator.hasNext()) {
+                    val op = idxIterator.next()
+                    if (op is ZenPendingOp.ReorderPins && op.workspaceUuid == incoming.workspaceUuid) {
+                        val remaining = op.orderedTabIds.filterNot { it == incoming.tabId }
+                        if (remaining.size < 2) {
+                            idxIterator.remove()
+                        } else {
+                            idxIterator.set(op.copy(orderedTabIds = remaining))
+                        }
+                    }
+                }
+                next += incoming
+            }
+            is ZenPendingOp.ReorderPins -> {
+                next.removeAll {
+                    it is ZenPendingOp.ReorderPins && it.workspaceUuid == incoming.workspaceUuid
+                }
+                if (incoming.orderedTabIds.size >= 2) {
+                    next += incoming
+                }
+            }
+        }
+        return next
+    }
+
+    /**
+     * Applies queued local Zen pinned item edits, deletions, and reorders against the current
+     * decrypted `spaces` BSO list, returning only modified/tombstoned BSOs while leaving folders,
+     * splits, normal tabs, and unknown BSO fields intact.
+     */
+    fun buildMutationBsos(
+        decryptedRecords: List<Pair<String, JsonObject>>,
+        ops: List<ZenPendingOp>
+    ): List<Pair<String, JsonObject>> {
+        if (ops.isEmpty() || decryptedRecords.isEmpty()) return emptyList()
+        val working = linkedMapOf<String, JsonObject>()
+        for ((bsoId, obj) in decryptedRecords) {
+            working[bsoId] = obj
+        }
+        val dirtyIds = linkedSetOf<String>()
+
+        fun findTabEntry(tabId: String): Pair<String, JsonObject>? {
+            working[tabId]?.let { obj ->
+                if (!isDeletedTombstone(obj) && stringOrNull(obj["kind"]) == "tab") {
+                    return tabId to obj
+                }
+            }
+            for ((bsoId, obj) in working) {
+                if (isDeletedTombstone(obj)) continue
+                if (stringOrNull(obj["kind"]) != "tab") continue
+                val data = obj["data"] as? JsonObject ?: continue
+                if (stringOrNull(data["tabId"]) == tabId) {
+                    return bsoId to obj
+                }
+            }
+            return null
+        }
+
+        fun collectFolderIdsForSpace(spaceUuid: String): Set<String> {
+            val spaceObj = working.values.firstOrNull { obj ->
+                !isDeletedTombstone(obj) &&
+                    stringOrNull(obj["kind"]) == "space" &&
+                    stringOrNull((obj["data"] as? JsonObject)?.get("uuid")) == spaceUuid
+            } ?: return emptySet()
+            val foldersById = linkedMapOf<String, JsonObject>()
+            for (obj in working.values) {
+                if (!isDeletedTombstone(obj) && stringOrNull(obj["kind"]) == "folder") {
+                    val fId = stringOrNull((obj["data"] as? JsonObject)?.get("folderId"))
+                    if (!fId.isNullOrBlank()) foldersById[fId] = obj
+                }
+            }
+            val result = linkedSetOf<String>()
+            val queue = ArrayDeque<String>()
+            val spaceData = spaceObj["data"] as? JsonObject ?: return emptySet()
+            stringList(spaceData["children"]).forEach { queue.addLast(it) }
+            while (queue.isNotEmpty()) {
+                val id = queue.removeFirst()
+                val folderObj = foldersById[id] ?: continue
+                if (result.add(id)) {
+                    val fData = folderObj["data"] as? JsonObject ?: continue
+                    stringList(fData["children"]).forEach { queue.addLast(it) }
+                }
+            }
+            return result
+        }
+
+        for (op in ops) {
+            when (op) {
+                is ZenPendingOp.UpdatePin -> {
+                    val (bsoId, existing) = findTabEntry(op.tabId) ?: continue
+                    val rewritten = rewriteTabRecordForUpdate(existing, op.title, op.url)
+                    if (rewritten != null) {
+                        working[bsoId] = rewritten
+                        dirtyIds += bsoId
+                    }
+                }
+                is ZenPendingOp.DeletePin -> {
+                    val existingTab = findTabEntry(op.tabId)
+                    if (existingTab != null) {
+                        val (bsoId, _) = existingTab
+                        working[bsoId] = encodeTabTombstone(bsoId)
+                        dirtyIds += bsoId
+                    }
+                    val keys = working.keys.toList()
+                    for (id in keys) {
+                        val obj = working[id] ?: continue
+                        val updated = rewriteContainerRemovingTab(obj, op.tabId)
+                        if (updated != null) {
+                            working[id] = updated
+                            dirtyIds += id
+                        }
+                    }
+                }
+                is ZenPendingOp.ReorderPins -> {
+                    val folderIdsInSpace = collectFolderIdsForSpace(op.workspaceUuid)
+                    val keys = working.keys.toList()
+                    for (id in keys) {
+                        val obj = working[id] ?: continue
+                        if (isDeletedTombstone(obj)) continue
+                        val kind = stringOrNull(obj["kind"])
+                        val data = obj["data"] as? JsonObject ?: continue
+                        val matchesSpace = when (kind) {
+                            "space" -> stringOrNull(data["uuid"]) == op.workspaceUuid
+                            "folder" -> {
+                                val fId = stringOrNull(data["folderId"])
+                                val fWs = stringOrNull(data["workspaceUuid"])
+                                fWs == op.workspaceUuid || (fId != null && fId in folderIdsInSpace)
+                            }
+                            else -> false
+                        }
+                        if (matchesSpace) {
+                            val updated = rewriteContainerWithReorderedChildren(obj, op.orderedTabIds)
+                            if (updated != null) {
+                                working[id] = updated
+                                dirtyIds += id
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return dirtyIds.mapNotNull { id -> working[id]?.let { id to it } }
+    }
+
+    private fun replaceDataObject(existing: JsonObject, newData: JsonObject): JsonObject = buildJsonObject {
+        for ((k, v) in existing) {
+            if (k != "data") put(k, v)
+        }
+        put("data", newData)
+    }
+
+    private fun replaceStringListField(
+        dataObj: JsonObject,
+        fieldName: String,
+        values: List<String>
+    ): JsonObject = buildJsonObject {
+        for ((k, v) in dataObj) {
+            if (k != fieldName) put(k, v)
+        }
+        put(fieldName, buildJsonArray { values.forEach { add(JsonPrimitive(it)) } })
     }
 
     private fun decodeSpace(data: JsonObject): ZenSpaceRecord? {

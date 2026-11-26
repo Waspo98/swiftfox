@@ -1,7 +1,9 @@
 package app.overbay.swiftfox.ui.tabs
 
 import app.overbay.swiftfox.data.db.EssentialEntity
+import app.overbay.swiftfox.data.db.SiteOverrideEntity
 import app.overbay.swiftfox.data.db.SpaceEntity
+import app.overbay.swiftfox.data.db.TabEntity
 import app.overbay.swiftfox.data.db.ZenPinnedItemEntity
 import app.overbay.swiftfox.data.prefs.BrowserSettings
 import app.overbay.swiftfox.data.prefs.ExternalAppLinkPolicy
@@ -650,5 +652,116 @@ class WorkspaceTabResolverTest {
             "space_work",
             WorkspaceTabResolver.resolveNavigationTabSpaceId(workPage, "space_personal")
         )
+    }
+
+    @Test
+    fun reconcileSyncedPinnedTabsPreservesLoadedTabsReloadsChangedHomeUrlsAndAddsNewUnloadedPins() {
+        val regularTab = BrowserTabUi(
+            id = "tab_regular",
+            spaceId = "space_personal",
+            title = "Notes",
+            url = "https://notes.example",
+            isPinned = false
+        )
+        val openPinnedSameUrl = BrowserTabUi(
+            id = "pin_same",
+            spaceId = "space_personal",
+            title = "Subpage Article",
+            url = "https://site.example/article/42",
+            isPinned = true,
+            isUnloaded = false,
+            pinnedUrl = "https://site.example/",
+            customTitle = "Old Title",
+            sortOrder = 0
+        )
+        val openPinnedChangedHome = BrowserTabUi(
+            id = "pin_changed",
+            spaceId = "space_personal",
+            title = "Old Home",
+            url = "https://old.example/page",
+            isPinned = true,
+            isUnloaded = false,
+            pinnedUrl = "https://old.example/",
+            customTitle = "Old Home",
+            sortOrder = 1
+        )
+        val removedPin = BrowserTabUi(
+            id = "pin_removed",
+            spaceId = "space_personal",
+            title = "Gone",
+            url = "https://gone.example",
+            isPinned = true,
+            pinnedUrl = "https://gone.example",
+            sortOrder = 2
+        )
+
+        val dbPins = listOf(
+            TabEntity(
+                id = "pin_same",
+                spaceId = "space_personal",
+                title = "Renamed Site",
+                url = "https://site.example/",
+                isPrivate = false,
+                isPinned = true,
+                sortOrder = 1,
+                customIcon = "emoji:\u2B50",
+                customTitle = "Renamed Site",
+                pinnedUrl = "https://site.example/",
+                isUnloaded = true
+            ),
+            TabEntity(
+                id = "pin_changed",
+                spaceId = "space_personal",
+                title = "New Home",
+                url = "https://new.example/",
+                isPrivate = false,
+                isPinned = true,
+                sortOrder = 0,
+                customTitle = "New Home",
+                pinnedUrl = "https://new.example/",
+                isUnloaded = true
+            ),
+            TabEntity(
+                id = "pin_added",
+                spaceId = "space_work",
+                title = "Work Board",
+                url = "https://linear.app",
+                isPrivate = false,
+                isPinned = true,
+                sortOrder = 0,
+                customTitle = "Work Board",
+                pinnedUrl = "https://linear.app",
+                isUnloaded = true
+            )
+        )
+
+        val result = WorkspaceTabResolver.reconcileSyncedPinnedTabs(
+            currentTabs = listOf(openPinnedSameUrl, openPinnedChangedHome, removedPin, regularTab),
+            dbPinnedTabs = dbPins,
+            siteOverrides = emptyMap<String, SiteOverrideEntity>(),
+            postureProfile = BrowserSettings().foldedProfile
+        )
+
+        assertEquals(listOf("pin_removed"), result.removedTabIds)
+        assertEquals(listOf("pin_changed"), result.updatedHomeUrlTabs.map { it.id })
+
+        val mergedById = result.mergedTabs.associateBy { it.id }
+        val sameTab = mergedById.getValue("pin_same")
+        assertFalse(sameTab.isUnloaded)
+        assertEquals("https://site.example/article/42", sameTab.url)
+        assertEquals("Renamed Site", sameTab.customTitle)
+        assertEquals("emoji:\u2B50", sameTab.customIcon)
+
+        val changedTab = mergedById.getValue("pin_changed")
+        assertTrue(changedTab.isUnloaded)
+        assertEquals("https://new.example/", changedTab.url)
+        assertEquals("https://new.example/", changedTab.pinnedUrl)
+
+        val addedTab = mergedById.getValue("pin_added")
+        assertTrue(addedTab.isUnloaded)
+        assertEquals("space_work", addedTab.spaceId)
+
+        assertTrue(mergedById.containsKey("tab_regular"))
+        assertFalse(mergedById.containsKey("pin_removed"))
     }
 }

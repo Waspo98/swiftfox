@@ -1152,6 +1152,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     }
                     db.zappedRuleDao().upsert(rule)
                 }
+                app.mozillaSyncCoordinator.scheduleSwiftfoxPush()
                 pool.clearAllDocumentStartScripts()
                 refreshZappedCssForHost(host, isPrivateOnly = false)
                 _uiState.update { state ->
@@ -1648,12 +1649,15 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
 
         viewModelScope.launch {
-            app.mozillaSyncCoordinator.swiftfoxDataRevision.collectLatest { rev ->
+            app.mozillaSyncCoordinator.swiftfoxDataRevision.collect { rev ->
                 if (rev > 0L) {
                     pool.clearAllDocumentStartScripts()
                     val active = _uiState.value.activeTab
                     if (active != null && !active.isStartPage && active.displayHost.isNotBlank()) {
                         refreshZappedCssForHost(active.displayHost)
+                    }
+                    if (startupTabReconciliationDone.get()) {
+                        reconcileSyncedPinnedTabsFromDb()
                     }
                 }
             }
@@ -1729,6 +1733,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 prefs.setHasSeededDefaults(true)
             }
             if (!synchronized(incomingIntentLock) { initialTabsLoaded }) {
+                val swiftfoxRevBeforeInitialLoad = app.mozillaSyncCoordinator.swiftfoxDataRevision.value
                 val initialEssIds = db.essentialDao().getAll().mapTo(mutableSetOf()) { it.id }
                 val initialZenIds = db.zenPinnedItemDao().getAll().mapTo(mutableSetOf()) { it.id }
                 val rawSavedTabs = db.tabDao().getNormalTabs()
@@ -1828,6 +1833,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     }
                 }
                 startupTabReconciliationDone.set(true)
+                if (app.mozillaSyncCoordinator.swiftfoxDataRevision.value > swiftfoxRevBeforeInitialLoad) {
+                    reconcileSyncedPinnedTabsFromDb()
+                }
                 val queued = synchronized(incomingIntentLock) {
                     initialTabsLoaded = true
                     if (pendingIncomingUrls.isEmpty()) emptyList()
@@ -1843,6 +1851,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 }
                 syncActiveTabProgressAndBlocked()
                 runAutoClearStaleTabsIfNeeded()
+                app.mozillaSyncCoordinator.syncSwiftfoxAndZenOnForegroundIfDue()
             }
         }
     }
@@ -2184,7 +2193,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
         if (!isPrivate) {
             if (effectivePinned && !isBoundWorkspace) {
-                persistTabsForSpace(spaceId)
+                persistTabsForSpace(spaceId, scheduleSwiftfoxPush = true)
             } else {
                 persistTab(tab)
             }
@@ -2350,9 +2359,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
 
         if (!closing.isPrivate) {
+            val shouldPushPinnedDelete = closing.isPinned && !closing.isBoundWorkspaceTab
             viewModelScope.launch {
                 tabDbMutex.withLock {
                     db.tabDao().deleteById(tabId)
+                }
+                if (shouldPushPinnedDelete) {
+                    app.mozillaSyncCoordinator.scheduleSwiftfoxPush()
                 }
             }
         } else {
@@ -2591,6 +2604,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
         viewModelScope.launch {
             db.spaceDao().upsert(space)
+            app.mozillaSyncCoordinator.scheduleSwiftfoxPush()
         }
         selectSpace(id)
     }
@@ -2655,11 +2669,16 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 permissionPrompt = if (wasViewingDeletedSpace || state.permissionPrompt?.tabId in affectedIds) null else state.permissionPrompt
             )
         }
+        val shouldPushDelete = spaceToDelete.syncGuid.isNullOrBlank() ||
+            affectedTabs.any { it.isPinned && !it.isBoundWorkspaceTab }
         viewModelScope.launch {
             tabDbMutex.withLock {
                 db.tabDao().deleteBySpace(spaceId)
                 db.zenPinnedItemDao().deleteBySpace(spaceId)
                 db.spaceDao().deleteById(spaceId)
+            }
+            if (shouldPushDelete) {
+                app.mozillaSyncCoordinator.scheduleSwiftfoxPush()
             }
         }
         if (wasViewingDeletedSpace) {
@@ -2679,7 +2698,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         _uiState.update { state ->
             state.copy(spaces = state.spaces.map { if (it.id == spaceId) updated else it })
         }
-        viewModelScope.launch { db.spaceDao().upsert(updated) }
+        viewModelScope.launch {
+            db.spaceDao().upsert(updated)
+            if (updated.syncGuid.isNullOrBlank()) {
+                app.mozillaSyncCoordinator.scheduleSwiftfoxPush()
+            }
+        }
         showSnackbar("Renamed Space to \"$trimmed\"")
     }
 
@@ -2691,7 +2715,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         _uiState.update { state ->
             state.copy(spaces = state.spaces.map { if (it.id == spaceId) updated else it })
         }
-        viewModelScope.launch { db.spaceDao().upsert(updated) }
+        viewModelScope.launch {
+            db.spaceDao().upsert(updated)
+            if (updated.syncGuid.isNullOrBlank()) {
+                app.mozillaSyncCoordinator.scheduleSwiftfoxPush()
+            }
+        }
         if (oldIcon != nextKey) cleanupUnusedCustomImage(oldIcon)
     }
 
@@ -2711,7 +2740,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }.mapIndexed { idx, space -> space.copy(sortOrder = idx) }
 
         _uiState.update { it.copy(spaces = reordered) }
-        viewModelScope.launch { db.spaceDao().upsertAll(reordered) }
+        viewModelScope.launch {
+            db.spaceDao().upsertAll(reordered)
+            if (reordered.any { it.syncGuid.isNullOrBlank() }) {
+                app.mozillaSyncCoordinator.scheduleSwiftfoxPush()
+            }
+        }
     }
 
     fun addEssential(title: String, rawUrl: String, customIcon: String? = null) {
@@ -2731,6 +2765,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
         viewModelScope.launch {
             db.essentialDao().upsert(essential)
+            app.mozillaSyncCoordinator.scheduleSwiftfoxPush()
             showSnackbar("Pinned ${essential.title} to Essentials")
         }
     }
@@ -2778,7 +2813,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             }
             _uiState.value.tabs.firstOrNull { it.id == boundTab.id }?.let { persistTab(it) }
         }
-        viewModelScope.launch { db.essentialDao().upsert(updated) }
+        viewModelScope.launch {
+            db.essentialDao().upsert(updated)
+            app.mozillaSyncCoordinator.scheduleSwiftfoxPush()
+        }
         showSnackbar("Updated ${updated.title}")
     }
 
@@ -2800,7 +2838,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         if (boundTab != null) {
             _uiState.value.tabs.firstOrNull { it.id == boundTab.id }?.let { persistTab(it) }
         }
-        viewModelScope.launch { db.essentialDao().upsert(updated) }
+        viewModelScope.launch {
+            db.essentialDao().upsert(updated)
+            app.mozillaSyncCoordinator.scheduleSwiftfoxPush()
+        }
         if (oldIcon != customIcon) cleanupUnusedCustomImage(oldIcon)
     }
 
@@ -2823,7 +2864,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }.mapIndexed { idx, ess -> ess.copy(sortOrder = idx) }
 
         _uiState.update { it.copy(essentials = merged) }
-        viewModelScope.launch { db.essentialDao().upsertAll(merged) }
+        viewModelScope.launch {
+            db.essentialDao().upsertAll(merged)
+            app.mozillaSyncCoordinator.scheduleSwiftfoxPush()
+        }
     }
 
     fun removeEssential(id: String) {
@@ -2841,6 +2885,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 db.tabDao().deleteByEssentialId(id)
             }
             db.essentialDao().deleteById(id)
+            app.mozillaSyncCoordinator.scheduleSwiftfoxPush()
         }
         cleanupUnusedCustomImage(existing?.customIcon)
     }
@@ -3559,6 +3604,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
         viewModelScope.launch {
             db.essentialDao().upsert(essential)
+            app.mozillaSyncCoordinator.scheduleSwiftfoxPush()
             showSnackbar("Pinned ${essential.title} to Essentials")
         }
     }
@@ -3592,7 +3638,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             }
             state.copy(tabs = reordered)
         }
-        persistTabsForSpace(target.spaceId)
+        persistTabsForSpace(target.spaceId, scheduleSwiftfoxPush = true)
         showSnackbar(if (pinned) "Pinned ${updatedTab.displayTitle}" else "Unpinned ${updatedTab.displayTitle}")
     }
 
@@ -3618,7 +3664,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             }
         }
         if (!target.isPrivate) {
-            persistTab(updatedTab)
+            persistTab(updatedTab, scheduleSwiftfoxPush = target.isPinned && !target.isBoundWorkspaceTab)
         }
         showSnackbar("Updated $cleanTitle")
     }
@@ -3629,7 +3675,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         val oldIcon = target.customIcon
         val updatedTab = target.copy(customIcon = customIcon)
         updateTab(tabId) { updatedTab }
-        persistTab(updatedTab)
+        persistTab(updatedTab, scheduleSwiftfoxPush = target.isPinned && !target.isBoundWorkspaceTab)
         if (oldIcon != customIcon) cleanupUnusedCustomImage(oldIcon)
     }
 
@@ -3658,7 +3704,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
         _uiState.update { it.copy(tabs = updatedTabs) }
         if (!isPrivate) {
-            persistTabsForSpace(activeSpace)
+            persistTabsForSpace(activeSpace, scheduleSwiftfoxPush = pinnedSection)
         }
     }
 
@@ -3704,7 +3750,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             }
             _uiState.value.tabs.firstOrNull { it.id == boundTab.id }?.let { persistTab(it) }
         }
-        viewModelScope.launch { db.zenPinnedItemDao().upsert(updated) }
+        viewModelScope.launch {
+            db.zenPinnedItemDao().upsert(updated)
+            app.mozillaSyncCoordinator.mirrorZenPinnedUpdated(updated)
+        }
         showSnackbar("Updated ${updated.title}")
     }
 
@@ -3749,6 +3798,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 db.tabDao().deleteByZenPinnedId(id)
             }
             db.zenPinnedItemDao().deleteById(id)
+            if (existing != null) {
+                app.mozillaSyncCoordinator.mirrorZenPinnedDeleted(existing)
+            }
         }
         cleanupUnusedCustomImage(existing?.customIcon)
     }
@@ -3771,7 +3823,15 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }.mapIndexed { idx, item -> item.copy(sortOrder = idx) }
 
         _uiState.update { it.copy(zenPinnedItems = merged) }
-        viewModelScope.launch { db.zenPinnedItemDao().upsertAll(merged) }
+        val affectedByWorkspace = merged
+            .filter { it.id in targetSet }
+            .groupBy { it.zenWorkspaceUuid }
+        viewModelScope.launch {
+            db.zenPinnedItemDao().upsertAll(merged)
+            affectedByWorkspace.forEach { (wsUuid, items) ->
+                app.mozillaSyncCoordinator.mirrorZenPinnedReordered(wsUuid, items)
+            }
+        }
     }
 
     private fun cleanupUnusedCustomImage(oldSpec: String?) {
@@ -4495,6 +4555,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     }
                 }
             )
+            app.mozillaSyncCoordinator.scheduleSwiftfoxPush()
         }
     }
 
@@ -4660,10 +4721,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             beginFilterUpdate()
             try {
-                app.filterListRepository.toggleList(id, enabled)
-                    .onFailure { err ->
-                        showSnackbar("Filter list update failed: ${err.message ?: "error"}")
-                    }
+                val result = app.filterListRepository.toggleList(id, enabled)
+                result.onFailure { err ->
+                    showSnackbar("Filter list update failed: ${err.message ?: "error"}")
+                }
+                if (result.getOrNull() != null || result.isFailure) {
+                    app.mozillaSyncCoordinator.scheduleSwiftfoxPush()
+                }
                 pool.clearAllDocumentStartScripts()
             } finally {
                 endFilterUpdate()
@@ -4677,6 +4741,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             try {
                 val result = app.filterListRepository.addCustomList(name, url)
                 result.onSuccess { entity ->
+                    app.mozillaSyncCoordinator.scheduleSwiftfoxPush()
                     pool.clearAllDocumentStartScripts()
                     showSnackbar("Added ${entity.name} (${entity.ruleCount} rules)")
                 }.onFailure { err ->
@@ -4691,6 +4756,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun deleteCustomFilterList(id: String) {
         viewModelScope.launch {
             app.filterListRepository.deleteCustomList(id)
+            app.mozillaSyncCoordinator.scheduleSwiftfoxPush()
             pool.clearAllDocumentStartScripts()
             showSnackbar("Removed filter list")
         }
@@ -4790,6 +4856,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             val current = _uiState.value.zappedRules.firstOrNull { it.id == id } ?: return@launch
             db.zappedRuleDao().upsert(current.copy(enabled = enabled))
+            app.mozillaSyncCoordinator.scheduleSwiftfoxPush()
             pool.clearAllDocumentStartScripts()
             refreshZappedCssForHost(current.host)
         }
@@ -4823,6 +4890,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             val host = _uiState.value.zappedRules.firstOrNull { it.id == id }?.host
             db.zappedRuleDao().deleteById(id)
+            app.mozillaSyncCoordinator.scheduleSwiftfoxPush()
             pool.clearAllDocumentStartScripts()
             if (host != null) {
                 refreshZappedCssForHost(host)
@@ -4833,6 +4901,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun clearZappedRulesForHost(host: String) {
         viewModelScope.launch {
             db.zappedRuleDao().deleteByHost(host)
+            app.mozillaSyncCoordinator.scheduleSwiftfoxPush()
             pool.clearAllDocumentStartScripts()
             refreshZappedCssForHost(host)
             showSnackbar("Cleared zapped rules for $host")
@@ -4865,6 +4934,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun toggleUserscript(id: String, enabled: Boolean) {
         viewModelScope.launch {
             app.userscriptRepository.setEnabled(id, enabled)
+            app.mozillaSyncCoordinator.scheduleSwiftfoxPush()
             pool.clearAllDocumentStartScripts()
         }
     }
@@ -4873,6 +4943,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             val result = app.userscriptRepository.installFromUrl(url)
             result.onSuccess { script ->
+                app.mozillaSyncCoordinator.scheduleSwiftfoxPush()
                 pool.clearAllDocumentStartScripts()
                 val unsupported = UserscriptParser.parse(script.code, script.name).unsupportedDirectives
                 val suffix = if (unsupported.isNotEmpty()) {
@@ -4891,6 +4962,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             val result = app.userscriptRepository.installFromCode(code, fallbackName)
             result.onSuccess { script ->
+                app.mozillaSyncCoordinator.scheduleSwiftfoxPush()
                 pool.clearAllDocumentStartScripts()
                 val unsupported = UserscriptParser.parse(script.code, script.name).unsupportedDirectives
                 val suffix = if (unsupported.isNotEmpty()) {
@@ -4913,6 +4985,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 app.userscriptRepository.installFromCode(code)
             }
             result.onSuccess { script ->
+                app.mozillaSyncCoordinator.scheduleSwiftfoxPush()
                 pool.clearAllDocumentStartScripts()
                 val unsupported = UserscriptParser.parse(script.code, script.name).unsupportedDirectives
                 val suffix = if (unsupported.isNotEmpty()) {
@@ -4934,6 +5007,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun deleteUserscript(id: String) {
         viewModelScope.launch {
             app.userscriptRepository.deleteScript(id)
+            app.mozillaSyncCoordinator.scheduleSwiftfoxPush()
             synchronized(privateUserscriptStorageLock) {
                 privateUserscriptStorage.remove(id)
                 privateDeletedUserscriptKeys.remove(id)
@@ -5391,6 +5465,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     }
                 }
             )
+            app.mozillaSyncCoordinator.scheduleSwiftfoxPush()
             withContext(Dispatchers.Main) {
                 // Also clear any tab-level siteModeOverride on matching tabs so posture defaults resume
                 _uiState.value.tabs
@@ -5459,6 +5534,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     }
                 }
             )
+            app.mozillaSyncCoordinator.scheduleSwiftfoxPush()
             withContext(Dispatchers.Main) {
                 refreshResolvedSiteModesForAllTabs(_uiState.value.activeProfile)
                 pool.clearAllDocumentStartScripts()
@@ -5553,6 +5629,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun onAppForegrounded() {
         if (!startupTabReconciliationDone.get()) return
         runAutoClearStaleTabsIfNeeded()
+        app.mozillaSyncCoordinator.syncSwiftfoxAndZenOnForegroundIfDue()
     }
 
     fun onAppBackgrounded() {
@@ -5990,7 +6067,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun setSyncZenSpacesEnabled(enabled: Boolean) = viewModelScope.launch { prefs.setSyncZenSpacesEnabled(enabled) }
+    fun setSyncZenSpacesEnabled(enabled: Boolean) = viewModelScope.launch {
+        prefs.setSyncZenSpacesEnabled(enabled)
+        app.mozillaSyncCoordinator.onZenSpacesSyncEnabledChanged(enabled)
+    }
 
     fun setSyncSwiftfoxEnabled(enabled: Boolean) = viewModelScope.launch { prefs.setSyncSwiftfoxEnabled(enabled) }
 
@@ -6191,7 +6271,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         pinnedUrl = tab.pinnedUrl
     )
 
-    private fun persistTab(tab: BrowserTabUi) {
+    private fun persistTab(tab: BrowserTabUi, scheduleSwiftfoxPush: Boolean = false) {
         if (tab.isPrivate) return
         viewModelScope.launch {
             tabDbMutex.withLock {
@@ -6201,10 +6281,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 val orderIdx = computeNormalTabOrderIndex(_uiState.value.tabs, latest)
                 db.tabDao().upsert(toTabEntity(latest, orderIdx))
             }
+            if (scheduleSwiftfoxPush) {
+                app.mozillaSyncCoordinator.scheduleSwiftfoxPush()
+            }
         }
     }
 
-    private fun persistTabsForSpace(spaceId: String) {
+    private fun persistTabsForSpace(spaceId: String, scheduleSwiftfoxPush: Boolean = false) {
         val spaceTabs = _uiState.value.tabs.filter {
             !it.isPrivate && !it.isBoundWorkspaceTab && it.spaceId == spaceId
         }
@@ -6223,6 +6306,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 if (liveEntities.isNotEmpty()) {
                     db.tabDao().upsertAll(liveEntities)
                 }
+            }
+            if (scheduleSwiftfoxPush) {
+                app.mozillaSyncCoordinator.scheduleSwiftfoxPush()
             }
         }
     }
@@ -6551,6 +6637,129 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             session.applyBackgroundPlayback(state.settings.backgroundMediaEnabled)
         }
         return didReload
+    }
+
+    private suspend fun reconcileSyncedPinnedTabsFromDb() {
+        val (dbSpaces, dbPinnedTabs) = tabDbMutex.withLock {
+            withContext(Dispatchers.IO) {
+                val spaces = db.spaceDao().getAll()
+                val pinned = db.tabDao().getNormalTabs().filter {
+                    !it.isPrivate && it.isPinned && it.essentialId == null && it.zenPinnedId == null
+                }
+                spaces to pinned
+            }
+        }
+
+        val stateBefore = _uiState.value
+        val result = WorkspaceTabResolver.reconcileSyncedPinnedTabs(
+            currentTabs = stateBefore.tabs,
+            dbPinnedTabs = dbPinnedTabs,
+            siteOverrides = stateBefore.siteOverrides,
+            postureProfile = stateBefore.activeProfile
+        )
+        if (result.mergedTabs == stateBefore.tabs &&
+            result.removedTabIds.isEmpty() &&
+            result.updatedHomeUrlTabs.isEmpty() &&
+            dbSpaces.isEmpty()
+        ) {
+            return
+        }
+
+        val removedSet = result.removedTabIds.toSet()
+        val updatedHomeUrlSet = result.updatedHomeUrlTabs.mapTo(mutableSetOf()) { it.id }
+        val sessionResetIds = removedSet + updatedHomeUrlSet
+        val oldTabIcons = stateBefore.tabs.mapNotNull { it.customIcon }.distinct()
+
+        result.updatedHomeUrlTabs.forEach { updated ->
+            pool.discardHibernatedState(updated.id)
+        }
+        sessionResetIds.forEach { tabId ->
+            releaseTabSessionResources(tabId, wasActive = tabId == stateBefore.activeTabId)
+        }
+        if (sessionResetIds.isNotEmpty()) {
+            _thumbnails.update { current -> current.copy(bitmaps = current.bitmaps - sessionResetIds) }
+            if (activeMediaTabId in sessionResetIds ||
+                stateBefore.tabs.any { it.id in sessionResetIds && it.isPlayingMedia }
+            ) {
+                handoffOrStopMediaService(
+                    activeMediaTabId ?: "",
+                    candidateTabs = result.mergedTabs.filter { !it.isUnloaded }
+                )
+            }
+            if (stateBefore.activeTabId in sessionResetIds || stateBefore.permissionPrompt?.tabId in sessionResetIds) {
+                stateBefore.permissionPrompt?.let(::denyPromptSilently)
+            }
+        }
+
+        val wasActiveInvalidated = stateBefore.activeTabId != null && stateBefore.activeTabId in sessionResetIds
+        val activeTabIdBefore = stateBefore.activeTabId
+        var resolvedNextActiveId: String? = activeTabIdBefore
+        var resolvedActiveSpaceId = stateBefore.activeSpaceId
+
+        _uiState.update { current ->
+            val currentSpaceIds = current.spaces.mapTo(mutableSetOf()) { it.id }
+            val mergedSpaces = if (dbSpaces.isEmpty()) {
+                current.spaces
+            } else {
+                val dbSpaceIds = dbSpaces.mapTo(mutableSetOf()) { it.id }
+                dbSpaces + current.spaces.filter { it.id in pendingCreatedSpaces.keys && it.id !in dbSpaceIds }
+            }
+            val validSpaceIds = mergedSpaces.mapTo(mutableSetOf()) { it.id }
+            val nextActiveSpaceId = if (current.activeSpaceId in validSpaceIds) {
+                current.activeSpaceId
+            } else {
+                mergedSpaces.firstOrNull()?.id ?: current.activeSpaceId
+            }
+            resolvedActiveSpaceId = nextActiveSpaceId
+            val nextActiveId = if (wasActiveInvalidated) {
+                WorkspaceTabResolver.resolveFallbackTabId(
+                    remainingTabs = result.mergedTabs,
+                    activeSpaceId = nextActiveSpaceId,
+                    isPrivateView = current.isPrivateView
+                )
+            } else {
+                current.activeTabId
+            }
+            resolvedNextActiveId = nextActiveId
+            current.copy(
+                spaces = if (mergedSpaces != current.spaces && currentSpaceIds != mergedSpaces.mapTo(mutableSetOf()) { it.id }) {
+                    mergedSpaces
+                } else {
+                    current.spaces
+                },
+                activeSpaceId = nextActiveSpaceId,
+                tabs = result.mergedTabs,
+                activeTabId = nextActiveId,
+                pwaCandidatesByTab = if (sessionResetIds.isEmpty()) current.pwaCandidatesByTab else current.pwaCandidatesByTab - sessionResetIds,
+                pendingPinCloseTarget = if (current.pendingPinCloseTarget?.tabId in sessionResetIds) null else current.pendingPinCloseTarget,
+                zapper = if (wasActiveInvalidated) ZapperUiState() else current.zapper,
+                readerArticle = if (wasActiveInvalidated) null else current.readerArticle,
+                isReaderLoading = if (wasActiveInvalidated) false else current.isReaderLoading,
+                findInPage = if (wasActiveInvalidated) FindInPageState() else current.findInPage,
+                externalAppPrompt = if (current.externalAppPrompt?.tabId in sessionResetIds || wasActiveInvalidated) null else current.externalAppPrompt,
+                httpsErrorPrompt = if (current.httpsErrorPrompt?.tabId in sessionResetIds || wasActiveInvalidated) null else current.httpsErrorPrompt,
+                permissionPrompt = if (current.permissionPrompt?.tabId in sessionResetIds || wasActiveInvalidated) null else current.permissionPrompt
+            )
+        }
+
+        oldTabIcons.forEach(::cleanupUnusedCustomImage)
+
+        if (wasActiveInvalidated) {
+            val nextActive = resolvedNextActiveId
+            if (nextActive != null) {
+                pool.setActiveTab(nextActive)
+                syncActiveTabProgressAndBlocked(nextActive)
+                applyResolvedSettingsToTab(nextActive, reloadIfModeChanged = true)
+            } else if (!_uiState.value.isPrivateView) {
+                createTab(
+                    spaceId = resolvedActiveSpaceId,
+                    isPrivate = false,
+                    selectImmediately = true,
+                    closeFoldedSidebar = false,
+                    closeTabSwitcher = false
+                )
+            }
+        }
     }
 
     override fun onCleared() {

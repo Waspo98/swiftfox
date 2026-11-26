@@ -1,5 +1,6 @@
 package app.overbay.swiftfox
 
+import androidx.webkit.UserAgentMetadata
 import app.overbay.swiftfox.data.prefs.SiteMode
 import app.overbay.swiftfox.engine.BridgeTokenSet
 import app.overbay.swiftfox.engine.BrowserSession
@@ -347,5 +348,100 @@ class BrowserSessionAndDiagnosticsTest {
         assertNull(controller.draggingKey)
         controller.syncFromSource(listOf("x", "y"))
         assertEquals(listOf("x", "y"), controller.items.toList())
+    }
+
+    @Test
+    fun extractChromiumVersionAndDesktopUaMirrorRealWebViewMajorVersion() {
+        val rawTabletUa = "Mozilla/5.0 (Linux; Android 15; Pixel Tablet Build/AP3A; wv) " +
+            "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/151.0.7900.42 Safari/537.36"
+
+        assertEquals("151" to "151.0.7900.42", BrowserSession.extractChromiumVersion(rawTabletUa))
+        assertEquals(
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+            BrowserSession.buildDesktopUserAgent(rawTabletUa)
+        )
+        assertNull(BrowserSession.extractChromiumVersion("CustomAgent/1.0"))
+        assertEquals(
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+            BrowserSession.buildDesktopUserAgent("CustomAgent/1.0")
+        )
+    }
+
+    @Test
+    fun userAgentMetadataReplacesAndroidWebViewAndSyncsDesktopClientHints() {
+        val rawTabletUa = "Mozilla/5.0 (Linux; Android 15; Pixel Tablet Build/AP3A; wv) " +
+            "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/151.0.7900.42 Safari/537.36"
+        val baseWebViewMetadata = UserAgentMetadata.Builder()
+            .setBrandVersionList(
+                listOf(
+                    UserAgentMetadata.BrandVersion.Builder()
+                        .setBrand("Not(A:Brand")
+                        .setMajorVersion("99")
+                        .setFullVersion("99.0.0.0")
+                        .build(),
+                    UserAgentMetadata.BrandVersion.Builder()
+                        .setBrand("Android WebView")
+                        .setMajorVersion("151")
+                        .setFullVersion("151.0.7900.42")
+                        .build(),
+                    UserAgentMetadata.BrandVersion.Builder()
+                        .setBrand("Chromium")
+                        .setMajorVersion("151")
+                        .setFullVersion("151.0.7900.42")
+                        .build()
+                )
+            )
+            .setFullVersion("151.0.7900.42")
+            .setPlatform("Android")
+            .setPlatformVersion("15.0.0")
+            .setArchitecture("")
+            .setModel("Pixel Tablet")
+            .setMobile(false)
+            .setBitness(UserAgentMetadata.BITNESS_DEFAULT)
+            .build()
+
+        val desktopMeta = BrowserSession.buildDesktopUserAgentMetadata(
+            rawUa = rawTabletUa,
+            baseMetadata = baseWebViewMetadata,
+            includeDesktopFormFactor = false
+        )
+        val desktopBrands = desktopMeta.brandVersionList.associateBy { it.brand }
+        assertFalse(desktopBrands.containsKey("Android WebView"))
+        assertEquals("151", desktopBrands["Google Chrome"]?.majorVersion)
+        assertEquals("151", desktopBrands["Chromium"]?.majorVersion)
+        assertEquals("99", desktopBrands["Not(A:Brand"]?.majorVersion)
+        assertEquals("Linux", desktopMeta.platform)
+        assertEquals("", desktopMeta.platformVersion)
+        assertEquals("x86", desktopMeta.architecture)
+        assertEquals(64, desktopMeta.bitness)
+        assertEquals("", desktopMeta.model)
+        assertFalse(desktopMeta.isMobile)
+        assertFalse(desktopMeta.isWow64)
+
+        val mobileMeta = BrowserSession.buildMobileUserAgentMetadata(
+            rawUa = rawTabletUa,
+            baseMetadata = baseWebViewMetadata
+        )!!
+        val mobileBrands = mobileMeta.brandVersionList.associateBy { it.brand }
+        assertFalse(mobileBrands.containsKey("Android WebView"))
+        assertEquals("151", mobileBrands["Google Chrome"]?.majorVersion)
+        assertTrue(mobileMeta.isMobile)
+    }
+
+    @Test
+    fun buildDesktopUserAgentMetadataFallsBackWhenBaseMetadataIsNull() {
+        val rawTabletUa = "Mozilla/5.0 (Linux; Android 15; Pixel Tablet) " +
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.1234.5 Safari/537.36"
+        val desktopMeta = BrowserSession.buildDesktopUserAgentMetadata(
+            rawUa = rawTabletUa,
+            baseMetadata = null,
+            includeDesktopFormFactor = false
+        )
+        val desktopBrands = desktopMeta.brandVersionList.associateBy { it.brand }
+        assertEquals("149", desktopBrands["Google Chrome"]?.majorVersion)
+        assertEquals("149.0.1234.5", desktopBrands["Google Chrome"]?.fullVersion)
+        assertEquals("149", desktopBrands["Chromium"]?.majorVersion)
+        assertEquals("Linux", desktopMeta.platform)
+        assertFalse(desktopMeta.isMobile)
     }
 }

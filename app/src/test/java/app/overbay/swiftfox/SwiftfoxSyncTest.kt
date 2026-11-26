@@ -5,6 +5,7 @@ import app.overbay.swiftfox.data.db.FilterListEntity
 import app.overbay.swiftfox.data.db.SiteOverrideEntity
 import app.overbay.swiftfox.data.db.SpaceEntity
 import app.overbay.swiftfox.data.db.SwiftfoxDatabase
+import app.overbay.swiftfox.data.db.TabEntity
 import app.overbay.swiftfox.data.db.UserscriptEntity
 import app.overbay.swiftfox.data.db.ZappedRuleEntity
 import app.overbay.swiftfox.data.prefs.AccentPreset
@@ -23,6 +24,7 @@ import app.overbay.swiftfox.data.prefs.ThemeMode
 import app.overbay.swiftfox.data.prefs.ToolbarPlacement
 import app.overbay.swiftfox.data.prefs.WebDarkModePreference
 import app.overbay.swiftfox.features.adblock.BuiltInFilterLists
+import app.overbay.swiftfox.features.sync.SwiftfoxBaselineItem
 import app.overbay.swiftfox.features.sync.SwiftfoxSyncBaseline
 import app.overbay.swiftfox.features.sync.SwiftfoxSyncCodec
 import app.overbay.swiftfox.features.sync.SwiftfoxSyncLocalStore
@@ -680,5 +682,290 @@ class SwiftfoxSyncTest {
 
         assertTrue(result is SwiftfoxSyncResult.KeysNotInitialized)
         assertFalse(mutated)
+    }
+
+    @Test
+    fun pinnedTabCodecRoundTripsAndRejectsUnsafeSchemes() {
+        val pin = TabEntity(
+            id = "pin_1",
+            spaceId = "space_work",
+            title = "Live Page Title",
+            url = "https://github.com/pulls",
+            isPrivate = false,
+            isPinned = true,
+            sortOrder = 2,
+            customIcon = "emoji:\uD83D\uDE80",
+            customTitle = "GitHub PRs",
+            pinnedUrl = "https://github.com/pulls?q=author",
+            isUnloaded = false
+        )
+        val encoded = SwiftfoxSyncCodec.encodePinnedTabRecord(pin, localOrder = 1, updatedAt = 5_000L)
+        val decoded = SwiftfoxSyncCodec.decodeRecord(SwiftfoxSyncCodec.pinnedTabBsoId(pin.id), encoded)
+        assertTrue(decoded is SwiftfoxSyncCodec.DecodedSwiftfoxRecord.PinnedTab)
+        val decodedPin = decoded as SwiftfoxSyncCodec.DecodedSwiftfoxRecord.PinnedTab
+        assertEquals("pin_1", decodedPin.entity.id)
+        assertEquals("space_work", decodedPin.entity.spaceId)
+        assertEquals("GitHub PRs", decodedPin.entity.customTitle)
+        assertEquals("https://github.com/pulls?q=author", decodedPin.entity.pinnedUrl)
+        assertEquals(1, decodedPin.entity.sortOrder)
+        assertEquals("emoji:\uD83D\uDE80", decodedPin.entity.customIcon)
+        assertTrue(decodedPin.entity.isPinned)
+        assertTrue(decodedPin.entity.isUnloaded)
+
+        // Unsafe URL scheme must be dropped safely
+        val unsafeRecord = SwiftfoxSyncCodec.encodePinnedTabRecord(
+            pin.copy(pinnedUrl = "javascript:alert(1)", url = "javascript:alert(1)"),
+            localOrder = 0,
+            updatedAt = 5_000L
+        )
+        assertNull(SwiftfoxSyncCodec.decodeRecord(SwiftfoxSyncCodec.pinnedTabBsoId(pin.id), unsafeRecord))
+    }
+
+    @Test
+    fun pinnedTabsTwoWaySyncMergesPreservesLiveStateAndTombstonesUnpins() {
+        val localSpace = SpaceEntity(id = "space_local", name = "Work", sortOrder = 0)
+        val localPinKeep = TabEntity(
+            id = "pin_keep",
+            spaceId = "space_local",
+            title = "Loaded Child Article",
+            url = "https://news.ycombinator.com/item?id=999",
+            isPrivate = false,
+            isPinned = true,
+            sortOrder = 0,
+            customIcon = "icon:star",
+            customTitle = "HN",
+            pinnedUrl = "https://news.ycombinator.com/",
+            isUnloaded = false,
+            lastAccessedAt = 100L
+        )
+        val localPinDropRemote = TabEntity(
+            id = "pin_drop_remote",
+            spaceId = "space_local",
+            title = "Temp Remote Pin",
+            url = "https://example.org",
+            isPrivate = false,
+            isPinned = true,
+            sortOrder = 1,
+            pinnedUrl = "https://example.org",
+            isUnloaded = true
+        )
+        val localPinUnpinnedLocally = TabEntity(
+            id = "pin_unpinned_local",
+            spaceId = "space_local",
+            title = "Unpinned Locally",
+            url = "https://example.net",
+            isPrivate = false,
+            isPinned = true,
+            sortOrder = 2,
+            pinnedUrl = "https://example.net",
+            isUnloaded = true
+        )
+        val remoteOnlyPin = TabEntity(
+            id = "pin_remote",
+            spaceId = "space_missing",
+            title = "Remote Docs",
+            url = "https://kotlinlang.org",
+            isPrivate = false,
+            isPinned = true,
+            sortOrder = 0,
+            pinnedUrl = "https://kotlinlang.org"
+        )
+        val remoteUpdatedKeep = localPinKeep.copy(
+            customTitle = "Hacker News Renamed",
+            title = "Hacker News Renamed",
+            pinnedUrl = "https://news.ycombinator.com/"
+        )
+
+        val baseline = SwiftfoxSyncBaseline(
+            hasCompletedInitialSync = true,
+            items = mapOf(
+                SwiftfoxSyncCodec.spaceBsoId(localSpace.id) to SwiftfoxBaselineItem(
+                    bsoId = SwiftfoxSyncCodec.spaceBsoId(localSpace.id),
+                    kind = SwiftfoxSyncCodec.KIND_SPACE,
+                    contentHash = SwiftfoxSyncCodec.spaceContentHash(localSpace, 0),
+                    updatedAt = 1_000L
+                ),
+                SwiftfoxSyncCodec.pinnedTabBsoId(localPinKeep.id) to SwiftfoxBaselineItem(
+                    bsoId = SwiftfoxSyncCodec.pinnedTabBsoId(localPinKeep.id),
+                    kind = SwiftfoxSyncCodec.KIND_PINNED_TAB,
+                    contentHash = SwiftfoxSyncCodec.pinnedTabContentHash(localPinKeep, 0),
+                    updatedAt = 1_000L
+                ),
+                SwiftfoxSyncCodec.pinnedTabBsoId(localPinDropRemote.id) to SwiftfoxBaselineItem(
+                    bsoId = SwiftfoxSyncCodec.pinnedTabBsoId(localPinDropRemote.id),
+                    kind = SwiftfoxSyncCodec.KIND_PINNED_TAB,
+                    contentHash = SwiftfoxSyncCodec.pinnedTabContentHash(localPinDropRemote, 1),
+                    updatedAt = 1_000L
+                ),
+                SwiftfoxSyncCodec.pinnedTabBsoId(localPinUnpinnedLocally.id) to SwiftfoxBaselineItem(
+                    bsoId = SwiftfoxSyncCodec.pinnedTabBsoId(localPinUnpinnedLocally.id),
+                    kind = SwiftfoxSyncCodec.KIND_PINNED_TAB,
+                    contentHash = SwiftfoxSyncCodec.pinnedTabContentHash(localPinUnpinnedLocally, 2),
+                    updatedAt = 1_000L
+                )
+            )
+        )
+
+        val remoteRecords = listOf(
+            SwiftfoxSyncCodec.spaceBsoId(localSpace.id) to SwiftfoxSyncCodec.encodeSpaceRecord(localSpace, 0, 1_000L),
+            SwiftfoxSyncCodec.pinnedTabBsoId(localPinKeep.id) to SwiftfoxSyncCodec.encodePinnedTabRecord(remoteUpdatedKeep, 0, 2_000L),
+            SwiftfoxSyncCodec.pinnedTabBsoId(remoteOnlyPin.id) to SwiftfoxSyncCodec.encodePinnedTabRecord(remoteOnlyPin, 1, 2_000L),
+            SwiftfoxSyncCodec.pinnedTabBsoId(localPinUnpinnedLocally.id) to SwiftfoxSyncCodec.encodePinnedTabRecord(localPinUnpinnedLocally, 2, 1_000L),
+            SwiftfoxSyncCodec.pinnedTabBsoId(localPinDropRemote.id) to SwiftfoxSyncCodec.encodeTombstone(
+                SwiftfoxSyncCodec.pinnedTabBsoId(localPinDropRemote.id),
+                SwiftfoxSyncCodec.KIND_PINNED_TAB,
+                2_000L
+            )
+        )
+
+        val snapshot = SwiftfoxSyncReconciler.LocalSnapshot(
+            settings = BrowserSettings(),
+            settingsUpdatedAtMs = 1_000L,
+            siteOverrides = emptyList(),
+            zappedRules = emptyList(),
+            filterLists = emptyList(),
+            userscripts = emptyList(),
+            localSpaces = listOf(localSpace),
+            zenSpacesCount = 0,
+            localEssentials = emptyList(),
+            zenEssentialsCount = 0,
+            localPinnedTabs = listOf(localPinKeep, localPinDropRemote),
+            zenSpaceIds = emptySet()
+        )
+
+        val plan = SwiftfoxSyncReconciler.buildPlan(
+            local = snapshot,
+            baseline = baseline,
+            remoteRawRecords = remoteRecords,
+            nowMs = 3_000L
+        )
+
+        // Remote deletion deletes pin_drop_remote locally
+        assertEquals(listOf("pin_drop_remote"), plan.pinnedTabsPlan.deleteIds)
+
+        // Local unpin pushes tombstone to remote
+        val outgoingUnpin = plan.outgoingBsos.firstOrNull {
+            it.first == SwiftfoxSyncCodec.pinnedTabBsoId(localPinUnpinnedLocally.id)
+        }?.second
+        assertTrue(outgoingUnpin?.get("deleted")?.toString() == "true")
+
+        // pin_keep preserves live loaded URL while picking up remote title;
+        // pin_remote falls back cleanly from missing space to surviving localSpace
+        val upsertsById = plan.pinnedTabsPlan.upserts.associateBy { it.id }
+        val syncedKeep = upsertsById.getValue("pin_keep")
+        assertEquals("Hacker News Renamed", syncedKeep.customTitle)
+        assertEquals("https://news.ycombinator.com/item?id=999", syncedKeep.url)
+        assertEquals(false, syncedKeep.isUnloaded)
+
+        val syncedRemote = upsertsById.getValue("pin_remote")
+        assertEquals("space_local", syncedRemote.spaceId)
+        assertEquals(true, syncedRemote.isUnloaded)
+    }
+
+    @Test
+    fun remappedPinnedTabFallbackSpaceNeverOverwritesRemoteSpaceOnSubsequentSyncs() {
+        val localSpace = SpaceEntity(id = "space_local", name = "Personal", sortOrder = 0)
+        val remotePin = TabEntity(
+            id = "pin_zen",
+            spaceId = "zen_workspace_1",
+            title = "Linear",
+            url = "https://linear.app",
+            isPrivate = false,
+            isPinned = true,
+            sortOrder = 0,
+            customTitle = "Linear",
+            pinnedUrl = "https://linear.app",
+            isUnloaded = true
+        )
+
+        val spaceBsoId = SwiftfoxSyncCodec.spaceBsoId(localSpace.id)
+        val pinBsoId = SwiftfoxSyncCodec.pinnedTabBsoId(remotePin.id)
+        val defaultSettings = BrowserSettings()
+        val remoteRecords = listOf(
+            SwiftfoxSyncCodec.SETTINGS_BSO_ID to SwiftfoxSyncCodec.encodeSettingsRecord(defaultSettings, 1_000L),
+            spaceBsoId to SwiftfoxSyncCodec.encodeSpaceRecord(localSpace, 0, 1_000L),
+            pinBsoId to SwiftfoxSyncCodec.encodePinnedTabRecord(remotePin, 0, 2_000L)
+        )
+        val initialBaseline = SwiftfoxSyncBaseline(
+            hasCompletedInitialSync = true,
+            items = mapOf(
+                SwiftfoxSyncCodec.SETTINGS_BSO_ID to SwiftfoxBaselineItem(
+                    bsoId = SwiftfoxSyncCodec.SETTINGS_BSO_ID,
+                    kind = SwiftfoxSyncCodec.KIND_SETTINGS,
+                    contentHash = SwiftfoxSyncCodec.settingsContentHash(defaultSettings),
+                    updatedAt = 1_000L
+                ),
+                spaceBsoId to SwiftfoxBaselineItem(
+                    bsoId = spaceBsoId,
+                    kind = SwiftfoxSyncCodec.KIND_SPACE,
+                    contentHash = SwiftfoxSyncCodec.spaceContentHash(localSpace, 0),
+                    updatedAt = 1_000L
+                )
+            )
+        )
+
+        fun snapshotWithPins(pins: List<TabEntity>) = SwiftfoxSyncReconciler.LocalSnapshot(
+            settings = BrowserSettings(),
+            settingsUpdatedAtMs = 1_000L,
+            siteOverrides = emptyList(),
+            zappedRules = emptyList(),
+            filterLists = emptyList(),
+            userscripts = emptyList(),
+            localSpaces = listOf(localSpace),
+            zenSpacesCount = 0,
+            localEssentials = emptyList(),
+            zenEssentialsCount = 0,
+            localPinnedTabs = pins,
+            zenSpaceIds = emptySet()
+        )
+
+        // Sync 1: missing zen_workspace_1 falls back locally to space_local while tracking localContentHash
+        val plan1 = SwiftfoxSyncReconciler.buildPlan(
+            local = snapshotWithPins(emptyList()),
+            baseline = initialBaseline,
+            remoteRawRecords = remoteRecords,
+            nowMs = 3_000L
+        )
+        val localPinInFallback = plan1.pinnedTabsPlan.upserts.single { it.id == "pin_zen" }
+        assertEquals("space_local", localPinInFallback.spaceId)
+        assertNotNull(plan1.nextBaseline.items[pinBsoId]?.localContentHash)
+
+        // Sync 2 & 3: unchanged local fallback tab must neither push space_local nor trigger re-pulls
+        val plan2 = SwiftfoxSyncReconciler.buildPlan(
+            local = snapshotWithPins(listOf(localPinInFallback)),
+            baseline = plan1.nextBaseline,
+            remoteRawRecords = remoteRecords,
+            nowMs = 4_000L
+        )
+        assertEquals(0, plan2.pulledCount)
+        assertEquals(0, plan2.pushedCount)
+        assertTrue(plan2.outgoingBsos.isEmpty())
+        assertTrue(plan2.pinnedTabsPlan.upserts.isEmpty())
+        assertEquals(
+            plan1.nextBaseline.items[pinBsoId]?.localContentHash,
+            plan2.nextBaseline.items[pinBsoId]?.localContentHash
+        )
+
+        val plan3 = SwiftfoxSyncReconciler.buildPlan(
+            local = snapshotWithPins(listOf(localPinInFallback)),
+            baseline = plan2.nextBaseline,
+            remoteRawRecords = remoteRecords,
+            nowMs = 5_000L
+        )
+        assertEquals(0, plan3.pulledCount)
+        assertEquals(0, plan3.pushedCount)
+        assertTrue(plan3.outgoingBsos.isEmpty())
+
+        // Sync 4: explicit local edit DOES push to remote
+        val editedLocally = localPinInFallback.copy(customTitle = "Linear Issues", title = "Linear Issues")
+        val plan4 = SwiftfoxSyncReconciler.buildPlan(
+            local = snapshotWithPins(listOf(editedLocally)),
+            baseline = plan3.nextBaseline,
+            remoteRawRecords = remoteRecords,
+            nowMs = 6_000L
+        )
+        assertEquals(1, plan4.pushedCount)
+        assertEquals(pinBsoId, plan4.outgoingBsos.single().first)
+        assertNull(plan4.nextBaseline.items[pinBsoId]?.localContentHash)
     }
 }

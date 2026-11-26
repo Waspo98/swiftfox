@@ -10,6 +10,7 @@
         <exclude domain="file" path="tabs.sqlite-wal" />
         <exclude domain="file" path="tabs.sqlite-shm" />
         <exclude domain="file" path="swiftfox_sync_baseline.json" />
+        <exclude domain="file" path="zen_spaces_pending_ops.json" />
         <exclude domain="root" path="app_webview" />
     </cloud-backup>
     <device-transfer>
@@ -22,6 +23,7 @@
         <exclude domain="file" path="tabs.sqlite-wal" />
         <exclude domain="file" path="tabs.sqlite-shm" />
         <exclude domain="file" path="swiftfox_sync_baseline.json" />
+        <exclude domain="file" path="zen_spaces_pending_ops.json" />
         <exclude domain="root" path="app_webview" />
     </device-transfer>
 </data-extraction-rules>

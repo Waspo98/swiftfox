@@ -24,13 +24,16 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -124,10 +127,12 @@ class MozillaSyncCoordinator(
     private val signOutMutex = Mutex()
     private val bookmarkMirrorMutex = Mutex()
     private val historyMirrorMutex = Mutex()
+    private val zenMutationMutex = Mutex()
     private val pendingDeletedBookmarkGuids: MutableSet<String> =
         java.util.concurrent.ConcurrentHashMap.newKeySet()
     private val sync15Transport = Sync15Transport(httpClientProvider)
     private val zenClient = Sync15SpacesClient(sync15Transport)
+    private val zenPendingOpsStore = ZenSpacesPendingOpsStore(context, sync15Transport.json)
     private val swiftfoxClient = Sync15SwiftfoxClient(
         context = context,
         db = db,
@@ -142,6 +147,16 @@ class MozillaSyncCoordinator(
     private val syncStartedFlag = AtomicBoolean(false)
     private val isSigningOut = AtomicBoolean(false)
     private val initialized = AtomicBoolean(false)
+    private val swiftfoxPushLock = Any()
+    private var swiftfoxPushJob: Job? = null
+    private var isSwiftfoxPushInFlight = false
+    private var swiftfoxPushRequestedAgain = false
+
+    @Volatile
+    private var lastForegroundSyncAtMs = 0L
+
+    @Volatile
+    private var lastKnownZenSpacesSyncEnabled = true
 
     @Volatile
     private var isOrchestratedSync = false
@@ -387,6 +402,10 @@ class MozillaSyncCoordinator(
                 accountManager = mgr
 
                 val settings = prefs.settingsFlow.first()
+                lastKnownZenSpacesSyncEnabled = settings.syncZenSpacesEnabled
+                if (!settings.syncZenSpacesEnabled) {
+                    zenPendingOpsStore.clear()
+                }
                 _status.update { it.copy(lastSyncAtMs = settings.syncLastTimestampMs) }
                 updateEnginePreferences(
                     bookmarks = settings.syncBookmarksEnabled,
@@ -416,6 +435,23 @@ class MozillaSyncCoordinator(
                 }
             } finally {
                 initComplete.complete(Unit)
+            }
+            scope.launch(Dispatchers.IO) {
+                var lastSeenRevision = prefs.localSettingsMutationRevision.value
+                prefs.localSettingsMutationRevision.collect { revision ->
+                    if (revision > lastSeenRevision) {
+                        lastSeenRevision = revision
+                        scheduleSwiftfoxPush()
+                    }
+                }
+            }
+            scope.launch(Dispatchers.IO) {
+                prefs.settingsFlow
+                    .map { it.syncZenSpacesEnabled }
+                    .distinctUntilChanged()
+                    .collect { enabled ->
+                        onZenSpacesSyncEnabledChanged(enabled)
+                    }
             }
         }
     }
@@ -620,103 +656,32 @@ class MozillaSyncCoordinator(
                     }
 
                     // 4. Sync Zen Browser Spaces & Essentials (isolated so transient Zen issues don't fail Firefox Sync)
-                    var zenNote: String? = null
-                    if (settings.syncZenSpacesEnabled) {
-                        try {
-                            val tokenInfo = account.getAccessToken(SCOPE_SYNC)
-                            val tokenUrl = account.getTokenServerEndpointURL()
-                            if (tokenInfo != null && tokenUrl != null && tokenInfo.key != null) {
-                                val syncAuth = tokenInfo.asSyncAuthInfo(tokenUrl)
-                                when (
-                                    val zenResult = zenClient.fetchZenSnapshot(
-                                        kid = syncAuth.kid,
-                                        fxaAccessToken = syncAuth.fxaAccessToken,
-                                        syncKeyBase64 = syncAuth.syncKey,
-                                        tokenServerUrl = syncAuth.tokenServerUrl
-                                    )
-                                ) {
-                                    is ZenFetchResult.Success -> {
-                                        val syncedSpaceCount = reconcileZenSnapshotIntoRoom(zenResult.snapshot)
-                                        prefs.setSyncZenSeparateEssentials(zenResult.snapshot.separateEssentials)
-                                        summaryParts += "$syncedSpaceCount Zen Spaces"
-                                        zenNote = if (zenResult.snapshot.normalTabsEnabled) {
-                                            "Synced Spaces, Essentials, pinned & normal Zen tabs"
-                                        } else {
-                                            "Synced Spaces, Essentials & pinned Zen tabs"
-                                        }
-                                    }
-                                    ZenFetchResult.CollectionAbsent -> {
-                                        zenNote = "Standard Firefox Sync active (no Zen Spaces found on account)"
-                                    }
-                                }
-                            } else {
-                                zenNote = "Could not obtain Sync key for Zen Spaces"
-                            }
-                        } catch (ce: CancellationException) {
-                            throw ce
-                        } catch (zenErr: Throwable) {
-                            zenNote = "Zen Spaces sync issue: ${zenErr.message ?: "error"}"
+                    val zenNote: String? = if (settings.syncZenSpacesEnabled) {
+                        val zenOutcome = syncZenSpacesSection(account)
+                        if (zenOutcome.syncedSpaceCount != null) {
+                            summaryParts += "${zenOutcome.syncedSpaceCount} Zen Spaces"
                         }
+                        zenOutcome.note
                     } else {
-                        zenNote = "Zen Spaces sync disabled"
+                        "Zen Spaces sync disabled"
                     }
 
-                    // 5. Sync Swiftfox-only client data (settings, site/zapper rules, filter lists, userscripts, local Spaces & Essentials)
-                    var swiftfoxNote: String? = null
-                    if (settings.syncSwiftfoxEnabled) {
-                        try {
-                            val tokenInfo = account.getAccessToken(SCOPE_SYNC)
-                            val tokenUrl = account.getTokenServerEndpointURL()
-                            if (tokenInfo != null && tokenUrl != null && tokenInfo.key != null) {
-                                val syncAuth = tokenInfo.asSyncAuthInfo(tokenUrl)
-                                when (
-                                    val sfResult = swiftfoxClient.sync(
-                                        kid = syncAuth.kid,
-                                        fxaAccessToken = syncAuth.fxaAccessToken,
-                                        syncKeyBase64 = syncAuth.syncKey,
-                                        tokenServerUrl = syncAuth.tokenServerUrl
-                                    )
-                                ) {
-                                    is SwiftfoxSyncResult.Success -> {
-                                        if (sfResult.localDataChanged) {
-                                            _swiftfoxDataRevision.update { it + 1L }
-                                        }
-                                        summaryParts += "Swiftfox data"
-                                        val baseNote = when {
-                                            sfResult.pulledCount == 0 && sfResult.pushedCount == 0 ->
-                                                "Swiftfox client data up to date"
-                                            else -> buildList {
-                                                if (sfResult.pulledCount > 0) add("pulled ${sfResult.pulledCount}")
-                                                if (sfResult.pushedCount > 0) add("pushed ${sfResult.pushedCount}")
-                                            }.joinToString(" · ", prefix = "Swiftfox sync: ")
-                                        }
-                                        swiftfoxNote = if (sfResult.skippedOversizedCount > 0) {
-                                            val itemLabel = if (sfResult.skippedOversizedCount == 1) "item" else "items"
-                                            "$baseNote (${sfResult.skippedOversizedCount} oversized $itemLabel skipped)"
-                                        } else {
-                                            baseNote
-                                        }
-                                    }
-                                    is SwiftfoxSyncResult.KeysNotInitialized -> {
-                                        swiftfoxNote = sfResult.message
-                                    }
-                                }
-                            } else {
-                                swiftfoxNote = "Could not obtain Sync key for Swiftfox data"
-                            }
-                        } catch (ce: CancellationException) {
-                            throw ce
-                        } catch (sfErr: Throwable) {
-                            if (subset.isEmpty() && !settings.syncZenSpacesEnabled) {
-                                throw sfErr
-                            }
-                            swiftfoxNote = "Swiftfox sync issue: ${sfErr.message ?: "error"}"
+                    // 5. Sync Swiftfox-only client data (settings, site/zapper rules, filter lists, userscripts, local Spaces, Essentials & pinned tabs)
+                    val swiftfoxNote: String? = if (settings.syncSwiftfoxEnabled) {
+                        val sfOutcome = syncSwiftfoxSection(
+                            account = account,
+                            rethrowOnError = (subset.isEmpty() && !settings.syncZenSpacesEnabled)
+                        )
+                        if (sfOutcome.succeeded) {
+                            summaryParts += "Swiftfox data"
                         }
+                        sfOutcome.note
                     } else {
-                        swiftfoxNote = "Swiftfox client sync disabled"
+                        "Swiftfox client sync disabled"
                     }
 
                     val now = System.currentTimeMillis()
+                    lastForegroundSyncAtMs = now
                     prefs.setSyncLastTimestampMs(now)
                     val summary = if (summaryParts.isEmpty()) {
                         "Sync complete"
@@ -925,6 +890,12 @@ class MozillaSyncCoordinator(
                         isSigningOut.set(true)
                         try {
                             authGeneration.incrementAndGet()
+                            synchronized(swiftfoxPushLock) {
+                                swiftfoxPushRequestedAgain = false
+                                swiftfoxPushJob?.cancel()
+                                swiftfoxPushJob = null
+                            }
+                            lastForegroundSyncAtMs = 0L
                             pendingDeletedBookmarkGuids.clear()
                             runCatching { accountManager?.logout() }
                             SwiftfoxSyncWorker.cancel(context)
@@ -988,6 +959,7 @@ class MozillaSyncCoordinator(
                             prefs.setSyncZenSeparateEssentials(null)
                             prefs.setSyncHasConnectedAccount(false)
                             swiftfoxClient.clearBaseline()
+                            zenPendingOpsStore.clear()
                             zenClient.invalidateAuthCache()
                             clearIsolatedFxAAuthProfile()
 
@@ -1026,6 +998,381 @@ class MozillaSyncCoordinator(
                 throw ce
             } catch (_: Throwable) {
                 // Best-effort cleanup of isolated auth profile
+            }
+        }
+    }
+
+    /**
+     * Schedules a debounced background push (via two-way `swiftfox` collection sync) whenever
+     * local synced settings, Essentials, local pinned tabs, or local Spaces change.
+     */
+    fun scheduleSwiftfoxPush(debounceMs: Long = SWIFTFOX_PUSH_DEBOUNCE_MS) {
+        if (isSigningOut.get()) return
+        val mgr = accountManager ?: return
+        if (mgr.connectedAccount() == null || mgr.accountNeedsReauth()) return
+        val gen = authGeneration.get()
+        synchronized(swiftfoxPushLock) {
+            if (isSwiftfoxPushInFlight) {
+                swiftfoxPushRequestedAgain = true
+                return
+            }
+            swiftfoxPushJob?.cancel()
+            launchSwiftfoxPushLocked(debounceMs = debounceMs, gen = gen)
+        }
+    }
+
+    /**
+     * Battery-mindful foreground pull for lightweight Zen Spaces & Swiftfox data:
+     * runs at most once per [FOREGROUND_SYNC_COOLDOWN_MS] when app resumes to foreground
+     * and auto-sync interval is enabled (> 0), without waking Firefox Places/WorkManager engines.
+     */
+    fun syncSwiftfoxAndZenOnForegroundIfDue() {
+        if (isSigningOut.get()) return
+        scope.launch(Dispatchers.IO) {
+            val preSettings = prefs.settingsFlow.first()
+            if (!preSettings.syncHasConnectedAccount && !hasPersistedAccountHint()) return@launch
+            if (preSettings.syncPeriodicIntervalMinutes <= 0) return@launch
+            if (!preSettings.syncZenSpacesEnabled && !preSettings.syncSwiftfoxEnabled) return@launch
+
+            val nowBeforeLock = System.currentTimeMillis()
+            val lastBeforeLock = maxOf(lastForegroundSyncAtMs, preSettings.syncLastTimestampMs)
+            if (nowBeforeLock - lastBeforeLock < FOREGROUND_SYNC_COOLDOWN_MS) return@launch
+
+            awaitInitialized()
+            val mgr = accountManager ?: return@launch
+            if (isSigningOut.get() || mgr.accountNeedsReauth()) return@launch
+            if (mgr.connectedAccount() == null) return@launch
+
+            syncMutex.withLock {
+                if (isSigningOut.get() || mgr.accountNeedsReauth()) return@withLock
+                val account = mgr.connectedAccount() ?: return@withLock
+                val settings = prefs.settingsFlow.first()
+                if (settings.syncPeriodicIntervalMinutes <= 0) return@withLock
+                if (!settings.syncZenSpacesEnabled && !settings.syncSwiftfoxEnabled) return@withLock
+
+                val nowMs = System.currentTimeMillis()
+                val latestCheckMs = maxOf(lastForegroundSyncAtMs, settings.syncLastTimestampMs)
+                if (nowMs - latestCheckMs < FOREGROUND_SYNC_COOLDOWN_MS) return@withLock
+
+                var zenNote: String? = null
+                var swiftfoxNote: String? = null
+                var checkedNetwork = false
+                if (settings.syncZenSpacesEnabled) {
+                    val outcome = syncZenSpacesSection(account)
+                    zenNote = outcome.note
+                    if (outcome.networkCompleted) checkedNetwork = true
+                }
+                if (settings.syncSwiftfoxEnabled) {
+                    val outcome = syncSwiftfoxSection(account, rethrowOnError = false)
+                    swiftfoxNote = outcome.note
+                    if (outcome.networkCompleted) checkedNetwork = true
+                }
+                if (checkedNetwork) {
+                    lastForegroundSyncAtMs = System.currentTimeMillis()
+                    _status.update { current ->
+                        current.copy(
+                            zenStatusNote = zenNote ?: current.zenStatusNote,
+                            swiftfoxStatusNote = swiftfoxNote ?: current.swiftfoxStatusNote
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private fun launchSwiftfoxPushLocked(debounceMs: Long, gen: Long) {
+        swiftfoxPushJob = scope.launch(Dispatchers.IO) {
+            if (debounceMs > 0L) delay(debounceMs)
+            val proceed = synchronized(swiftfoxPushLock) {
+                if (authGeneration.get() != gen || isSigningOut.get()) {
+                    false
+                } else {
+                    isSwiftfoxPushInFlight = true
+                    swiftfoxPushRequestedAgain = false
+                    true
+                }
+            }
+            if (!proceed) return@launch
+            try {
+                pushSwiftfoxNowIfEligible(expectedAuthGeneration = gen)
+            } finally {
+                synchronized(swiftfoxPushLock) {
+                    isSwiftfoxPushInFlight = false
+                    if (swiftfoxPushRequestedAgain &&
+                        !isSigningOut.get() &&
+                        accountManager?.connectedAccount() != null &&
+                        accountManager?.accountNeedsReauth() != true
+                    ) {
+                        swiftfoxPushRequestedAgain = false
+                        launchSwiftfoxPushLocked(
+                            debounceMs = SWIFTFOX_PUSH_DEBOUNCE_MS,
+                            gen = authGeneration.get()
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private suspend fun pushSwiftfoxNowIfEligible(expectedAuthGeneration: Long) {
+        syncMutex.withLock {
+            if (authGeneration.get() != expectedAuthGeneration || isSigningOut.get()) return@withLock
+            val mgr = accountManager ?: return@withLock
+            if (mgr.accountNeedsReauth()) return@withLock
+            val account = mgr.connectedAccount() ?: return@withLock
+            val settings = prefs.settingsFlow.first()
+            if (!settings.syncSwiftfoxEnabled) return@withLock
+
+            val outcome = syncSwiftfoxSection(account, rethrowOnError = false)
+            if (outcome.note != null) {
+                _status.update { it.copy(swiftfoxStatusNote = outcome.note) }
+            }
+        }
+    }
+
+    private data class ZenSectionOutcome(
+        val syncedSpaceCount: Int?,
+        val note: String,
+        val networkCompleted: Boolean
+    )
+
+    private data class SwiftfoxSectionOutcome(
+        val note: String?,
+        val succeeded: Boolean,
+        val networkCompleted: Boolean
+    )
+
+    private suspend fun syncZenSpacesSection(account: OAuthAccount): ZenSectionOutcome {
+        return try {
+            val tokenInfo = account.getAccessToken(SCOPE_SYNC)
+            val tokenUrl = account.getTokenServerEndpointURL()
+            if (tokenInfo != null && tokenUrl != null && tokenInfo.key != null) {
+                val syncAuth = tokenInfo.asSyncAuthInfo(tokenUrl)
+                var pushedZenOpsCount = 0
+                var deferredByNewLocalEdit = false
+                val zenResult = zenMutationMutex.withLock {
+                    val pendingOps = zenPendingOpsStore.snapshotPending()
+                    if (pendingOps.isNotEmpty()) {
+                        pushedZenOpsCount = zenClient.applyPendingMutations(
+                            kid = syncAuth.kid,
+                            fxaAccessToken = syncAuth.fxaAccessToken,
+                            syncKeyBase64 = syncAuth.syncKey,
+                            tokenServerUrl = syncAuth.tokenServerUrl,
+                            ops = pendingOps
+                        ).getOrThrow()
+                        zenPendingOpsStore.removeApplied(pendingOps)
+                    }
+                    val fetched = zenClient.fetchZenSnapshot(
+                        kid = syncAuth.kid,
+                        fxaAccessToken = syncAuth.fxaAccessToken,
+                        syncKeyBase64 = syncAuth.syncKey,
+                        tokenServerUrl = syncAuth.tokenServerUrl
+                    )
+                    if (fetched is ZenFetchResult.Success && zenPendingOpsStore.hasPending()) {
+                        deferredByNewLocalEdit = true
+                    }
+                    fetched
+                }
+                when (zenResult) {
+                    is ZenFetchResult.Success -> {
+                        val syncedSpaceCount = if (deferredByNewLocalEdit) {
+                            prefs.setSyncZenSeparateEssentials(zenResult.snapshot.separateEssentials)
+                            db.spaceDao().getAll().count { !it.syncGuid.isNullOrBlank() }
+                        } else {
+                            val count = reconcileZenSnapshotIntoRoom(zenResult.snapshot)
+                            prefs.setSyncZenSeparateEssentials(zenResult.snapshot.separateEssentials)
+                            count
+                        }
+                        val baseZenNote = if (zenResult.snapshot.normalTabsEnabled) {
+                            "Synced Spaces, Essentials, pinned & normal Zen tabs"
+                        } else {
+                            "Synced Spaces, Essentials & pinned Zen tabs"
+                        }
+                        val note = if (pushedZenOpsCount > 0) {
+                            "$baseZenNote (pushed local edits)"
+                        } else {
+                            baseZenNote
+                        }
+                        ZenSectionOutcome(syncedSpaceCount = syncedSpaceCount, note = note, networkCompleted = true)
+                    }
+                    ZenFetchResult.CollectionAbsent -> {
+                        ZenSectionOutcome(
+                            syncedSpaceCount = null,
+                            note = "Standard Firefox Sync active (no Zen Spaces found on account)",
+                            networkCompleted = true
+                        )
+                    }
+                }
+            } else {
+                ZenSectionOutcome(
+                    syncedSpaceCount = null,
+                    note = "Could not obtain Sync key for Zen Spaces",
+                    networkCompleted = false
+                )
+            }
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (zenErr: Throwable) {
+            ZenSectionOutcome(
+                syncedSpaceCount = null,
+                note = "Zen Spaces sync issue: ${zenErr.message ?: "error"}",
+                networkCompleted = false
+            )
+        }
+    }
+
+    private suspend fun syncSwiftfoxSection(
+        account: OAuthAccount,
+        rethrowOnError: Boolean
+    ): SwiftfoxSectionOutcome {
+        return try {
+            val tokenInfo = account.getAccessToken(SCOPE_SYNC)
+            val tokenUrl = account.getTokenServerEndpointURL()
+            if (tokenInfo != null && tokenUrl != null && tokenInfo.key != null) {
+                val syncAuth = tokenInfo.asSyncAuthInfo(tokenUrl)
+                when (
+                    val sfResult = swiftfoxClient.sync(
+                        kid = syncAuth.kid,
+                        fxaAccessToken = syncAuth.fxaAccessToken,
+                        syncKeyBase64 = syncAuth.syncKey,
+                        tokenServerUrl = syncAuth.tokenServerUrl
+                    )
+                ) {
+                    is SwiftfoxSyncResult.Success -> {
+                        if (sfResult.localDataChanged) {
+                            _swiftfoxDataRevision.update { it + 1L }
+                        }
+                        SwiftfoxSectionOutcome(
+                            note = formatSwiftfoxResultNote(sfResult),
+                            succeeded = true,
+                            networkCompleted = true
+                        )
+                    }
+                    is SwiftfoxSyncResult.KeysNotInitialized -> {
+                        SwiftfoxSectionOutcome(
+                            note = sfResult.message,
+                            succeeded = false,
+                            networkCompleted = true
+                        )
+                    }
+                }
+            } else {
+                SwiftfoxSectionOutcome(
+                    note = "Could not obtain Sync key for Swiftfox data",
+                    succeeded = false,
+                    networkCompleted = false
+                )
+            }
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (sfErr: Throwable) {
+            if (rethrowOnError) throw sfErr
+            SwiftfoxSectionOutcome(
+                note = "Swiftfox sync issue: ${sfErr.message ?: "error"}",
+                succeeded = false,
+                networkCompleted = false
+            )
+        }
+    }
+
+    private fun formatSwiftfoxResultNote(sfResult: SwiftfoxSyncResult.Success): String {
+        val baseNote = when {
+            sfResult.pulledCount == 0 && sfResult.pushedCount == 0 ->
+                "Swiftfox client data up to date"
+            else -> buildList {
+                if (sfResult.pulledCount > 0) add("pulled ${sfResult.pulledCount}")
+                if (sfResult.pushedCount > 0) add("pushed ${sfResult.pushedCount}")
+            }.joinToString(" · ", prefix = "Swiftfox sync: ")
+        }
+        return if (sfResult.skippedOversizedCount > 0) {
+            val itemLabel = if (sfResult.skippedOversizedCount == 1) "item" else "items"
+            "$baseNote (${sfResult.skippedOversizedCount} oversized $itemLabel skipped)"
+        } else {
+            baseNote
+        }
+    }
+
+    fun mirrorZenPinnedUpdated(item: ZenPinnedItemEntity) {
+        val tabId = ZenSpacesCodec.extractTabId(item.id, item.zenWorkspaceUuid) ?: return
+        enqueueZenOpAndFlushAsync(
+            ZenSpacesCodec.ZenPendingOp.UpdatePin(
+                workspaceUuid = item.zenWorkspaceUuid,
+                tabId = tabId,
+                title = item.title,
+                url = item.url,
+                updatedAtMs = System.currentTimeMillis()
+            )
+        )
+    }
+
+    fun mirrorZenPinnedDeleted(item: ZenPinnedItemEntity) {
+        val tabId = ZenSpacesCodec.extractTabId(item.id, item.zenWorkspaceUuid) ?: return
+        enqueueZenOpAndFlushAsync(
+            ZenSpacesCodec.ZenPendingOp.DeletePin(
+                workspaceUuid = item.zenWorkspaceUuid,
+                tabId = tabId,
+                updatedAtMs = System.currentTimeMillis()
+            )
+        )
+    }
+
+    fun mirrorZenPinnedReordered(workspaceUuid: String, orderedItems: List<ZenPinnedItemEntity>) {
+        if (workspaceUuid.isBlank()) return
+        val orderedTabIds = orderedItems.mapNotNull { item ->
+            if (item.zenWorkspaceUuid != workspaceUuid) null
+            else ZenSpacesCodec.extractTabId(item.id, workspaceUuid)
+        }
+        if (orderedTabIds.size < 2) return
+        enqueueZenOpAndFlushAsync(
+            ZenSpacesCodec.ZenPendingOp.ReorderPins(
+                workspaceUuid = workspaceUuid,
+                orderedTabIds = orderedTabIds,
+                updatedAtMs = System.currentTimeMillis()
+            )
+        )
+    }
+
+    fun onZenSpacesSyncEnabledChanged(enabled: Boolean) {
+        lastKnownZenSpacesSyncEnabled = enabled
+        if (!enabled) {
+            scope.launch(Dispatchers.IO) {
+                zenPendingOpsStore.clear()
+            }
+        }
+    }
+
+    private fun enqueueZenOpAndFlushAsync(op: ZenSpacesCodec.ZenPendingOp) {
+        if (accountManager?.connectedAccount() == null) return
+        if (!lastKnownZenSpacesSyncEnabled) return
+        val gen = authGeneration.get()
+        zenPendingOpsStore.enqueueBuffered(op)
+        scope.launch(Dispatchers.IO) {
+            val settings = prefs.settingsFlow.first()
+            lastKnownZenSpacesSyncEnabled = settings.syncZenSpacesEnabled
+            if (!settings.syncZenSpacesEnabled) {
+                zenPendingOpsStore.clear()
+                return@launch
+            }
+            zenPendingOpsStore.persistPendingToDisk()
+            zenMutationMutex.withLock {
+                if (authGeneration.get() != gen || !lastKnownZenSpacesSyncEnabled) return@withLock
+                val account = accountManager?.connectedAccount() ?: return@withLock
+                val pendingOps = zenPendingOpsStore.snapshotPending()
+                if (pendingOps.isEmpty()) return@withLock
+                runCatching {
+                    val tokenInfo = account.getAccessToken(SCOPE_SYNC) ?: return@runCatching
+                    val tokenUrl = account.getTokenServerEndpointURL() ?: return@runCatching
+                    if (tokenInfo.key == null) return@runCatching
+                    val syncAuth = tokenInfo.asSyncAuthInfo(tokenUrl)
+                    zenClient.applyPendingMutations(
+                        kid = syncAuth.kid,
+                        fxaAccessToken = syncAuth.fxaAccessToken,
+                        syncKeyBase64 = syncAuth.syncKey,
+                        tokenServerUrl = syncAuth.tokenServerUrl,
+                        ops = pendingOps
+                    ).getOrThrow()
+                    zenPendingOpsStore.removeApplied(pendingOps)
+                }
             }
         }
     }
@@ -1817,6 +2164,8 @@ class MozillaSyncCoordinator(
         const val FXA_AUTH_PROFILE_NAME = "swiftfox_fxa_auth"
         private const val MOZILLA_IMMEDIATE_WORK_NAME = "Immediate"
         private const val SYNC_WAIT_TIMEOUT_MS = 60_000L
+        private const val SWIFTFOX_PUSH_DEBOUNCE_MS = 1_500L
+        private const val FOREGROUND_SYNC_COOLDOWN_MS = 120_000L
 
         fun isValidPairingUrl(rawUrl: String): Boolean {
             val trimmed = rawUrl.trim()

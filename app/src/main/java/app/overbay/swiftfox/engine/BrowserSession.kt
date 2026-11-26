@@ -25,6 +25,7 @@ import android.webkit.WebViewClient
 import androidx.webkit.Profile
 import androidx.webkit.ProfileStore
 import androidx.webkit.ScriptHandler
+import androidx.webkit.UserAgentMetadata
 import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
@@ -305,7 +306,10 @@ class BrowserSession(
         mediaTokenProvider = { tokens.mediaToken },
         isPrivate = isPrivate
     )
+    private val rawDefaultUserAgent: String
     private val defaultMobileUserAgent: String
+    private val desktopUserAgent: String
+    private val defaultUserAgentMetadata: UserAgentMetadata?
     private val documentStartHandlers = mutableListOf<ScriptHandler>()
     private var touchScrollGateHandler: ScriptHandler? = null
     private var mobileViewportHandler: ScriptHandler? = null
@@ -350,7 +354,14 @@ class BrowserSession(
 
     init {
         configureProfile()
-        defaultMobileUserAgent = sanitizeMobileUserAgent(webView.settings.userAgentString)
+        rawDefaultUserAgent = runCatching { webView.settings.userAgentString }.getOrDefault("")
+        defaultMobileUserAgent = sanitizeMobileUserAgent(rawDefaultUserAgent)
+        desktopUserAgent = buildDesktopUserAgent(rawDefaultUserAgent)
+        defaultUserAgentMetadata = if (WebViewFeature.isFeatureSupported(WebViewFeature.USER_AGENT_METADATA)) {
+            runCatching { WebSettingsCompat.getUserAgentMetadata(webView.settings) }.getOrNull()
+        } else {
+            null
+        }
         configureSettings()
         if (forceMobileViewport) {
             mobileViewportHandler = ScriptInjector.registerGlobalMobileViewportScript(webView)
@@ -420,7 +431,6 @@ class BrowserSession(
         webView.overScrollMode = View.OVER_SCROLL_ALWAYS
 
         webView.settings.apply {
-            userAgentString = defaultMobileUserAgent
             javaScriptEnabled = true
             domStorageEnabled = true
             builtInZoomControls = true
@@ -438,6 +448,7 @@ class BrowserSession(
                 cacheMode = WebSettings.LOAD_NO_CACHE
             }
         }
+        applyUserAgentAndClientHints(mode = SiteMode.MOBILE, customUserAgent = null)
 
         // Dark Reader is the single web darkening engine; keep Chromium algorithmic darkening off
         // so Android WebView never double-darkens or overrides Appearance & Theme settings.
@@ -796,14 +807,10 @@ class BrowserSession(
 
         webView.settings.apply {
             javaScriptEnabled = javascriptEnabled
-            userAgentString = when {
-                normalizedCustomUa != null -> normalizedCustomUa
-                effectiveMode == SiteMode.DESKTOP -> DESKTOP_USER_AGENT
-                else -> defaultMobileUserAgent
-            }
             useWideViewPort = true
             loadWithOverviewMode = !forceMobileViewport
         }
+        applyUserAgentAndClientHints(mode = effectiveMode, customUserAgent = normalizedCustomUa)
 
         runCatching {
             val cm = cookieManagerForProfile()
@@ -828,6 +835,34 @@ class BrowserSession(
             return true
         }
         return false
+    }
+
+    private fun applyUserAgentAndClientHints(mode: SiteMode, customUserAgent: String?) {
+        webView.settings.userAgentString = when {
+            customUserAgent != null -> customUserAgent
+            mode == SiteMode.DESKTOP -> desktopUserAgent
+            else -> defaultMobileUserAgent
+        }
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.USER_AGENT_METADATA)) return
+        val metadata = when {
+            customUserAgent != null -> defaultUserAgentMetadata
+            mode == SiteMode.DESKTOP -> buildDesktopUserAgentMetadata(
+                rawUa = rawDefaultUserAgent,
+                baseMetadata = defaultUserAgentMetadata,
+                includeDesktopFormFactor = WebViewFeature.isFeatureSupported(
+                    WebViewFeature.USER_AGENT_METADATA_FORM_FACTORS
+                )
+            )
+            else -> buildMobileUserAgentMetadata(
+                rawUa = rawDefaultUserAgent,
+                baseMetadata = defaultUserAgentMetadata
+            )
+        }
+        if (metadata != null) {
+            runCatching {
+                WebSettingsCompat.setUserAgentMetadata(webView.settings, metadata)
+            }
+        }
     }
 
     private fun disableAlgorithmicDarkening() {
@@ -1127,8 +1162,8 @@ class BrowserSession(
         private const val LARGE_BRIDGE_MESSAGE_CHARS = 65_536
         private const val BLOB_PENDING_TTL_MS = 60_000L
         private const val MAX_CACHED_ORIGINS_PER_TAB = 16
-        private const val DESKTOP_USER_AGENT =
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+        private const val FALLBACK_DESKTOP_CHROME_MAJOR = "136"
+        private val CHROME_VERSION_REGEX = Regex("""\bChrome/(\d+)((?:\.\d+)*)""")
         private val WEBVIEW_WV_TOKEN_REGEX = Regex(""";\s*wv\b""", RegexOption.IGNORE_CASE)
         private val WEBVIEW_VERSION_TOKEN_REGEX = Regex("""\bVersion/\d+(?:\.\d+)*\s+""", RegexOption.IGNORE_CASE)
         private val MOBILE_UA_TOKEN_REGEX = Regex("""\bMobile\b""", RegexOption.IGNORE_CASE)
@@ -1137,6 +1172,155 @@ class BrowserSession(
             '0', '1', '2', '3', '4', '5', '6', '7',
             '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'
         )
+
+        internal fun extractChromiumVersion(rawUa: String): Pair<String, String>? {
+            val match = CHROME_VERSION_REGEX.find(rawUa) ?: return null
+            val major = match.groupValues[1].takeIf { it.isNotBlank() } ?: return null
+            val suffix = match.groupValues[2]
+            val full = if (suffix.isNotEmpty()) "$major$suffix" else "$major.0.0.0"
+            return major to full
+        }
+
+        internal fun buildDesktopUserAgent(rawUa: String): String {
+            val major = extractChromiumVersion(rawUa)?.first ?: FALLBACK_DESKTOP_CHROME_MAJOR
+            return "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/$major.0.0.0 Safari/537.36"
+        }
+
+        internal fun buildNormalizedBrandVersions(
+            baseBrands: List<UserAgentMetadata.BrandVersion>,
+            majorVersion: String,
+            fullVersion: String
+        ): List<UserAgentMetadata.BrandVersion> {
+            val result = mutableListOf<UserAgentMetadata.BrandVersion>()
+            var hasChromium = false
+            var hasChrome = false
+            var hasGrease = false
+
+            for (bv in baseBrands) {
+                val brand = bv.brand
+                when {
+                    brand.equals("Android WebView", ignoreCase = true) -> {
+                        if (!hasChrome) {
+                            result += UserAgentMetadata.BrandVersion.Builder()
+                                .setBrand("Google Chrome")
+                                .setMajorVersion(majorVersion)
+                                .setFullVersion(fullVersion)
+                                .build()
+                            hasChrome = true
+                        }
+                    }
+                    brand.equals("Google Chrome", ignoreCase = true) -> {
+                        if (!hasChrome) {
+                            result += UserAgentMetadata.BrandVersion.Builder()
+                                .setBrand("Google Chrome")
+                                .setMajorVersion(majorVersion)
+                                .setFullVersion(fullVersion)
+                                .build()
+                            hasChrome = true
+                        }
+                    }
+                    brand.equals("Chromium", ignoreCase = true) -> {
+                        if (!hasChromium) {
+                            result += UserAgentMetadata.BrandVersion.Builder()
+                                .setBrand("Chromium")
+                                .setMajorVersion(majorVersion)
+                                .setFullVersion(fullVersion)
+                                .build()
+                            hasChromium = true
+                        }
+                    }
+                    else -> {
+                        hasGrease = true
+                        result += bv
+                    }
+                }
+            }
+            if (!hasGrease) {
+                result += UserAgentMetadata.BrandVersion.Builder()
+                    .setBrand("Not_A Brand")
+                    .setMajorVersion("24")
+                    .setFullVersion("24.0.0.0")
+                    .build()
+            }
+            if (!hasChromium) {
+                result += UserAgentMetadata.BrandVersion.Builder()
+                    .setBrand("Chromium")
+                    .setMajorVersion(majorVersion)
+                    .setFullVersion(fullVersion)
+                    .build()
+            }
+            if (!hasChrome) {
+                result += UserAgentMetadata.BrandVersion.Builder()
+                    .setBrand("Google Chrome")
+                    .setMajorVersion(majorVersion)
+                    .setFullVersion(fullVersion)
+                    .build()
+            }
+            return result
+        }
+
+        internal fun buildDesktopUserAgentMetadata(
+            rawUa: String,
+            baseMetadata: UserAgentMetadata?,
+            includeDesktopFormFactor: Boolean
+        ): UserAgentMetadata {
+            val (majorVer, fullVer) = resolveChromiumVersionPair(rawUa, baseMetadata)
+            val builder = if (baseMetadata != null) {
+                UserAgentMetadata.Builder(baseMetadata)
+            } else {
+                UserAgentMetadata.Builder()
+            }
+            builder
+                .setBrandVersionList(
+                    buildNormalizedBrandVersions(
+                        baseBrands = baseMetadata?.brandVersionList.orEmpty(),
+                        majorVersion = majorVer,
+                        fullVersion = fullVer
+                    )
+                )
+                .setFullVersion(fullVer)
+                .setPlatform("Linux")
+                .setPlatformVersion("")
+                .setArchitecture("x86")
+                .setBitness(64)
+                .setModel("")
+                .setMobile(false)
+                .setWow64(false)
+            if (includeDesktopFormFactor) {
+                builder.setFormFactors(listOf(UserAgentMetadata.FORM_FACTOR_DESKTOP))
+            }
+            return builder.build()
+        }
+
+        internal fun buildMobileUserAgentMetadata(
+            rawUa: String,
+            baseMetadata: UserAgentMetadata?
+        ): UserAgentMetadata? {
+            if (baseMetadata == null) return null
+            val (majorVer, fullVer) = resolveChromiumVersionPair(rawUa, baseMetadata)
+            return UserAgentMetadata.Builder(baseMetadata)
+                .setBrandVersionList(
+                    buildNormalizedBrandVersions(
+                        baseBrands = baseMetadata.brandVersionList,
+                        majorVersion = majorVer,
+                        fullVersion = fullVer
+                    )
+                )
+                .setFullVersion(fullVer)
+                .setMobile(true)
+                .build()
+        }
+
+        private fun resolveChromiumVersionPair(
+            rawUa: String,
+            baseMetadata: UserAgentMetadata?
+        ): Pair<String, String> {
+            val (uaMajor, uaFull) = extractChromiumVersion(rawUa)
+                ?: (FALLBACK_DESKTOP_CHROME_MAJOR to "$FALLBACK_DESKTOP_CHROME_MAJOR.0.0.0")
+            val fullVer = baseMetadata?.fullVersion?.takeIf { it.isNotBlank() } ?: uaFull
+            val majorVer = fullVer.substringBefore('.').takeIf { it.isNotBlank() } ?: uaMajor
+            return majorVer to fullVer
+        }
 
         /**
          * Strips Android WebView's `; wv` and `Version/4.0` markers and preserves a standard

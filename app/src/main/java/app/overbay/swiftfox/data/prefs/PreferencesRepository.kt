@@ -13,9 +13,13 @@ import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.update
 import java.io.IOException
 
 private val Context.swiftfoxDataStore: DataStore<Preferences> by preferencesDataStore(
@@ -171,11 +175,15 @@ class PreferencesRepository(private val context: Context) {
         }
         .distinctUntilChanged()
 
+    private val _localSettingsMutationRevision = MutableStateFlow(0L)
+    val localSettingsMutationRevision: StateFlow<Long> = _localSettingsMutationRevision.asStateFlow()
+
     private suspend inline fun editSyncedPref(crossinline block: (MutablePreferences) -> Unit) {
         context.swiftfoxDataStore.edit {
             block(it)
             it[Keys.SWIFTFOX_SETTINGS_UPDATED_AT] = System.currentTimeMillis()
         }
+        _localSettingsMutationRevision.update { it + 1L }
     }
 
     suspend fun setThemeMode(mode: ThemeMode) {

@@ -4,6 +4,7 @@ import app.overbay.swiftfox.data.db.EssentialEntity
 import app.overbay.swiftfox.data.db.FilterListEntity
 import app.overbay.swiftfox.data.db.SiteOverrideEntity
 import app.overbay.swiftfox.data.db.SpaceEntity
+import app.overbay.swiftfox.data.db.TabEntity
 import app.overbay.swiftfox.data.db.UserscriptEntity
 import app.overbay.swiftfox.data.db.ZappedRuleEntity
 import app.overbay.swiftfox.data.prefs.AccentPreset
@@ -66,6 +67,7 @@ object SwiftfoxSyncCodec {
     const val KIND_USERSCRIPT = "userscript"
     const val KIND_SPACE = "space"
     const val KIND_ESSENTIAL = "essential"
+    const val KIND_PINNED_TAB = "pinned_tab"
 
     private const val GZIP_THRESHOLD_BYTES = 16 * 1024
     const val MAX_USERSCRIPT_BYTES = 2 * 1024 * 1024
@@ -135,6 +137,14 @@ object SwiftfoxSyncCodec {
             val entity: EssentialEntity,
             val localOrder: Int
         ) : DecodedSwiftfoxRecord()
+
+        data class PinnedTab(
+            override val bsoId: String,
+            val updatedAt: Long,
+            val contentHash: String,
+            val entity: TabEntity,
+            val localOrder: Int
+        ) : DecodedSwiftfoxRecord()
     }
 
     fun metaGlobalAllowsSwiftfoxWrite(
@@ -175,6 +185,9 @@ object SwiftfoxSyncCodec {
 
     fun essentialBsoId(essentialId: String): String =
         "ess_${sha256UrlSafe24(essentialId.trim())}"
+
+    fun pinnedTabBsoId(tabId: String): String =
+        "pin_${sha256UrlSafe24(tabId.trim())}"
 
     fun sha256Hex(raw: String): String {
         val digest = MessageDigest.getInstance("SHA-256").digest(raw.toByteArray(Charsets.UTF_8))
@@ -445,6 +458,38 @@ object SwiftfoxSyncCodec {
             essentialDataObject(entity, localOrder)
         )
 
+    fun pinnedTabHomeUrl(entity: TabEntity): String =
+        entity.pinnedUrl?.trim()?.takeIf { it.isNotEmpty() } ?: entity.url.trim()
+
+    fun pinnedTabDisplayTitle(entity: TabEntity): String =
+        entity.customTitle?.trim()?.takeIf { it.isNotEmpty() } ?: entity.title.trim()
+
+    fun pinnedTabDataObject(entity: TabEntity, localOrder: Int): JsonObject {
+        val homeUrl = pinnedTabHomeUrl(entity)
+        val displayTitle = pinnedTabDisplayTitle(entity).ifBlank {
+            OmniboxEngine.extractHost(homeUrl).ifBlank { homeUrl }
+        }
+        return buildJsonObject {
+            put("id", JsonPrimitive(entity.id))
+            put("spaceId", JsonPrimitive(entity.spaceId))
+            put("title", JsonPrimitive(displayTitle))
+            put("url", JsonPrimitive(homeUrl))
+            put("localOrder", JsonPrimitive(localOrder))
+            put("customIcon", entity.customIcon?.let(::JsonPrimitive) ?: JsonNull)
+        }
+    }
+
+    fun pinnedTabContentHash(entity: TabEntity, localOrder: Int): String =
+        sha256Hex(pinnedTabDataObject(entity, localOrder).toString())
+
+    fun encodePinnedTabRecord(entity: TabEntity, localOrder: Int, updatedAt: Long): JsonObject =
+        wrapRecord(
+            pinnedTabBsoId(entity.id),
+            KIND_PINNED_TAB,
+            updatedAt,
+            pinnedTabDataObject(entity, localOrder)
+        )
+
     fun decodeRecord(bsoId: String, cleartext: JsonObject): DecodedSwiftfoxRecord? {
         val schema = intOrNull(cleartext["schema"]) ?: 1
         if (schema > SCHEMA_VERSION) {
@@ -465,6 +510,7 @@ object SwiftfoxSyncCodec {
             KIND_USERSCRIPT -> decodeUserscript(bsoId, updatedAt, data)
             KIND_SPACE -> decodeSpace(bsoId, updatedAt, data)
             KIND_ESSENTIAL -> decodeEssential(bsoId, updatedAt, data)
+            KIND_PINNED_TAB -> decodePinnedTab(bsoId, updatedAt, data)
             else -> null
         }
     }
@@ -771,6 +817,46 @@ object SwiftfoxSyncCodec {
             bsoId = essentialBsoId(id),
             updatedAt = updatedAt,
             contentHash = essentialContentHash(entity, localOrder),
+            entity = entity,
+            localOrder = localOrder
+        )
+    }
+
+    private fun decodePinnedTab(
+        bsoId: String,
+        updatedAt: Long,
+        data: JsonObject
+    ): DecodedSwiftfoxRecord.PinnedTab? {
+        val id = stringOrNull(data["id"])?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        val spaceId = stringOrNull(data["spaceId"])?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        val url = stringOrNull(data["url"])?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        val parsed = url.toHttpUrlOrNull() ?: return null
+        if (parsed.scheme != "http" && parsed.scheme != "https") return null
+        val domain = OmniboxEngine.extractHost(url).ifBlank { url }
+        val title = stringOrNull(data["title"])?.trim()?.takeIf { it.isNotEmpty() } ?: domain
+        val localOrder = (intOrNull(data["localOrder"]) ?: 0).coerceAtLeast(0)
+        val customIcon = CustomIconSpec.parse(stringOrNull(data["customIcon"])).encodeExplicit()
+        val entity = TabEntity(
+            id = id,
+            spaceId = spaceId,
+            title = title,
+            url = url,
+            isPrivate = false,
+            isPinned = true,
+            siteModeOverride = null,
+            lastAccessedAt = updatedAt.takeIf { it > 0L } ?: System.currentTimeMillis(),
+            sortOrder = localOrder,
+            customIcon = customIcon,
+            customTitle = title,
+            essentialId = null,
+            zenPinnedId = null,
+            isUnloaded = true,
+            pinnedUrl = url
+        )
+        return DecodedSwiftfoxRecord.PinnedTab(
+            bsoId = pinnedTabBsoId(id),
+            updatedAt = updatedAt,
+            contentHash = pinnedTabContentHash(entity, localOrder),
             entity = entity,
             localOrder = localOrder
         )

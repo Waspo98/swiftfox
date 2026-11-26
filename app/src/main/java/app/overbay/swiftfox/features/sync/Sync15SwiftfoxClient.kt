@@ -32,6 +32,9 @@ internal interface SwiftfoxSyncLocalStore {
     fun clearBaseline()
     suspend fun readLocalSnapshot(): SwiftfoxSyncReconciler.LocalSnapshot
     suspend fun applyPlanLocally(plan: SwiftfoxSyncReconciler.SwiftfoxSyncPlan): Boolean
+    suspend fun applyPlanLocallyWithBaseline(
+        plan: SwiftfoxSyncReconciler.SwiftfoxSyncPlan
+    ): Pair<Boolean, SwiftfoxSyncBaseline> = applyPlanLocally(plan) to plan.nextBaseline
 }
 
 /**
@@ -147,11 +150,11 @@ internal class Sync15SwiftfoxClient internal constructor(
                 }
             }
 
-            val localDataChanged = localStore.applyPlanLocally(plan)
+            val (localDataChanged, baselineAfterApply) = localStore.applyPlanLocallyWithBaseline(plan)
             val finalBaseline = if (skippedOversizedIds.isEmpty()) {
-                plan.nextBaseline
+                baselineAfterApply
             } else {
-                val adjusted = plan.nextBaseline.items.toMutableMap()
+                val adjusted = baselineAfterApply.items.toMutableMap()
                 for (skippedId in skippedOversizedIds) {
                     val prev = baseline.items[skippedId]
                     if (prev != null) {
@@ -160,7 +163,7 @@ internal class Sync15SwiftfoxClient internal constructor(
                         adjusted.remove(skippedId)
                     }
                 }
-                plan.nextBaseline.copy(items = adjusted)
+                baselineAfterApply.copy(items = adjusted)
             }
             localStore.saveBaselineAtomic(finalBaseline)
 
@@ -238,6 +241,12 @@ private class RoomSwiftfoxSyncLocalStore(
         val userscripts = db.userscriptDao().getAll()
         val allSpaces = db.spaceDao().getAll()
         val allEssentials = db.essentialDao().getAll()
+        val zenSpaceIds = allSpaces.asSequence()
+            .filter { it.syncGuid != null }
+            .mapTo(mutableSetOf()) { it.id }
+        val localPinnedTabs = db.tabDao().getNormalTabs().filter {
+            !it.isPrivate && it.isPinned && it.essentialId == null && it.zenPinnedId == null
+        }
         return SwiftfoxSyncReconciler.LocalSnapshot(
             settings = settings,
             settingsUpdatedAtMs = settings.swiftfoxSettingsUpdatedAtMs,
@@ -246,14 +255,22 @@ private class RoomSwiftfoxSyncLocalStore(
             filterLists = filterLists,
             userscripts = userscripts,
             localSpaces = allSpaces.filter { it.syncGuid == null },
-            zenSpacesCount = allSpaces.count { it.syncGuid != null },
+            zenSpacesCount = zenSpaceIds.size,
             localEssentials = allEssentials.filter { it.syncGuid == null },
-            zenEssentialsCount = allEssentials.count { it.syncGuid != null }
+            zenEssentialsCount = allEssentials.count { it.syncGuid != null },
+            localPinnedTabs = localPinnedTabs,
+            zenSpaceIds = zenSpaceIds
         )
     }
 
-    override suspend fun applyPlanLocally(plan: SwiftfoxSyncReconciler.SwiftfoxSyncPlan): Boolean {
+    override suspend fun applyPlanLocally(plan: SwiftfoxSyncReconciler.SwiftfoxSyncPlan): Boolean =
+        applyPlanLocallyWithBaseline(plan).first
+
+    override suspend fun applyPlanLocallyWithBaseline(
+        plan: SwiftfoxSyncReconciler.SwiftfoxSyncPlan
+    ): Pair<Boolean, SwiftfoxSyncBaseline> {
         var changed = false
+        var adjustedBaseline = plan.nextBaseline
 
         plan.settingsToApply?.let { (syncedSettings, updatedAtMs) ->
             prefs.applySyncedSettings(syncedSettings, updatedAtMs)
@@ -271,10 +288,14 @@ private class RoomSwiftfoxSyncLocalStore(
             plan.spacesPlan.upserts.isNotEmpty() ||
             plan.spacesPlan.deleteIds.isNotEmpty() ||
             plan.essentialsPlan.upserts.isNotEmpty() ||
-            plan.essentialsPlan.deleteIds.isNotEmpty()
+            plan.essentialsPlan.deleteIds.isNotEmpty() ||
+            plan.pinnedTabsPlan.upserts.isNotEmpty() ||
+            plan.pinnedTabsPlan.deleteIds.isNotEmpty()
 
         if (hasDbMutations) {
             changed = true
+            val remappedPinIds = mutableSetOf<String>()
+            var postTxLocalPins: List<app.overbay.swiftfox.data.db.TabEntity> = emptyList()
             db.withTransaction {
                 for (host in plan.siteOverrideHostsToDelete) {
                     db.siteOverrideDao().deleteByHost(host)
@@ -316,6 +337,50 @@ private class RoomSwiftfoxSyncLocalStore(
                     db.tabDao().deleteByEssentialId(delEssId)
                     db.essentialDao().deleteById(delEssId)
                 }
+
+                for (chunk in plan.pinnedTabsPlan.deleteIds.chunked(400)) {
+                    db.tabDao().deleteByIds(chunk)
+                }
+                if (plan.pinnedTabsPlan.upserts.isNotEmpty()) {
+                    val currentSpaceIds = db.spaceDao().getAll().mapTo(mutableSetOf()) { it.id }
+                    val normalizedUpserts = plan.pinnedTabsPlan.upserts.map { tab ->
+                        if (tab.spaceId in currentSpaceIds) {
+                            tab
+                        } else {
+                            remappedPinIds += tab.id
+                            tab.copy(spaceId = fallbackSpaceId)
+                        }
+                    }
+                    db.tabDao().upsertAll(normalizedUpserts)
+                }
+                if (remappedPinIds.isNotEmpty()) {
+                    postTxLocalPins = db.tabDao().getNormalTabs().filter {
+                        !it.isPrivate && it.isPinned && it.essentialId == null && it.zenPinnedId == null
+                    }
+                }
+            }
+            if (remappedPinIds.isNotEmpty()) {
+                val updatedItems = adjustedBaseline.items.toMutableMap()
+                postTxLocalPins
+                    .groupBy { it.spaceId }
+                    .values
+                    .forEach { spaceTabs ->
+                        spaceTabs.sortedBy { it.sortOrder }.forEachIndexed { idx, tab ->
+                            if (tab.id in remappedPinIds) {
+                                val bsoId = SwiftfoxSyncCodec.pinnedTabBsoId(tab.id)
+                                val base = updatedItems[bsoId]
+                                if (base != null && !base.deleted) {
+                                    val storedHash = SwiftfoxSyncCodec.pinnedTabContentHash(tab, idx)
+                                    updatedItems[bsoId] = if (storedHash == base.contentHash) {
+                                        base.copy(localContentHash = null)
+                                    } else {
+                                        base.copy(localContentHash = storedHash)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                adjustedBaseline = adjustedBaseline.copy(items = updatedItems)
             }
         }
 
@@ -331,7 +396,7 @@ private class RoomSwiftfoxSyncLocalStore(
             )
         }
 
-        return changed
+        return changed to adjustedBaseline
     }
 
     companion object {

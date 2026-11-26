@@ -979,7 +979,7 @@ private fun PwaControlsSheet(
                 PwaSheetCircleAction("Swiftfox", Icons.AutoMirrored.Rounded.OpenInNew, true, onOpenInSwiftfox, Modifier.weight(1f))
             }
 
-            if (state.isPlayingMedia || state.isPlayingVideo) {
+            if (state.settings.pictureInPictureEnabled && (state.isPlayingMedia || state.isPlayingVideo)) {
                 Surface(
                     onClick = onEnterPip,
                     shape = RoundedCornerShape(16.dp),

@@ -1442,6 +1442,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     oldSettings.darkReaderSkipNativeDark != newSettings.darkReaderSkipNativeDark
                 val thirdPartyCookiesChanged = oldSettings.blockThirdPartyCookies != newSettings.blockThirdPartyCookies
                 val bgMediaChanged = oldSettings.backgroundMediaEnabled != newSettings.backgroundMediaEnabled
+                val docStartPrefChanged = wasLoaded && (
+                    oldSettings.adblockEnabled != newSettings.adblockEnabled ||
+                        oldSettings.adblockCosmeticEnabled != newSettings.adblockCosmeticEnabled ||
+                        oldSettings.userscriptsEnabled != newSettings.userscriptsEnabled
+                    )
                 val autoClearEnabledOrShortened = wasLoaded &&
                     startupTabReconciliationDone.get() &&
                     newSettings.tabAutoClearDuration != oldSettings.tabAutoClearDuration &&
@@ -1468,6 +1473,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                         updateWebDark = webDarkChanged,
                         updateBgMedia = bgMediaChanged
                     )
+                }
+                if (docStartPrefChanged) {
+                    pool.clearAllDocumentStartScripts()
                 }
                 if (autoClearEnabledOrShortened) {
                     runAutoClearStaleTabsIfNeeded()
@@ -1636,6 +1644,18 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             app.mozillaSyncCoordinator.status.collectLatest { syncSnapshot ->
                 _uiState.update { it.copy(syncStatus = syncSnapshot) }
+            }
+        }
+
+        viewModelScope.launch {
+            app.mozillaSyncCoordinator.swiftfoxDataRevision.collectLatest { rev ->
+                if (rev > 0L) {
+                    pool.clearAllDocumentStartScripts()
+                    val active = _uiState.value.activeTab
+                    if (active != null && !active.isStartPage && active.displayHost.isNotBlank()) {
+                        refreshZappedCssForHost(active.displayHost)
+                    }
+                }
             }
         }
 
@@ -5527,6 +5547,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     fun setConfirmClosePinnedOnSecondTap(enabled: Boolean) = viewModelScope.launch { prefs.setConfirmClosePinnedOnSecondTap(enabled) }
     fun setTabAutoClearDuration(duration: TabAutoClearDuration) = viewModelScope.launch { prefs.setTabAutoClearDuration(duration) }
     fun setBackgroundMediaEnabled(enabled: Boolean) = viewModelScope.launch { prefs.setBackgroundMediaEnabled(enabled) }
+    fun setPictureInPictureEnabled(enabled: Boolean) = viewModelScope.launch { prefs.setPictureInPictureEnabled(enabled) }
     fun setBlockThirdPartyCookies(enabled: Boolean) = viewModelScope.launch { prefs.setBlockThirdPartyCookies(enabled) }
 
     fun onAppForegrounded() {
@@ -5970,6 +5991,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun setSyncZenSpacesEnabled(enabled: Boolean) = viewModelScope.launch { prefs.setSyncZenSpacesEnabled(enabled) }
+
+    fun setSyncSwiftfoxEnabled(enabled: Boolean) = viewModelScope.launch { prefs.setSyncSwiftfoxEnabled(enabled) }
 
     fun setSyncPeriodicIntervalMinutes(minutes: Int) {
         viewModelScope.launch {

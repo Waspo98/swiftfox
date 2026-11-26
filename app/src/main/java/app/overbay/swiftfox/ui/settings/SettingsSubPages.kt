@@ -761,6 +761,13 @@ internal fun LazyListScope.privacyMediaSettingsItems(
                 checked = settings.backgroundMediaEnabled,
                 onCheckedChange = { viewModel.setBackgroundMediaEnabled(it) }
             )
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+            SettingsSwitchRow(
+                title = "Picture-in-Picture",
+                subtitle = "Shrink playing videos into a floating window when leaving Swiftfox or via Quick Actions",
+                checked = settings.pictureInPictureEnabled,
+                onCheckedChange = { viewModel.setPictureInPictureEnabled(it) }
+            )
         }
     }
 

@@ -28,7 +28,8 @@ data class SyncStatusSnapshot(
     val lastSyncAtMs: Long = 0L,
     val lastSyncSummary: String? = null,
     val lastSyncError: String? = null,
-    val zenStatusNote: String? = null
+    val zenStatusNote: String? = null,
+    val swiftfoxStatusNote: String? = null
 )
 
 data class RemoteDeviceTabsGroup(

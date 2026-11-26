@@ -203,6 +203,7 @@ internal class PublicFaviconCoordinator<T : Any>(
     private val fetchGate: FaviconFetchGate<SampledIcon<T>>,
     private val subpathFetchGate: FaviconFetchGate<SampledIcon<T>>,
     private val getInMemory: (key: String) -> SampledIcon<T>?,
+    private val hasInMemory: (key: String) -> Boolean = { key -> getInMemory(key) != null },
     private val loadFromDisk: suspend (key: String) -> SampledIcon<T>?,
     private val putBitmap: suspend (key: String, icon: SampledIcon<T>, writeDisk: Boolean) -> Unit,
     private val removeBitmap: suspend (key: String) -> Unit,
@@ -235,10 +236,6 @@ internal class PublicFaviconCoordinator<T : Any>(
         sameAsAuthoritySubpaths.clear()
     }
 
-    fun clearAllState() {
-        clearMemoryState()
-    }
-
     fun hasBaselineSubpathPending(authorityKey: String): Boolean =
         synchronized(baselines) { baselines[authorityKey]?.pathKey != null }
 
@@ -251,11 +248,11 @@ internal class PublicFaviconCoordinator<T : Any>(
         if (pathKey == null) {
             val needsRootRefresh = (isLegacyUnverified(authKey) || getProvisionalPath(authKey) != null) &&
                 !fetchGate.isNegativelyCached(authKey)
-            return needsRootRefresh || getInMemory(authKey) == null
+            return needsRootRefresh || !hasInMemory(authKey)
         }
 
         val pathLegacy = isLegacyUnverified(pathKey)
-        val hasPathInMemory = getInMemory(pathKey) != null
+        val hasPathInMemory = hasInMemory(pathKey)
         if (hasPathInMemory && !pathLegacy) {
             return false
         }
@@ -267,7 +264,7 @@ internal class PublicFaviconCoordinator<T : Any>(
         }
         val needsAuthRefresh = (isLegacyUnverified(authKey) || getProvisionalPath(authKey) != null) &&
             !fetchGate.isNegativelyCached(authKey)
-        if (needsAuthRefresh || getInMemory(authKey) == null) {
+        if (needsAuthRefresh || !hasInMemory(authKey)) {
             return true
         }
         return probeDistinctSubpath &&
@@ -641,6 +638,9 @@ class FaviconRepository(
             val bmp = synchronized(memoryCache) { memoryCache.get(hostKey(key)) }
             bmp?.let { toSampledIcon(it) }
         },
+        hasInMemory = { key ->
+            synchronized(memoryCache) { memoryCache.get(hostKey(key)) != null }
+        },
         loadFromDisk = { key ->
             val bmp = withContext(Dispatchers.IO) { readDiskFavicon(key) }
             bmp?.let { toSampledIcon(it) }
@@ -865,7 +865,7 @@ class FaviconRepository(
     suspend fun clearFaviconCache() {
         fetchGate.invalidateAll()
         subpathFetchGate.invalidateAll()
-        publicCoordinator.clearAllState()
+        publicCoordinator.clearMemoryState()
         synchronized(memoryCache) {
             val hostKeys = memoryCache.snapshot().keys.filter { it.startsWith("host:") }
             hostKeys.forEach { memoryCache.remove(it) }

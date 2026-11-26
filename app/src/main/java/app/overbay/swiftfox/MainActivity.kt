@@ -304,7 +304,7 @@ class MainActivity : ComponentActivity() {
         super.onUserLeaveHint()
         val state = viewModel.uiState.value
         val activeVideoPlaying = state.isFullscreenVideo || state.activeTab?.isPlayingVideo == true
-        if (activeVideoPlaying && state.settings.backgroundMediaEnabled) {
+        if (activeVideoPlaying && state.settings.pictureInPictureEnabled) {
             enterSwiftfoxPip()
         }
     }
@@ -496,6 +496,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun enterSwiftfoxPip() {
+        if (!viewModel.uiState.value.settings.pictureInPictureEnabled) return
         runCatching {
             val params = PictureInPictureParams.Builder()
                 .setAspectRatio(Rational(16, 9))

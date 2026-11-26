@@ -202,4 +202,32 @@ class QuickActionsSectionLogicTest {
         assertEquals("Add to Home", shortcutSpec.label)
         assertFalse(shortcutSpec.highlightedCue)
     }
+
+    @Test
+    fun pipQuickActionBannerRespectsPictureInPictureSetting() {
+        assertFalse(
+            shouldShowQuickActionsPipBanner(
+                settings = BrowserSettings(),
+                isWebPage = true,
+                isPlayingMedia = true,
+                isPlayingVideo = true
+            )
+        )
+        assertTrue(
+            shouldShowQuickActionsPipBanner(
+                settings = BrowserSettings(pictureInPictureEnabled = true),
+                isWebPage = true,
+                isPlayingMedia = false,
+                isPlayingVideo = true
+            )
+        )
+        assertFalse(
+            shouldShowQuickActionsPipBanner(
+                settings = BrowserSettings(pictureInPictureEnabled = true),
+                isWebPage = false,
+                isPlayingMedia = true,
+                isPlayingVideo = true
+            )
+        )
+    }
 }

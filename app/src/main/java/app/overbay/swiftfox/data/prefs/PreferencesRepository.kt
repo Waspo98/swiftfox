@@ -2,6 +2,7 @@ package app.overbay.swiftfox.data.prefs
 
 import android.content.Context
 import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
@@ -66,14 +67,17 @@ class PreferencesRepository(private val context: Context) {
         val CONFIRM_CLOSE_PINNED_SECOND_TAP = booleanPreferencesKey("confirm_close_pinned_second_tap")
         val TAB_AUTO_CLEAR_DURATION = stringPreferencesKey("tab_auto_clear_duration")
         val BACKGROUND_MEDIA = booleanPreferencesKey("background_media")
+        val PICTURE_IN_PICTURE = booleanPreferencesKey("picture_in_picture")
         val BLOCK_THIRD_PARTY_COOKIES = booleanPreferencesKey("block_third_party_cookies")
 
         val SYNC_BOOKMARKS = booleanPreferencesKey("sync_bookmarks")
         val SYNC_HISTORY = booleanPreferencesKey("sync_history")
         val SYNC_TABS = booleanPreferencesKey("sync_tabs")
         val SYNC_ZEN_SPACES = booleanPreferencesKey("sync_zen_spaces")
+        val SYNC_SWIFTFOX = booleanPreferencesKey("sync_swiftfox")
         val SYNC_INTERVAL_MINUTES = intPreferencesKey("sync_interval_minutes")
         val SYNC_LAST_TIMESTAMP_MS = longPreferencesKey("sync_last_timestamp_ms")
+        val SWIFTFOX_SETTINGS_UPDATED_AT = longPreferencesKey("swiftfox_settings_updated_at")
         val SYNC_LOCAL_HISTORY_SEEDED = booleanPreferencesKey("sync_local_history_seeded")
         val SYNC_ZEN_SEPARATE_ESSENTIALS = booleanPreferencesKey("sync_zen_separate_essentials")
         val SYNC_HAS_CONNECTED_ACCOUNT = booleanPreferencesKey("sync_has_connected_account")
@@ -145,16 +149,19 @@ class PreferencesRepository(private val context: Context) {
                     prefs[Keys.TAB_AUTO_CLEAR_DURATION],
                     TabAutoClearDuration.WEEK_1
                 ),
-                backgroundMediaEnabled = prefs[Keys.BACKGROUND_MEDIA] ?: true,
+                backgroundMediaEnabled = prefs[Keys.BACKGROUND_MEDIA] ?: false,
+                pictureInPictureEnabled = prefs[Keys.PICTURE_IN_PICTURE] ?: false,
                 blockThirdPartyCookies = prefs[Keys.BLOCK_THIRD_PARTY_COOKIES] ?: false,
                 syncBookmarksEnabled = prefs[Keys.SYNC_BOOKMARKS] ?: true,
                 syncHistoryEnabled = prefs[Keys.SYNC_HISTORY] ?: true,
                 syncTabsEnabled = prefs[Keys.SYNC_TABS] ?: true,
                 syncZenSpacesEnabled = prefs[Keys.SYNC_ZEN_SPACES] ?: true,
+                syncSwiftfoxEnabled = prefs[Keys.SYNC_SWIFTFOX] ?: true,
                 syncPeriodicIntervalMinutes = (prefs[Keys.SYNC_INTERVAL_MINUTES] ?: 60).let {
                     if (it in listOf(0, 30, 60, 240)) it else 60
                 },
                 syncLastTimestampMs = prefs[Keys.SYNC_LAST_TIMESTAMP_MS] ?: 0L,
+                swiftfoxSettingsUpdatedAtMs = prefs[Keys.SWIFTFOX_SETTINGS_UPDATED_AT] ?: 0L,
                 syncLocalHistorySeeded = prefs[Keys.SYNC_LOCAL_HISTORY_SEEDED] ?: false,
                 syncZenSeparateEssentials = prefs[Keys.SYNC_ZEN_SEPARATE_ESSENTIALS],
                 syncHasConnectedAccount = prefs[Keys.SYNC_HAS_CONNECTED_ACCOUNT] ?: false,
@@ -164,95 +171,102 @@ class PreferencesRepository(private val context: Context) {
         }
         .distinctUntilChanged()
 
+    private suspend inline fun editSyncedPref(crossinline block: (MutablePreferences) -> Unit) {
+        context.swiftfoxDataStore.edit {
+            block(it)
+            it[Keys.SWIFTFOX_SETTINGS_UPDATED_AT] = System.currentTimeMillis()
+        }
+    }
+
     suspend fun setThemeMode(mode: ThemeMode) {
-        context.swiftfoxDataStore.edit { it[Keys.THEME_MODE] = mode.name }
+        editSyncedPref { it[Keys.THEME_MODE] = mode.name }
     }
 
     suspend fun setNightSurfaceStyle(style: NightSurfaceStyle) {
-        context.swiftfoxDataStore.edit { it[Keys.NIGHT_SURFACE] = style.name }
+        editSyncedPref { it[Keys.NIGHT_SURFACE] = style.name }
     }
 
     suspend fun setAccentPreset(preset: AccentPreset) {
-        context.swiftfoxDataStore.edit { it[Keys.ACCENT_PRESET] = preset.name }
+        editSyncedPref { it[Keys.ACCENT_PRESET] = preset.name }
     }
 
     suspend fun setUseDynamicColor(enabled: Boolean) {
-        context.swiftfoxDataStore.edit { it[Keys.USE_DYNAMIC_COLOR] = enabled }
+        editSyncedPref { it[Keys.USE_DYNAMIC_COLOR] = enabled }
     }
 
     suspend fun setAppIconBackgroundMode(mode: AppIconBackgroundMode) {
-        context.swiftfoxDataStore.edit { it[Keys.APP_ICON_BACKGROUND_MODE] = mode.name }
+        editSyncedPref { it[Keys.APP_ICON_BACKGROUND_MODE] = mode.name }
     }
 
     suspend fun setAppIconColorStyle(style: AppIconColorStyle) {
-        context.swiftfoxDataStore.edit {
+        editSyncedPref {
             it[Keys.APP_ICON_MATCH_ACCENT] = false
             it[Keys.APP_ICON_COLOR_STYLE] = style.name
         }
     }
 
     suspend fun setAppIconMatchAccent(enabled: Boolean) {
-        context.swiftfoxDataStore.edit { it[Keys.APP_ICON_MATCH_ACCENT] = enabled }
+        editSyncedPref { it[Keys.APP_ICON_MATCH_ACCENT] = enabled }
     }
 
     suspend fun setSyncAppIconInApp(enabled: Boolean) {
-        context.swiftfoxDataStore.edit { it[Keys.SYNC_APP_ICON_IN_APP] = enabled }
+        editSyncedPref { it[Keys.SYNC_APP_ICON_IN_APP] = enabled }
     }
 
     suspend fun setWebDarkMode(preference: WebDarkModePreference) {
-        context.swiftfoxDataStore.edit { it[Keys.WEB_DARK_MODE] = preference.name }
+        editSyncedPref { it[Keys.WEB_DARK_MODE] = preference.name }
     }
 
     suspend fun setDarkReaderAmoled(enabled: Boolean) {
-        context.swiftfoxDataStore.edit { it[Keys.DARK_READER_AMOLED] = enabled }
+        editSyncedPref { it[Keys.DARK_READER_AMOLED] = enabled }
     }
 
     suspend fun setDarkReaderBrightness(value: Int) {
-        context.swiftfoxDataStore.edit { it[Keys.DARK_READER_BRIGHTNESS] = value.coerceIn(50, 150) }
+        editSyncedPref { it[Keys.DARK_READER_BRIGHTNESS] = value.coerceIn(50, 150) }
     }
 
     suspend fun setDarkReaderContrast(value: Int) {
-        context.swiftfoxDataStore.edit { it[Keys.DARK_READER_CONTRAST] = value.coerceIn(50, 150) }
+        editSyncedPref { it[Keys.DARK_READER_CONTRAST] = value.coerceIn(50, 150) }
     }
 
     suspend fun setDarkReaderSepia(value: Int) {
-        context.swiftfoxDataStore.edit { it[Keys.DARK_READER_SEPIA] = value.coerceIn(0, 100) }
+        editSyncedPref { it[Keys.DARK_READER_SEPIA] = value.coerceIn(0, 100) }
     }
 
     suspend fun setDarkReaderSkipNativeDark(enabled: Boolean) {
-        context.swiftfoxDataStore.edit { it[Keys.DARK_READER_SKIP_NATIVE] = enabled }
+        editSyncedPref { it[Keys.DARK_READER_SKIP_NATIVE] = enabled }
     }
 
     suspend fun setAdblockEnabled(enabled: Boolean) {
-        context.swiftfoxDataStore.edit { it[Keys.ADBLOCK_ENABLED] = enabled }
+        editSyncedPref { it[Keys.ADBLOCK_ENABLED] = enabled }
     }
 
     suspend fun setAdblockCosmeticEnabled(enabled: Boolean) {
-        context.swiftfoxDataStore.edit { it[Keys.ADBLOCK_COSMETIC] = enabled }
+        editSyncedPref { it[Keys.ADBLOCK_COSMETIC] = enabled }
     }
 
     suspend fun setUserscriptsEnabled(enabled: Boolean) {
-        context.swiftfoxDataStore.edit { it[Keys.USERSCRIPTS_ENABLED] = enabled }
+        editSyncedPref { it[Keys.USERSCRIPTS_ENABLED] = enabled }
     }
 
     suspend fun setReaderFontFamily(family: ReaderFontFamily) {
-        context.swiftfoxDataStore.edit { it[Keys.READER_FONT_FAMILY] = family.name }
+        editSyncedPref { it[Keys.READER_FONT_FAMILY] = family.name }
     }
 
     suspend fun setReaderFontSizeSp(sizeSp: Int) {
-        context.swiftfoxDataStore.edit { it[Keys.READER_FONT_SIZE_SP] = sizeSp.coerceIn(14, 28) }
+        editSyncedPref { it[Keys.READER_FONT_SIZE_SP] = sizeSp.coerceIn(14, 28) }
     }
 
     suspend fun setReaderLineHeight(lineHeight: Float) {
-        context.swiftfoxDataStore.edit { it[Keys.READER_LINE_HEIGHT] = lineHeight.coerceIn(1.3f, 2.0f) }
+        editSyncedPref { it[Keys.READER_LINE_HEIGHT] = lineHeight.coerceIn(1.3f, 2.0f) }
     }
 
     suspend fun setReaderSurfaceMode(mode: ReaderSurfaceMode) {
-        context.swiftfoxDataStore.edit { it[Keys.READER_SURFACE_MODE] = mode.name }
+        editSyncedPref { it[Keys.READER_SURFACE_MODE] = mode.name }
     }
 
     suspend fun setToolbarPlacement(posture: DevicePosture, placement: ToolbarPlacement) {
-        context.swiftfoxDataStore.edit {
+        editSyncedPref {
             when (posture) {
                 DevicePosture.FOLDED -> {
                     val safe = if (placement.unfoldedOnly) ToolbarPlacement.SPLIT else placement
@@ -266,7 +280,7 @@ class PreferencesRepository(private val context: Context) {
     }
 
     suspend fun setDefaultSiteMode(posture: DevicePosture, siteMode: SiteMode) {
-        context.swiftfoxDataStore.edit {
+        editSyncedPref {
             when (posture) {
                 DevicePosture.FOLDED -> it[Keys.FOLDED_SITE_MODE] = siteMode.name
                 DevicePosture.UNFOLDED -> it[Keys.UNFOLDED_SITE_MODE] = siteMode.name
@@ -275,55 +289,109 @@ class PreferencesRepository(private val context: Context) {
     }
 
     suspend fun setUnfoldedSpacesSidebar(visible: Boolean) {
-        context.swiftfoxDataStore.edit { it[Keys.UNFOLDED_SPACES_SIDEBAR] = visible }
+        editSyncedPref { it[Keys.UNFOLDED_SPACES_SIDEBAR] = visible }
     }
 
     suspend fun setSearchEngine(engine: SearchEngineId) {
-        context.swiftfoxDataStore.edit { it[Keys.SEARCH_ENGINE] = engine.name }
+        editSyncedPref { it[Keys.SEARCH_ENGINE] = engine.name }
     }
 
     suspend fun setCustomSearchUrlTemplate(template: String) {
-        context.swiftfoxDataStore.edit { it[Keys.CUSTOM_SEARCH_URL] = template.trim() }
+        editSyncedPref { it[Keys.CUSTOM_SEARCH_URL] = template.trim() }
     }
 
     suspend fun setSearchSuggestionsEnabled(enabled: Boolean) {
-        context.swiftfoxDataStore.edit { it[Keys.SEARCH_SUGGESTIONS] = enabled }
+        editSyncedPref { it[Keys.SEARCH_SUGGESTIONS] = enabled }
     }
 
     suspend fun setHttpsOnlyMode(enabled: Boolean) {
-        context.swiftfoxDataStore.edit { it[Keys.HTTPS_ONLY] = enabled }
+        editSyncedPref { it[Keys.HTTPS_ONLY] = enabled }
     }
 
     suspend fun setExternalAppLinkPolicy(policy: ExternalAppLinkPolicy) {
-        context.swiftfoxDataStore.edit { it[Keys.EXTERNAL_APP_POLICY] = policy.name }
+        editSyncedPref { it[Keys.EXTERNAL_APP_POLICY] = policy.name }
     }
 
     suspend fun setPullToRefreshEnabled(enabled: Boolean) {
-        context.swiftfoxDataStore.edit { it[Keys.PULL_TO_REFRESH] = enabled }
+        editSyncedPref { it[Keys.PULL_TO_REFRESH] = enabled }
     }
 
     suspend fun setSwipeUrlBarSwitchTabs(enabled: Boolean) {
-        context.swiftfoxDataStore.edit { it[Keys.SWIPE_URL_BAR_TABS] = enabled }
+        editSyncedPref { it[Keys.SWIPE_URL_BAR_TABS] = enabled }
     }
 
     suspend fun setHideToolbarsOnScroll(enabled: Boolean) {
-        context.swiftfoxDataStore.edit { it[Keys.HIDE_TOOLBARS_ON_SCROLL] = enabled }
+        editSyncedPref { it[Keys.HIDE_TOOLBARS_ON_SCROLL] = enabled }
     }
 
     suspend fun setConfirmClosePinnedOnSecondTap(enabled: Boolean) {
-        context.swiftfoxDataStore.edit { it[Keys.CONFIRM_CLOSE_PINNED_SECOND_TAP] = enabled }
+        editSyncedPref { it[Keys.CONFIRM_CLOSE_PINNED_SECOND_TAP] = enabled }
     }
 
     suspend fun setTabAutoClearDuration(duration: TabAutoClearDuration) {
-        context.swiftfoxDataStore.edit { it[Keys.TAB_AUTO_CLEAR_DURATION] = duration.name }
+        editSyncedPref { it[Keys.TAB_AUTO_CLEAR_DURATION] = duration.name }
     }
 
     suspend fun setBackgroundMediaEnabled(enabled: Boolean) {
-        context.swiftfoxDataStore.edit { it[Keys.BACKGROUND_MEDIA] = enabled }
+        editSyncedPref { it[Keys.BACKGROUND_MEDIA] = enabled }
+    }
+
+    suspend fun setPictureInPictureEnabled(enabled: Boolean) {
+        editSyncedPref { it[Keys.PICTURE_IN_PICTURE] = enabled }
     }
 
     suspend fun setBlockThirdPartyCookies(enabled: Boolean) {
-        context.swiftfoxDataStore.edit { it[Keys.BLOCK_THIRD_PARTY_COOKIES] = enabled }
+        editSyncedPref { it[Keys.BLOCK_THIRD_PARTY_COOKIES] = enabled }
+    }
+
+    suspend fun applySyncedSettings(synced: BrowserSettings, updatedAtMs: Long) {
+        context.swiftfoxDataStore.edit {
+            it[Keys.THEME_MODE] = synced.themeMode.name
+            it[Keys.NIGHT_SURFACE] = synced.nightSurfaceStyle.name
+            it[Keys.ACCENT_PRESET] = synced.accentPreset.name
+            it[Keys.USE_DYNAMIC_COLOR] = synced.useDynamicColor
+            it[Keys.APP_ICON_BACKGROUND_MODE] = synced.appIconBackgroundMode.name
+            it[Keys.APP_ICON_COLOR_STYLE] = synced.appIconColorStyle.name
+            it[Keys.APP_ICON_MATCH_ACCENT] = synced.appIconMatchAccent
+            it[Keys.SYNC_APP_ICON_IN_APP] = synced.syncAppIconInApp
+            it[Keys.WEB_DARK_MODE] = synced.webDarkMode.name
+            it[Keys.DARK_READER_AMOLED] = synced.darkReaderAmoled
+            it[Keys.DARK_READER_BRIGHTNESS] = synced.darkReaderBrightness.coerceIn(50, 150)
+            it[Keys.DARK_READER_CONTRAST] = synced.darkReaderContrast.coerceIn(50, 150)
+            it[Keys.DARK_READER_SEPIA] = synced.darkReaderSepia.coerceIn(0, 100)
+            it[Keys.DARK_READER_SKIP_NATIVE] = synced.darkReaderSkipNativeDark
+            it[Keys.ADBLOCK_ENABLED] = synced.adblockEnabled
+            it[Keys.ADBLOCK_COSMETIC] = synced.adblockCosmeticEnabled
+            it[Keys.USERSCRIPTS_ENABLED] = synced.userscriptsEnabled
+            it[Keys.READER_FONT_FAMILY] = synced.readerFontFamily.name
+            it[Keys.READER_FONT_SIZE_SP] = synced.readerFontSizeSp.coerceIn(14, 28)
+            it[Keys.READER_LINE_HEIGHT] = synced.readerLineHeight.coerceIn(1.3f, 2.0f)
+            it[Keys.READER_SURFACE_MODE] = synced.readerSurfaceMode.name
+            val foldedPlacement = if (synced.foldedProfile.toolbarPlacement.unfoldedOnly) {
+                ToolbarPlacement.SPLIT
+            } else {
+                synced.foldedProfile.toolbarPlacement
+            }
+            it[Keys.FOLDED_TOOLBAR] = foldedPlacement.name
+            it[Keys.FOLDED_SITE_MODE] = synced.foldedProfile.defaultSiteMode.name
+            it[Keys.UNFOLDED_TOOLBAR] = synced.unfoldedProfile.toolbarPlacement.name
+            it[Keys.UNFOLDED_SITE_MODE] = synced.unfoldedProfile.defaultSiteMode.name
+            it[Keys.UNFOLDED_SPACES_SIDEBAR] = synced.unfoldedProfile.showSpacesSidebar
+            it[Keys.SEARCH_ENGINE] = synced.searchEngine.name
+            it[Keys.CUSTOM_SEARCH_URL] = synced.customSearchUrlTemplate.trim()
+            it[Keys.SEARCH_SUGGESTIONS] = synced.searchSuggestionsEnabled
+            it[Keys.HTTPS_ONLY] = synced.httpsOnlyMode
+            it[Keys.EXTERNAL_APP_POLICY] = synced.externalAppLinkPolicy.name
+            it[Keys.PULL_TO_REFRESH] = synced.pullToRefreshEnabled
+            it[Keys.SWIPE_URL_BAR_TABS] = synced.swipeUrlBarSwitchTabs
+            it[Keys.HIDE_TOOLBARS_ON_SCROLL] = synced.hideToolbarsOnScroll
+            it[Keys.CONFIRM_CLOSE_PINNED_SECOND_TAP] = synced.confirmClosePinnedOnSecondTap
+            it[Keys.TAB_AUTO_CLEAR_DURATION] = synced.tabAutoClearDuration.name
+            it[Keys.BACKGROUND_MEDIA] = synced.backgroundMediaEnabled
+            it[Keys.PICTURE_IN_PICTURE] = synced.pictureInPictureEnabled
+            it[Keys.BLOCK_THIRD_PARTY_COOKIES] = synced.blockThirdPartyCookies
+            it[Keys.SWIFTFOX_SETTINGS_UPDATED_AT] = updatedAtMs
+        }
     }
 
     suspend fun setSyncBookmarksEnabled(enabled: Boolean) {
@@ -342,12 +410,20 @@ class PreferencesRepository(private val context: Context) {
         context.swiftfoxDataStore.edit { it[Keys.SYNC_ZEN_SPACES] = enabled }
     }
 
+    suspend fun setSyncSwiftfoxEnabled(enabled: Boolean) {
+        context.swiftfoxDataStore.edit { it[Keys.SYNC_SWIFTFOX] = enabled }
+    }
+
     suspend fun setSyncPeriodicIntervalMinutes(minutes: Int) {
         context.swiftfoxDataStore.edit { it[Keys.SYNC_INTERVAL_MINUTES] = minutes }
     }
 
     suspend fun setSyncLastTimestampMs(timestampMs: Long) {
         context.swiftfoxDataStore.edit { it[Keys.SYNC_LAST_TIMESTAMP_MS] = timestampMs }
+    }
+
+    suspend fun setSwiftfoxSettingsUpdatedAtMs(timestampMs: Long) {
+        context.swiftfoxDataStore.edit { it[Keys.SWIFTFOX_SETTINGS_UPDATED_AT] = timestampMs }
     }
 
     suspend fun setSyncLocalHistorySeeded(seeded: Boolean) {

@@ -85,6 +85,7 @@ fun SyncOverlay(
     onToggleSyncHistory: (Boolean) -> Unit,
     onToggleSyncTabs: (Boolean) -> Unit,
     onToggleSyncZenSpaces: (Boolean) -> Unit,
+    onToggleSyncSwiftfox: (Boolean) -> Unit,
     onChangeSyncInterval: (Int) -> Unit,
     onImportBookmarksHtml: () -> Unit,
     onExportBookmarksHtml: () -> Unit
@@ -190,7 +191,7 @@ fun SyncOverlay(
                                         overflow = TextOverflow.Ellipsis
                                     )
                                     Text(
-                                        text = "Two-way encrypted sync for Bookmarks, History, Open Tabs, and Zen Spaces & Essentials.",
+                                        text = "Two-way encrypted sync for Bookmarks, History, Open Tabs, Zen Spaces, and Swiftfox client data.",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -393,6 +394,13 @@ fun SyncOverlay(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
+                            if (!syncStatus.swiftfoxStatusNote.isNullOrBlank()) {
+                                Text(
+                                    text = syncStatus.swiftfoxStatusNote,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
 
                             FlowRow(
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -459,6 +467,13 @@ fun SyncOverlay(
                             subtitle = "Sync encrypted Zen Spaces, Essentials, and pinned tabs",
                             checked = settings.syncZenSpacesEnabled,
                             onCheckedChange = onToggleSyncZenSpaces
+                        )
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+                        SyncSwitchRow(
+                            title = "Swiftfox client sync",
+                            subtitle = "Sync settings, rules, scripts, filter lists & local Spaces with other Swiftfox clients",
+                            checked = settings.syncSwiftfoxEnabled,
+                            onCheckedChange = onToggleSyncSwiftfox
                         )
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
 
@@ -665,7 +680,7 @@ private fun SyncSwitchRow(
                 text = subtitle,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 2,
+                maxLines = 3,
                 overflow = TextOverflow.Ellipsis
             )
         }

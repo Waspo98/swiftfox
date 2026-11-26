@@ -962,6 +962,7 @@ fun BrowserScreen(
                         onToggleSyncHistory = { viewModel.setSyncHistoryEnabled(it) },
                         onToggleSyncTabs = { viewModel.setSyncTabsEnabled(it) },
                         onToggleSyncZenSpaces = { viewModel.setSyncZenSpacesEnabled(it) },
+                        onToggleSyncSwiftfox = { viewModel.setSyncSwiftfoxEnabled(it) },
                         onChangeSyncInterval = { viewModel.setSyncPeriodicIntervalMinutes(it) },
                         onImportBookmarksHtml = { viewModel.triggerImportBookmarksHtml() },
                         onExportBookmarksHtml = { viewModel.triggerExportBookmarksHtml() }

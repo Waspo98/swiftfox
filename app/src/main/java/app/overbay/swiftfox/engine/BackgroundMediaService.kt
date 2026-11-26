@@ -11,9 +11,6 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.graphics.drawable.Icon
-import android.media.AudioAttributes
-import android.media.AudioFocusRequest
-import android.media.AudioManager
 import android.media.MediaMetadata
 import android.media.session.MediaSession
 import android.media.session.PlaybackState
@@ -28,8 +25,6 @@ import java.lang.ref.WeakReference
 class BackgroundMediaService : Service() {
 
     private lateinit var mediaSession: MediaSession
-    private var audioManager: AudioManager? = null
-    private var focusRequest: AudioFocusRequest? = null
 
     private var currentTitle: String = "Playing media"
     private var currentHost: String = "Swiftfox"
@@ -58,7 +53,6 @@ class BackgroundMediaService : Service() {
         isStartPending = false
         runningInstance = WeakReference(this)
         createNotificationChannel()
-        audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
         runCatching {
             ContextCompat.registerReceiver(
                 this,
@@ -237,11 +231,9 @@ class BackgroundMediaService : Service() {
         } else {
             rawHost.ifBlank { "Swiftfox" }
         }
-        if (isPlaying) {
-            requestAudioFocus()
-        } else {
-            abandonAudioFocus()
-        }
+        // Let Chromium WebView's AudioFocusDelegate own Android OS audio focus directly;
+        // requesting a second AUDIOFOCUS_GAIN here revokes WebView's focus (AUDIOFOCUS_LOSS)
+        // and immediately pauses playback right after play starts.
         updateMediaSession()
         val notification = buildNotification()
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -279,7 +271,6 @@ class BackgroundMediaService : Service() {
         if (runningInstance?.get() === this) {
             runningInstance = null
         }
-        abandonAudioFocus()
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.cancel(NOTIFICATION_ID)
         mediaSession.isActive = false
@@ -295,7 +286,6 @@ class BackgroundMediaService : Service() {
         if (runningInstance?.get() === this) {
             runningInstance = null
         }
-        abandonAudioFocus()
         if (isForeground) {
             stopForeground(STOP_FOREGROUND_REMOVE)
             isForeground = false
@@ -303,35 +293,6 @@ class BackgroundMediaService : Service() {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.cancel(NOTIFICATION_ID)
         stopSelf()
-    }
-
-    private fun requestAudioFocus() {
-        val am = audioManager ?: return
-        // Avoid abandoning and re-requesting focus when already held (e.g. metadata updates)
-        if (focusRequest != null) return
-        val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-            .setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
-                    .build()
-            )
-            .setOnAudioFocusChangeListener { change ->
-                if (change == AudioManager.AUDIOFOCUS_LOSS ||
-                    change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT
-                ) {
-                    activeController?.onMediaCommand(MediaCommand.PAUSE)
-                }
-            }
-            .build()
-        focusRequest = req
-        am.requestAudioFocus(req)
-    }
-
-    private fun abandonAudioFocus() {
-        val req = focusRequest ?: return
-        audioManager?.abandonAudioFocusRequest(req)
-        focusRequest = null
     }
 
     private fun updateMediaSession() {

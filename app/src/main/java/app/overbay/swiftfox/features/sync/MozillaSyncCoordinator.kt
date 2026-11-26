@@ -16,8 +16,10 @@ import app.overbay.swiftfox.data.db.SwiftfoxDatabase
 import app.overbay.swiftfox.data.db.SyncedRemoteTabEntity
 import app.overbay.swiftfox.data.db.ZenPinnedItemEntity
 import app.overbay.swiftfox.data.prefs.PreferencesRepository
+import app.overbay.swiftfox.features.adblock.FilterListRepository
 import app.overbay.swiftfox.features.icons.CustomIconSpec
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
+import app.overbay.swiftfox.features.userscripts.UserscriptRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -100,7 +102,9 @@ class MozillaSyncCoordinator(
     private val db: SwiftfoxDatabase,
     private val prefs: PreferencesRepository,
     private val scope: CoroutineScope,
-    private val httpClientProvider: () -> OkHttpClient
+    private val httpClientProvider: () -> OkHttpClient,
+    private val filterListRepository: FilterListRepository? = null,
+    private val userscriptRepository: UserscriptRepository? = null
 ) {
     constructor(
         context: Context,
@@ -108,10 +112,13 @@ class MozillaSyncCoordinator(
         prefs: PreferencesRepository,
         scope: CoroutineScope,
         httpClient: OkHttpClient
-    ) : this(context, db, prefs, scope, { httpClient })
+    ) : this(context, db, prefs, scope, { httpClient }, null, null)
 
     private val _status = MutableStateFlow(SyncStatusSnapshot())
     val status: StateFlow<SyncStatusSnapshot> = _status.asStateFlow()
+
+    private val _swiftfoxDataRevision = MutableStateFlow(0L)
+    val swiftfoxDataRevision: StateFlow<Long> = _swiftfoxDataRevision.asStateFlow()
 
     private val syncMutex = Mutex()
     private val signOutMutex = Mutex()
@@ -119,7 +126,16 @@ class MozillaSyncCoordinator(
     private val historyMirrorMutex = Mutex()
     private val pendingDeletedBookmarkGuids: MutableSet<String> =
         java.util.concurrent.ConcurrentHashMap.newKeySet()
-    private val zenClient = Sync15SpacesClient(httpClientProvider)
+    private val sync15Transport = Sync15Transport(httpClientProvider)
+    private val zenClient = Sync15SpacesClient(sync15Transport)
+    private val swiftfoxClient = Sync15SwiftfoxClient(
+        context = context,
+        db = db,
+        prefs = prefs,
+        filterListRepository = filterListRepository,
+        userscriptRepository = userscriptRepository,
+        transport = sync15Transport
+    )
     private val crashReporter = NoOpCrashReporter()
     private val initComplete = CompletableDeferred<Unit>()
     private val authGeneration = AtomicLong(0L)
@@ -645,6 +661,61 @@ class MozillaSyncCoordinator(
                         zenNote = "Zen Spaces sync disabled"
                     }
 
+                    // 5. Sync Swiftfox-only client data (settings, site/zapper rules, filter lists, userscripts, local Spaces & Essentials)
+                    var swiftfoxNote: String? = null
+                    if (settings.syncSwiftfoxEnabled) {
+                        try {
+                            val tokenInfo = account.getAccessToken(SCOPE_SYNC)
+                            val tokenUrl = account.getTokenServerEndpointURL()
+                            if (tokenInfo != null && tokenUrl != null && tokenInfo.key != null) {
+                                val syncAuth = tokenInfo.asSyncAuthInfo(tokenUrl)
+                                when (
+                                    val sfResult = swiftfoxClient.sync(
+                                        kid = syncAuth.kid,
+                                        fxaAccessToken = syncAuth.fxaAccessToken,
+                                        syncKeyBase64 = syncAuth.syncKey,
+                                        tokenServerUrl = syncAuth.tokenServerUrl
+                                    )
+                                ) {
+                                    is SwiftfoxSyncResult.Success -> {
+                                        if (sfResult.localDataChanged) {
+                                            _swiftfoxDataRevision.update { it + 1L }
+                                        }
+                                        summaryParts += "Swiftfox data"
+                                        val baseNote = when {
+                                            sfResult.pulledCount == 0 && sfResult.pushedCount == 0 ->
+                                                "Swiftfox client data up to date"
+                                            else -> buildList {
+                                                if (sfResult.pulledCount > 0) add("pulled ${sfResult.pulledCount}")
+                                                if (sfResult.pushedCount > 0) add("pushed ${sfResult.pushedCount}")
+                                            }.joinToString(" · ", prefix = "Swiftfox sync: ")
+                                        }
+                                        swiftfoxNote = if (sfResult.skippedOversizedCount > 0) {
+                                            val itemLabel = if (sfResult.skippedOversizedCount == 1) "item" else "items"
+                                            "$baseNote (${sfResult.skippedOversizedCount} oversized $itemLabel skipped)"
+                                        } else {
+                                            baseNote
+                                        }
+                                    }
+                                    is SwiftfoxSyncResult.KeysNotInitialized -> {
+                                        swiftfoxNote = sfResult.message
+                                    }
+                                }
+                            } else {
+                                swiftfoxNote = "Could not obtain Sync key for Swiftfox data"
+                            }
+                        } catch (ce: CancellationException) {
+                            throw ce
+                        } catch (sfErr: Throwable) {
+                            if (subset.isEmpty() && !settings.syncZenSpacesEnabled) {
+                                throw sfErr
+                            }
+                            swiftfoxNote = "Swiftfox sync issue: ${sfErr.message ?: "error"}"
+                        }
+                    } else {
+                        swiftfoxNote = "Swiftfox client sync disabled"
+                    }
+
                     val now = System.currentTimeMillis()
                     prefs.setSyncLastTimestampMs(now)
                     val summary = if (summaryParts.isEmpty()) {
@@ -658,7 +729,8 @@ class MozillaSyncCoordinator(
                             lastSyncAtMs = now,
                             lastSyncSummary = summary,
                             lastSyncError = null,
-                            zenStatusNote = zenNote
+                            zenStatusNote = zenNote,
+                            swiftfoxStatusNote = swiftfoxNote
                         )
                     }
                     Result.success(summary)
@@ -915,6 +987,7 @@ class MozillaSyncCoordinator(
                             prefs.setSyncLocalHistorySeeded(false)
                             prefs.setSyncZenSeparateEssentials(null)
                             prefs.setSyncHasConnectedAccount(false)
+                            swiftfoxClient.clearBaseline()
                             zenClient.invalidateAuthCache()
                             clearIsolatedFxAAuthProfile()
 

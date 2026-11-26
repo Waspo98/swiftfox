@@ -1013,6 +1013,19 @@ class WebAppViewModel(application: Application) : AndroidViewModel(application) 
                 applyResolvedSettingsToSession(MAIN_TAB_ID, reloadIfModeChanged = false)
             }
         }
+
+        viewModelScope.launch {
+            app.mozillaSyncCoordinator.swiftfoxDataRevision.collectLatest { rev ->
+                if (rev > 0L) {
+                    mainSession?.clearDocumentStartScripts()
+                    popupSession?.clearDocumentStartScripts()
+                    val host = _uiState.value.activeHost
+                    if (host.isNotBlank()) {
+                        refreshZappedCssForHost(host)
+                    }
+                }
+            }
+        }
     }
 
     fun initializeForWebApp(webAppId: String?, openControlsOnStart: Boolean = false) {

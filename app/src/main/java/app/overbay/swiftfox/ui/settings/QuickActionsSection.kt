@@ -214,6 +214,13 @@ internal fun buildCompactQuickActionRows(
     return actions.chunked(2)
 }
 
+internal fun shouldShowQuickActionsPipBanner(
+    settings: BrowserSettings,
+    isWebPage: Boolean,
+    isPlayingMedia: Boolean,
+    isPlayingVideo: Boolean
+): Boolean = settings.pictureInPictureEnabled && isWebPage && (isPlayingMedia || isPlayingVideo)
+
 @Composable
 fun QuickActionsSection(
     state: BrowserUiState,
@@ -317,7 +324,12 @@ fun QuickActionsSection(
         !isPrivateTab &&
         state.syncStatus.accountState is SyncAccountState.Connected &&
         !state.activeSpace?.syncGuid.isNullOrBlank()
-    val showPipBanner = isWebPage && (activeTab.isPlayingMedia || activeTab.isPlayingVideo)
+    val showPipBanner = shouldShowQuickActionsPipBanner(
+        settings = state.settings,
+        isWebPage = isWebPage,
+        isPlayingMedia = activeTab?.isPlayingMedia == true,
+        isPlayingVideo = activeTab?.isPlayingVideo == true
+    )
     val showExternalAppBanner = isWebPage && !externalAppLabel.isNullOrBlank()
 
     val compactActionRows = remember(

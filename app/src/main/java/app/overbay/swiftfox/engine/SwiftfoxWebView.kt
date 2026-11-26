@@ -18,7 +18,7 @@ class SwiftfoxWebView @JvmOverloads constructor(
 ) : WebView(context, attrs, defStyleAttr) {
 
     @Volatile
-    var allowBackgroundPlayback: Boolean = true
+    var allowBackgroundPlayback: Boolean = false
 
     @Volatile
     var isMediaCurrentlyPlaying: Boolean = false

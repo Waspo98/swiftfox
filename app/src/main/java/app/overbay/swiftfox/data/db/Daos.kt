@@ -308,6 +308,9 @@ interface ZappedRuleDao {
     @Query("SELECT * FROM zapped_rules ORDER BY host ASC, createdAt DESC")
     fun observeAll(): Flow<List<ZappedRuleEntity>>
 
+    @Query("SELECT * FROM zapped_rules ORDER BY host ASC, createdAt DESC")
+    suspend fun getAll(): List<ZappedRuleEntity>
+
     @Query("SELECT * FROM zapped_rules WHERE host = :host ORDER BY createdAt ASC")
     suspend fun getForHost(host: String): List<ZappedRuleEntity>
 

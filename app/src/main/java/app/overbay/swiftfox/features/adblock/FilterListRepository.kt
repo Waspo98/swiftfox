@@ -180,6 +180,57 @@ class FilterListRepository(
         )
     }
 
+    /**
+     * Applies synced filter list additions, enabled-state updates, and custom-list deletions
+     * under [bulkUpdateMutex], fetching missing cache files for newly enabled lists and rebuilding
+     * [AdblockEngine] when any rules changed.
+     */
+    suspend fun applySyncedFilterLists(
+        upserts: List<FilterListEntity>,
+        deleteCustomIds: List<String>
+    ) {
+        if (upserts.isEmpty() && deleteCustomIds.isEmpty()) return
+        val enabledMissingFiles = bulkUpdateMutex.withLock {
+            for (id in deleteCustomIds) {
+                val existing = dao.getById(id) ?: continue
+                if (!existing.isBuiltIn) {
+                    withContext(Dispatchers.IO) { listFile(id).delete() }
+                    dao.deleteById(id)
+                }
+            }
+            if (upserts.isNotEmpty()) {
+                dao.upsertAll(upserts)
+            }
+            val allLists = dao.getAll()
+            engine.rebuildFromLists(
+                enabledLists = allLists.filter { it.enabled },
+                hasAnyConfiguredLists = allLists.isNotEmpty()
+            )
+            withContext(Dispatchers.IO) {
+                allLists.filter { it.enabled && (it.lastUpdatedAt == 0L || !listFile(it.id).isFile) }
+            }
+        }
+        if (enabledMissingFiles.isNotEmpty()) {
+            var anyDownloaded = false
+            bulkUpdateMutex.withLock {
+                for (entity in enabledMissingFiles) {
+                    val latest = dao.getById(entity.id) ?: continue
+                    if (!latest.enabled) continue
+                    downloadAndPersistList(latest).onSuccess { outcome ->
+                        if (outcome.contentChanged) anyDownloaded = true
+                    }
+                }
+                if (anyDownloaded) {
+                    val allLists = dao.getAll()
+                    engine.rebuildFromLists(
+                        enabledLists = allLists.filter { it.enabled },
+                        hasAnyConfiguredLists = allLists.isNotEmpty()
+                    )
+                }
+            }
+        }
+    }
+
     suspend fun syncIfNeverUpdated() {
         val enabled = dao.getEnabled()
         val needsInitialSync = withContext(Dispatchers.IO) {
@@ -374,7 +425,7 @@ class FilterListRepository(
 
     companion object {
         private const val MAX_FILTER_LIST_BYTES = 16 * 1024 * 1024
-        private const val MAX_CUSTOM_FILTER_LISTS = 20
+        internal const val MAX_CUSTOM_FILTER_LISTS = 20
 
         private fun defaultHttpClient(): OkHttpClient =
             OkHttpClient.Builder()

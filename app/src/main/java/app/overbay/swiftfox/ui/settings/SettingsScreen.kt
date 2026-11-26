@@ -374,7 +374,7 @@ fun SettingsScreen(
                                     }
                                     is SyncAccountState.NeedsReauth -> acct.message
                                     SyncAccountState.Authenticating -> "Completing Mozilla sign-in..."
-                                    SyncAccountState.SignedOut -> "Sync bookmarks, history, open tabs & Zen Spaces"
+                                    SyncAccountState.SignedOut -> "Bookmarks, history, tabs, Zen Spaces & Swiftfox data"
                                 }
                                 SettingsNavigationRow(
                                     title = "Firefox & Zen Sync",
@@ -547,6 +547,8 @@ private fun searchGesturesSummary(settings: BrowserSettings): String = buildList
 private fun privacySummary(settings: BrowserSettings, siteOverrideCount: Int): String = buildList {
     if (settings.httpsOnlyMode) add("HTTPS-Only")
     if (settings.blockThirdPartyCookies) add("3P cookies blocked")
+    if (settings.backgroundMediaEnabled) add("Background media")
+    if (settings.pictureInPictureEnabled) add("PiP")
     val linkShort = when (settings.externalAppLinkPolicy) {
         ExternalAppLinkPolicy.ASK -> "Ask for links"
         ExternalAppLinkPolicy.ALWAYS_IN_SWIFTFOX -> "Links in Swiftfox"

@@ -166,7 +166,9 @@ class SwiftfoxApp : Application() {
             db = database,
             prefs = preferencesRepository,
             scope = appScope,
-            httpClientProvider = lazyClientProvider
+            httpClientProvider = lazyClientProvider,
+            filterListRepository = filterListRepository,
+            userscriptRepository = userscriptRepository
         )
         SyncWorkerBridge.onRunSync = {
             mozillaSyncCoordinator.syncNow(SyncReason.Startup)

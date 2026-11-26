@@ -322,27 +322,12 @@ object ZenSpacesCodec {
     fun metaGlobalAllowsSpacesWrite(
         metaGlobalPayloadJson: String?,
         parser: kotlinx.serialization.json.Json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
-    ): Boolean {
-        if (metaGlobalPayloadJson.isNullOrBlank()) return false
-        return runCatching {
-            val obj = parser.parseToJsonElement(metaGlobalPayloadJson) as? JsonObject ?: return false
-            val storagePrim = obj["storageVersion"] as? JsonPrimitive ?: return false
-            if (storagePrim.isString) return false
-            val storageVersion = storagePrim.doubleOrNull ?: return false
-            if (storageVersion != 5.0) return false
-            val declined = obj["declined"] as? JsonArray
-            if (declined != null && declined.any { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content == SPACES_COLLECTION }) {
-                return false
-            }
-            val engines = obj["engines"] as? JsonObject ?: return true
-            val spacesEngine = engines[SPACES_COLLECTION] as? JsonObject ?: return true
-            val versionEl = spacesEngine["version"] ?: return true
-            val versionPrim = versionEl as? JsonPrimitive ?: return false
-            if (versionPrim.isString) return false
-            val version = versionPrim.doubleOrNull ?: return false
-            version <= 1.0
-        }.getOrDefault(false)
-    }
+    ): Boolean = Sync15Transport.metaGlobalAllowsCollectionWrite(
+        metaGlobalPayloadJson = metaGlobalPayloadJson,
+        collection = SPACES_COLLECTION,
+        maxVersion = 1.0,
+        parser = parser
+    )
 
     fun encodeNewTabRecord(
         tabId: String = UUID.randomUUID().toString().lowercase(Locale.ROOT),

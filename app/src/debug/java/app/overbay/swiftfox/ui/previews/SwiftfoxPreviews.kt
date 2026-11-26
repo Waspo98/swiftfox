@@ -439,6 +439,7 @@ fun SyncOverlayPreview() {
             onToggleSyncHistory = {},
             onToggleSyncTabs = {},
             onToggleSyncZenSpaces = {},
+            onToggleSyncSwiftfox = {},
             onChangeSyncInterval = {},
             onImportBookmarksHtml = {},
             onExportBookmarksHtml = {}

@@ -2342,6 +2342,23 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         )
     }
 
+    /**
+     * Switches the active workspace shown on the New Tab / Start Page (updating Essentials & Pins)
+     * without opening a new tab or leaving the Start Page.
+     */
+    fun switchStartPageSpace(spaceId: String) {
+        val current = _uiState.value
+        if (current.spaces.none { it.id == spaceId }) return
+        if (!current.isPrivateView && current.activeSpaceId == spaceId) return
+        omniboxHolder.cancelJobsAndClearSuggestions()
+        _uiState.update {
+            it.copy(
+                isPrivateView = false,
+                activeSpaceId = spaceId
+            )
+        }
+    }
+
     fun selectSpace(spaceId: String) {
         stopActiveZapperIfRunning()
         omniboxHolder.cancelJobsAndClearSuggestions()
@@ -2353,7 +2370,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         if (prevTabId != null) {
             pool.getExisting(prevTabId)?.clearFindMatches()
         }
-        val spaceTabs = _uiState.value.tabs.filter {
+        val currentState = _uiState.value
+        val spaceTabs = currentState.tabs.filter {
             !it.isPrivate && !it.isUnloaded && !it.isEssentialTab && it.spaceId == spaceId
         }
         if (spaceTabs.isNotEmpty()) {
@@ -2376,6 +2394,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             syncActiveTabProgressAndBlocked(nextTabId)
             applyResolvedSettingsToTab(nextTabId, reloadIfModeChanged = true)
         } else {
+            val keepCurrentStartPage = WorkspaceTabResolver.shouldKeepStartPageOnSpaceSwitch(currentState, spaceId)
             _uiState.update {
                 it.copy(
                     isPrivateView = false,
@@ -2389,7 +2408,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     permissionPrompt = null
                 )
             }
-            createTab(spaceId = spaceId, isPrivate = false, selectImmediately = true, closeFoldedSidebar = false)
+            if (!keepCurrentStartPage) {
+                createTab(spaceId = spaceId, isPrivate = false, selectImmediately = true, closeFoldedSidebar = false)
+            }
         }
     }
 
@@ -2499,9 +2520,20 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             .mapNotNull { it.customIcon }
         val affectedTabIcons = affectedTabs.mapNotNull { it.customIcon }
         _uiState.update { state ->
+            val nextActiveSpaceId = if (wasActiveSpacePointer) fallback.id else state.activeSpaceId
+            val nextActiveTabId = if (!wasViewingDeletedSpace && state.activeTabId in affectedIds) {
+                WorkspaceTabResolver.resolveFallbackTabId(
+                    remainingTabs = remainingAfter,
+                    activeSpaceId = nextActiveSpaceId,
+                    isPrivateView = state.isPrivateView
+                )
+            } else {
+                state.activeTabId
+            }
             state.copy(
                 spaces = state.spaces.filterNot { it.id == spaceId },
-                activeSpaceId = if (wasActiveSpacePointer) fallback.id else state.activeSpaceId,
+                activeSpaceId = nextActiveSpaceId,
+                activeTabId = nextActiveTabId,
                 tabs = remainingAfter,
                 zenPinnedItems = state.zenPinnedItems.filterNot { it.spaceId == spaceId },
                 externalAppPrompt = if (wasViewingDeletedSpace || state.externalAppPrompt?.tabId in affectedIds) null else state.externalAppPrompt,
@@ -3636,6 +3668,20 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         readerRequestCounter.incrementAndGet()
         _uiState.value.permissionPrompt?.let(::denyPromptSilently)
         val active = _uiState.value.activeTab ?: createTab(url = url, selectImmediately = true)
+        val targetSpaceId = WorkspaceTabResolver.resolveNavigationTabSpaceId(
+            activeTab = active,
+            activeSpaceId = _uiState.value.activeSpaceId
+        )
+        if (targetSpaceId != active.spaceId && pool.getExisting(active.id) != null) {
+            val prevContainer = WorkspaceTabResolver.resolveSessionContainerProfile(active, _uiState.value.spaces)
+            val nextContainer = WorkspaceTabResolver.resolveSessionContainerProfile(
+                active.copy(spaceId = targetSpaceId),
+                _uiState.value.spaces
+            )
+            if (prevContainer != nextContainer) {
+                pool.remove(active.id)
+            }
+        }
         loadErrorDiagJobByTab.remove(active.id)?.cancel()
         app.userscriptBridge.cancelCallsForTab(active.id)
         // Discard any hibernated WebView bundle so re-creating the session loads the new URL
@@ -3672,6 +3718,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
         updateTab(active.id) {
             it.copy(
+                spaceId = targetSpaceId,
                 url = effectiveUrl,
                 title = if (effectiveUrl == OmniboxEngine.NEW_TAB_URL) {
                     "New Tab"

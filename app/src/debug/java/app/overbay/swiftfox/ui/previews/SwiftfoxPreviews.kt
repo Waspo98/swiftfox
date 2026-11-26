@@ -314,7 +314,6 @@ fun QuickActionsSectionPreview() {
                 onCycleWebDarkMode = {},
                 onEnterPip = {},
                 onLaunchZapper = {},
-                onOpenReaderMode = {},
                 onOpenSiteRules = {},
                 onFindInPage = {},
                 onPinEssential = {},

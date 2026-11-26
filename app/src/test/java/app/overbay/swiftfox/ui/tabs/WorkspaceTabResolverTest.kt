@@ -7,6 +7,7 @@ import app.overbay.swiftfox.data.prefs.BrowserSettings
 import app.overbay.swiftfox.data.prefs.ExternalAppLinkPolicy
 import app.overbay.swiftfox.engine.BrowserSession
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
+import app.overbay.swiftfox.ui.browser.BrowserOverlay
 import app.overbay.swiftfox.ui.browser.BrowserTabUi
 import app.overbay.swiftfox.ui.browser.BrowserUiState
 import app.overbay.swiftfox.ui.browser.MainFrameLoadError
@@ -631,6 +632,53 @@ class WorkspaceTabResolverTest {
         assertEquals(
             ExternalAppLinkPolicy.ALWAYS_IN_SWIFTFOX,
             BrowserSettings().externalAppLinkPolicy
+        )
+    }
+
+    @Test
+    fun startPageSpaceSwitchPreservesStartPageWhenTargetSpaceIsEmptyAndRebindsOnNavigation() {
+        val personalStart = BrowserTabUi(
+            id = "tab_start",
+            spaceId = "space_personal",
+            title = "New Tab",
+            url = OmniboxEngine.NEW_TAB_URL
+        )
+        val workPage = BrowserTabUi(
+            id = "tab_work",
+            spaceId = "space_work",
+            title = "Docs",
+            url = "https://docs.example.com"
+        )
+        val startState = BrowserUiState(
+            spaces = spaces,
+            activeSpaceId = "space_personal",
+            tabs = listOf(personalStart),
+            activeTabId = personalStart.id
+        )
+
+        assertTrue(WorkspaceTabResolver.shouldKeepStartPageOnSpaceSwitch(startState, "space_work"))
+        assertFalse(
+            WorkspaceTabResolver.shouldKeepStartPageOnSpaceSwitch(
+                startState.copy(activeOverlay = BrowserOverlay.TAB_SWITCHER),
+                "space_work"
+            )
+        )
+        assertFalse(
+            WorkspaceTabResolver.shouldKeepStartPageOnSpaceSwitch(
+                startState.copy(tabs = listOf(personalStart, workPage)),
+                "space_work"
+            )
+        )
+
+        // Navigating from the Start Page after switching workspace to Work moves the tab into Work
+        assertEquals(
+            "space_work",
+            WorkspaceTabResolver.resolveNavigationTabSpaceId(personalStart, "space_work")
+        )
+        // Existing webpage tabs stay in their own Space
+        assertEquals(
+            "space_work",
+            WorkspaceTabResolver.resolveNavigationTabSpaceId(workPage, "space_personal")
         )
     }
 }

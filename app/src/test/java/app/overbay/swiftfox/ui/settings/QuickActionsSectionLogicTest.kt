@@ -120,7 +120,6 @@ class QuickActionsSectionLogicTest {
         assertTrue(
             buildCompactQuickActionRows(
                 isWebPage = false,
-                isReaderAvailable = true,
                 hasActiveSiteRules = true,
                 showPinEssential = false,
                 showSendToZen = true
@@ -129,60 +128,50 @@ class QuickActionsSectionLogicTest {
 
         val privateRows = buildCompactQuickActionRows(
             isWebPage = true,
-            isReaderAvailable = false,
             hasActiveSiteRules = false,
             showPinEssential = false,
             showSendToZen = false
         )
-        assertEquals(listOf(2, 2), privateRows.map { it.size })
+        assertEquals(listOf(2, 1), privateRows.map { it.size })
         assertEquals(
             listOf(
                 CompactQuickActionId.FIND_IN_PAGE,
-                CompactQuickActionId.SITE_RULES,
-                CompactQuickActionId.READER_MODE,
-                CompactQuickActionId.PRINT
+                CompactQuickActionId.PRINT,
+                CompactQuickActionId.SITE_RULES
             ),
             privateRows.flatten().map { it.id }
         )
 
         val unsyncedRows = buildCompactQuickActionRows(
             isWebPage = true,
-            isReaderAvailable = true,
             hasActiveSiteRules = false,
             showPinEssential = true,
             showSendToZen = false
         )
-        assertEquals(listOf(2, 2, 1), unsyncedRows.map { it.size })
+        assertEquals(listOf(2, 2), unsyncedRows.map { it.size })
         assertEquals(
             listOf(
                 CompactQuickActionId.FIND_IN_PAGE,
-                CompactQuickActionId.SITE_RULES,
-                CompactQuickActionId.READER_MODE,
+                CompactQuickActionId.PRINT,
                 CompactQuickActionId.PIN_ESSENTIAL,
-                CompactQuickActionId.PRINT
+                CompactQuickActionId.SITE_RULES
             ),
             unsyncedRows.flatten().map { it.id }
         )
 
-        val siteRulesUnsynced = unsyncedRows[0][1]
+        val siteRulesUnsynced = unsyncedRows[1][1]
         assertFalse(siteRulesUnsynced.highlightedCue)
         assertNull(siteRulesUnsynced.stateAnnouncement)
 
-        val readerUnsynced = unsyncedRows[1][0]
-        assertTrue(readerUnsynced.highlightedCue)
-        assertEquals("Article ready", readerUnsynced.stateAnnouncement)
-
         val syncedRows = buildCompactQuickActionRows(
             isWebPage = true,
-            isReaderAvailable = false,
             hasActiveSiteRules = true,
             showPinEssential = true,
             showSendToZen = true
         )
-        assertEquals(listOf(2, 2, 2), syncedRows.map { it.size })
-        assertEquals(CompactQuickActionId.SEND_TO_ZEN, syncedRows[2][1].id)
-        assertTrue(syncedRows[0][1].highlightedCue)
-        assertEquals("Custom rules active", syncedRows[0][1].stateAnnouncement)
-        assertFalse(syncedRows[1][0].highlightedCue)
+        assertEquals(listOf(2, 2, 1), syncedRows.map { it.size })
+        assertEquals(CompactQuickActionId.SEND_TO_ZEN, syncedRows[2][0].id)
+        assertTrue(syncedRows[1][1].highlightedCue)
+        assertEquals("Custom rules active", syncedRows[1][1].stateAnnouncement)
     }
 }

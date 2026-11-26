@@ -49,7 +49,6 @@ import app.overbay.swiftfox.features.darkreader.DarkReaderConfig
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
 import app.overbay.swiftfox.features.sync.SyncAccountState
 import app.overbay.swiftfox.ui.browser.BrowserUiState
-import app.overbay.swiftfox.ui.icons.automirrored.MenuBook
 import app.overbay.swiftfox.ui.icons.automirrored.OpenInNew
 import app.overbay.swiftfox.ui.icons.automirrored.SendToMobile
 import app.overbay.swiftfox.ui.icons.rounded.AutoFixHigh
@@ -84,10 +83,9 @@ internal data class WebDarkTileUi(
 
 internal enum class CompactQuickActionId {
     FIND_IN_PAGE,
-    SITE_RULES,
-    READER_MODE,
-    PIN_ESSENTIAL,
     PRINT,
+    PIN_ESSENTIAL,
+    SITE_RULES,
     SEND_TO_ZEN
 }
 
@@ -156,7 +154,6 @@ internal fun resolveWebDarkTileUi(
 
 internal fun buildCompactQuickActionRows(
     isWebPage: Boolean,
-    isReaderAvailable: Boolean,
     hasActiveSiteRules: Boolean,
     showPinEssential: Boolean = isWebPage,
     showSendToZen: Boolean
@@ -171,18 +168,8 @@ internal fun buildCompactQuickActionRows(
         )
         add(
             CompactQuickActionSpec(
-                id = CompactQuickActionId.SITE_RULES,
-                label = "Site rules",
-                highlightedCue = hasActiveSiteRules,
-                stateAnnouncement = if (hasActiveSiteRules) "Custom rules active" else null
-            )
-        )
-        add(
-            CompactQuickActionSpec(
-                id = CompactQuickActionId.READER_MODE,
-                label = "Reader mode",
-                highlightedCue = isReaderAvailable,
-                stateAnnouncement = if (isReaderAvailable) "Article ready" else null
+                id = CompactQuickActionId.PRINT,
+                label = "Print"
             )
         )
         if (showPinEssential) {
@@ -195,8 +182,10 @@ internal fun buildCompactQuickActionRows(
         }
         add(
             CompactQuickActionSpec(
-                id = CompactQuickActionId.PRINT,
-                label = "Print"
+                id = CompactQuickActionId.SITE_RULES,
+                label = "Site rules",
+                highlightedCue = hasActiveSiteRules,
+                stateAnnouncement = if (hasActiveSiteRules) "Custom rules active" else null
             )
         )
         if (showSendToZen) {
@@ -225,7 +214,6 @@ fun QuickActionsSection(
     onCycleWebDarkMode: () -> Unit = {},
     onEnterPip: () -> Unit,
     onLaunchZapper: () -> Unit,
-    onOpenReaderMode: () -> Unit,
     onOpenSiteRules: () -> Unit,
     onFindInPage: () -> Unit,
     onPinEssential: () -> Unit,
@@ -316,14 +304,12 @@ fun QuickActionsSection(
 
     val compactActionRows = remember(
         isWebPage,
-        activeTab?.isReaderAvailable,
         hasActiveSiteRules,
         showPinEssential,
         showSendToZen
     ) {
         buildCompactQuickActionRows(
             isWebPage = isWebPage,
-            isReaderAvailable = activeTab?.isReaderAvailable == true,
             hasActiveSiteRules = hasActiveSiteRules,
             showPinEssential = showPinEssential,
             showSendToZen = showSendToZen
@@ -540,18 +526,16 @@ fun QuickActionsSection(
                             rowSpecs.forEach { spec ->
                                 val icon = when (spec.id) {
                                     CompactQuickActionId.FIND_IN_PAGE -> Icons.Rounded.FindInPage
-                                    CompactQuickActionId.SITE_RULES -> Icons.Rounded.Tune
-                                    CompactQuickActionId.READER_MODE -> Icons.AutoMirrored.Rounded.MenuBook
-                                    CompactQuickActionId.PIN_ESSENTIAL -> Icons.Rounded.PushPin
                                     CompactQuickActionId.PRINT -> Icons.Rounded.Print
+                                    CompactQuickActionId.PIN_ESSENTIAL -> Icons.Rounded.PushPin
+                                    CompactQuickActionId.SITE_RULES -> Icons.Rounded.Tune
                                     CompactQuickActionId.SEND_TO_ZEN -> Icons.AutoMirrored.Rounded.SendToMobile
                                 }
                                 val onClick = when (spec.id) {
                                     CompactQuickActionId.FIND_IN_PAGE -> onFindInPage
-                                    CompactQuickActionId.SITE_RULES -> onOpenSiteRules
-                                    CompactQuickActionId.READER_MODE -> onOpenReaderMode
-                                    CompactQuickActionId.PIN_ESSENTIAL -> onPinEssential
                                     CompactQuickActionId.PRINT -> onPrintPage
+                                    CompactQuickActionId.PIN_ESSENTIAL -> onPinEssential
+                                    CompactQuickActionId.SITE_RULES -> onOpenSiteRules
                                     CompactQuickActionId.SEND_TO_ZEN -> onSendToZenSpace
                                 }
                                 QuickCompactActionButton(

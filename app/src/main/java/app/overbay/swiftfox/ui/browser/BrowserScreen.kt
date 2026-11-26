@@ -541,6 +541,7 @@ fun BrowserScreen(
                 }
             },
             onSelectSpace = { viewModel.selectSpace(it) },
+            onSelectStartPageSpace = { viewModel.switchStartPageSpace(it) },
             onTogglePrivate = { viewModel.togglePrivateView(it) },
             onCreateSpace = { name, icon, isolated -> viewModel.createSpace(name, icon, isolated) },
             onDeleteSpace = { spaceId -> viewModel.deleteSpace(spaceId) },
@@ -1322,6 +1323,7 @@ internal fun BrowserShellLayout(
     onCloseFoldedSidebar: () -> Unit,
     onShareActiveTab: () -> Unit,
     onSelectSpace: (String) -> Unit,
+    onSelectStartPageSpace: (String) -> Unit = onSelectSpace,
     onTogglePrivate: (Boolean) -> Unit,
     onCreateSpace: (String, String, Boolean) -> Unit,
     onDeleteSpace: (String) -> Unit,
@@ -1658,6 +1660,7 @@ internal fun BrowserShellLayout(
                                 },
                                 onOpenUrl = onOpenUrl,
                                 onSelectSpace = onSelectSpace,
+                                onSelectStartPageSpace = onSelectStartPageSpace,
                                 onSelectTab = onSelectTab,
                                 onAddEssential = onAddEssential,
                                 onRemoveEssential = onRemoveEssential,

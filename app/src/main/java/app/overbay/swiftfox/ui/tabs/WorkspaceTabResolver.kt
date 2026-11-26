@@ -5,6 +5,7 @@ import app.overbay.swiftfox.data.db.SpaceEntity
 import app.overbay.swiftfox.data.prefs.BrowserSettings
 import app.overbay.swiftfox.engine.BrowserSession
 import app.overbay.swiftfox.features.omnibox.OmniboxEngine
+import app.overbay.swiftfox.ui.browser.BrowserOverlay
 import app.overbay.swiftfox.ui.browser.BrowserTabUi
 import app.overbay.swiftfox.ui.browser.BrowserUiState
 
@@ -193,5 +194,42 @@ object WorkspaceTabResolver {
             return state.tabs.any { it.isPrivate }
         }
         return collectLoadedEssentialsAndPinsInScope(state).isNotEmpty() || hasClosableRegularTabs(state)
+    }
+
+    /**
+     * When the user is already looking at a non-private Start Page in the main browser shell and
+     * switches to a Space that has no open regular tabs, stay on the Start Page and only change
+     * `activeSpaceId` instead of spawning an extra blank tab inside that Space.
+     */
+    fun shouldKeepStartPageOnSpaceSwitch(
+        state: BrowserUiState,
+        targetSpaceId: String
+    ): Boolean {
+        if (state.activeOverlay != BrowserOverlay.NONE || state.isPrivateView) return false
+        val active = state.activeTab ?: return false
+        if (!active.isStartPage || active.isPrivate) return false
+        return state.tabs.none { !it.isPrivate && !it.isUnloaded && !it.isEssentialTab && it.spaceId == targetSpaceId }
+    }
+
+    /**
+     * Aligns an unpinned Start Page tab's `spaceId` with the currently previewed [activeSpaceId]
+     * when the user navigates from the Start Page after switching workspaces there.
+     */
+    fun resolveNavigationTabSpaceId(
+        activeTab: BrowserTabUi,
+        activeSpaceId: String
+    ): String {
+        return if (
+            activeTab.isStartPage &&
+            !activeTab.isPrivate &&
+            !activeTab.isPinned &&
+            !activeTab.isBoundWorkspaceTab &&
+            activeSpaceId.isNotBlank() &&
+            activeSpaceId != ESSENTIAL_GLOBAL_SPACE_ID
+        ) {
+            activeSpaceId
+        } else {
+            activeTab.spaceId
+        }
     }
 }

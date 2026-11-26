@@ -111,6 +111,7 @@ fun StartPageContent(
     onFocusOmnibox: () -> Unit,
     onOpenUrl: (String) -> Unit,
     onSelectSpace: (String) -> Unit,
+    onSelectStartPageSpace: (String) -> Unit = onSelectSpace,
     onSelectTab: (String) -> Unit,
     onAddEssential: (String, String) -> Unit,
     onRemoveEssential: (String) -> Unit,
@@ -352,7 +353,7 @@ fun StartPageContent(
                     EditorialSpacesTabStrip(
                         spaces = displayedSpaces,
                         selectedSpaceId = state.activeSpaceId,
-                        onSelectSpace = onSelectSpace,
+                        onSelectSpace = onSelectStartPageSpace,
                         onLongPressSpace = { actionSpace = it },
                         horizontalPadding = 20.dp,
                         iconSize = 16.dp,

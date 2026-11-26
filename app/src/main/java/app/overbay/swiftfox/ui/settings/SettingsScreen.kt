@@ -255,7 +255,6 @@ fun SettingsScreen(
                                     onEnterPip()
                                 },
                                 onLaunchZapper = { viewModel.startElementZapper(primaryAccentHex) },
-                                onOpenReaderMode = { viewModel.openReaderMode() },
                                 onOpenSiteRules = { viewModel.toggleSiteRulesSheet(true) },
                                 onFindInPage = { viewModel.openFindInPage() },
                                 onPinEssential = { viewModel.pinCurrentTabToEssentials() },

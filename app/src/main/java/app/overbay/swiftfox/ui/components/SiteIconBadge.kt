@@ -154,7 +154,8 @@ fun SiteIconBadge(
     tint: Color = MaterialTheme.colorScheme.primary,
     monogramFontSize: TextUnit = (size.value * 0.44f).coerceIn(11f, 22f).sp,
     fallbackVector: ImageVector? = null,
-    fillImageToContainer: Boolean = false
+    fillImageToContainer: Boolean = false,
+    probeDistinctSubpath: Boolean = true
 ) {
     val repo = LocalFaviconRepository.current
     val reduceMotion = rememberReduceMotion()
@@ -203,16 +204,23 @@ fun SiteIconBadge(
         }
     }
 
-    // Single coroutine per website favicon badge: fetches on miss and filters global cache
-    // revisions by per-key revision so unrelated domain updates skip map lookups.
-    LaunchedEffect(spec, hostKey, url, privateTabId, repo) {
+    // Single coroutine per website favicon badge: fetches on miss (or unverified/subpath miss)
+    // and filters global cache revisions by per-key revision so unrelated domain updates skip map lookups.
+    LaunchedEffect(spec, hostKey, url, privateTabId, probeDistinctSubpath, repo) {
         if (spec != CustomIconSpec.None || repo == null) return@LaunchedEffect
         val cached = repo.getCachedFaviconForScope(scope, privateTabId)
         if (cached != null) {
             faviconBitmap = cached
-        } else if (privateTabId == null && hostKey != null) {
-            val fetched = repo.getOrFetchFavicon(url, privateTabId = null)
-            if (fetched != null) {
+        }
+        if (privateTabId == null && hostKey != null &&
+            (cached == null || repo.needsBackgroundFetch(scope, probeDistinctSubpath))
+        ) {
+            val fetched = repo.getOrFetchFavicon(
+                url = url,
+                privateTabId = null,
+                probeDistinctSubpath = probeDistinctSubpath
+            )
+            if (fetched != null && fetched !== faviconBitmap) {
                 faviconBitmap = fetched
             }
         }

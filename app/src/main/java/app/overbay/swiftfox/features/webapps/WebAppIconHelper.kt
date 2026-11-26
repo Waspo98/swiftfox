@@ -56,8 +56,7 @@ class WebAppIconHelper(
             val downloaded = downloadBitmap(iconUrl, cookieHeader)
             if (downloaded != null) return downloaded
         }
-        return faviconRepository.getCachedFavicon(pageUrl)
-            ?: faviconRepository.getOrFetchFavicon(pageUrl)
+        return faviconRepository.getOrFetchFavicon(pageUrl)
     }
 
     suspend fun resolveDisplayBitmap(

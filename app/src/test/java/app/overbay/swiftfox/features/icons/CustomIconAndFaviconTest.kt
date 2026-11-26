@@ -85,6 +85,45 @@ class CustomIconAndFaviconTest {
     }
 
     @Test
+    fun htmlIconExtractorDecodesEntitiesAndExcludesMaskIcons() {
+        val html = """
+            <html><head>
+              <link rel="mask-icon" href="/safari-pin.png" color="#000000">
+              <link rel="icon" type="image/png" sizes="64x64" href="/img/icon?w=64&amp;fmt=png">
+            </head></html>
+        """.trimIndent()
+
+        val candidates = FaviconRepository.extractIconCandidatesFromHtml(html, "https://www.nytimes.com/athletic")
+        assertEquals(
+            listOf("https://www.nytimes.com/img/icon?w=64&fmt=png"),
+            candidates
+        )
+    }
+
+    @Test
+    fun buildPublicSubpathProbeTargetsTargetsSubpathOnly() {
+        val bareScope = FaviconRepository.resolveScope("https://www.nytimes.com/athletic")!!
+        val bareTargets = FaviconRepository.buildPublicSubpathProbeTargets("https://www.nytimes.com/athletic", bareScope)!!
+        assertEquals("https://www.nytimes.com/athletic", bareTargets.htmlProbeUrl)
+        assertEquals("https://www.nytimes.com/athletic/", bareTargets.alternateHtmlProbeUrl)
+        assertEquals(
+            listOf(
+                "https://www.nytimes.com/athletic/apple-touch-icon.png",
+                "https://www.nytimes.com/athletic/favicon.ico"
+            ),
+            bareTargets.directIconUrls
+        )
+
+        val deepScope = FaviconRepository.resolveScope("https://www.nytimes.com/athletic/nfl/story-1")!!
+        val deepTargets = FaviconRepository.buildPublicSubpathProbeTargets("https://www.nytimes.com/athletic/nfl/story-1", deepScope)!!
+        assertEquals("https://www.nytimes.com/athletic/", deepTargets.htmlProbeUrl)
+        assertEquals("https://www.nytimes.com/athletic", deepTargets.alternateHtmlProbeUrl)
+
+        val lanScope = FaviconRepository.resolveScope("https://192.168.86.200/radarr")!!
+        assertNull(FaviconRepository.buildPublicSubpathProbeTargets("https://192.168.86.200/radarr", lanScope))
+    }
+
+    @Test
     fun publicFallbackHostGuardProtectsLanAndLocalHosts() {
         assertFalse(FaviconRepository.isPublicFallbackEligibleHost("localhost"))
         assertFalse(FaviconRepository.isPublicFallbackEligibleHost("192.168.86.200"))
@@ -241,6 +280,254 @@ class CustomIconAndFaviconTest {
         assertTrue(FaviconRepository.arePixelSamplesSimilar(blueDocs, nearBlueDocs))
         assertFalse(FaviconRepository.arePixelSamplesSimilar(blueDocs, greenSheets))
         assertFalse(FaviconRepository.arePixelSamplesSimilar(IntArray(0), IntArray(0)))
+    }
+
+    @Test
+    fun pixelSampleSimilarityDistinguishesBlackAndWhiteLetterIcons() {
+        val white = 0xFFFFFFFF.toInt()
+        val black = 0xFF000000.toInt()
+        val nearBlack = 0xFF080808.toInt()
+
+        // 8x8 'T' on white vs 8x8 'A' on white: mostly shared white background, distinct letter strokes
+        val nytGrid = intArrayOf(
+            white, white, white, white, white, white, white, white,
+            white, black, black, black, black, black, black, white,
+            white, white, white, black, black, white, white, white,
+            white, white, white, black, black, white, white, white,
+            white, white, white, black, black, white, white, white,
+            white, white, white, black, black, white, white, white,
+            white, white, white, black, black, white, white, white,
+            white, white, white, white, white, white, white, white
+        )
+        val nytNearGrid = nytGrid.map { if (it == black) nearBlack else it }.toIntArray()
+        val athleticGrid = intArrayOf(
+            white, white, white, white, white, white, white, white,
+            white, white, white, black, black, white, white, white,
+            white, white, black, white, white, black, white, white,
+            white, white, black, white, white, black, white, white,
+            white, black, black, black, black, black, black, white,
+            white, black, white, white, white, white, black, white,
+            white, black, white, white, white, white, black, white,
+            white, white, white, white, white, white, white, white
+        )
+
+        assertTrue(FaviconRepository.arePixelSamplesSimilar(nytGrid, nytNearGrid))
+        assertFalse(FaviconRepository.arePixelSamplesSimilar(nytGrid, athleticGrid))
+    }
+
+    private fun testIcon(id: String, width: Int, color: Int): SampledIcon<String> =
+        SampledIcon(value = id, width = width, samplePixels = IntArray(64) { color })
+
+    private class FakeFaviconStore(
+        val disk: MutableMap<String, SampledIcon<String>> = mutableMapOf(),
+        val legacyKeys: MutableSet<String> = mutableSetOf(),
+        val provisionalSeeds: MutableMap<String, String> = mutableMapOf()
+    ) {
+        val memory: MutableMap<String, SampledIcon<String>> = mutableMapOf()
+        var rootFetchCalls = 0
+        var subpathFetchCalls = 0
+        var rootNetworkHandler: (String) -> SampledIcon<String>? = { null }
+        var subpathNetworkHandler: (String) -> SampledIcon<String>? = { null }
+
+        fun newCoordinator(scope: TestScope, dispatcher: kotlinx.coroutines.CoroutineDispatcher): PublicFaviconCoordinator<String> {
+            val fetchGate = FaviconFetchGate<SampledIcon<String>>(fetchScope = scope, fetchDispatcher = dispatcher)
+            val subpathGate = FaviconFetchGate<SampledIcon<String>>(fetchScope = scope, fetchDispatcher = dispatcher)
+            return PublicFaviconCoordinator(
+                fetchGate = fetchGate,
+                subpathFetchGate = subpathGate,
+                getInMemory = { key -> memory[key] },
+                loadFromDisk = { key -> disk[key] },
+                putBitmap = { key, icon, writeDisk ->
+                    memory[key] = icon
+                    if (writeDisk) disk[key] = icon
+                },
+                removeBitmap = { key ->
+                    memory.remove(key)
+                    disk.remove(key)
+                },
+                isLegacyUnverified = { key -> legacyKeys.contains(key) },
+                markVerified = { key -> legacyKeys.remove(key) },
+                getProvisionalPath = { auth -> provisionalSeeds[auth] },
+                setProvisionalPath = { auth, path ->
+                    if (path == null) provisionalSeeds.remove(auth) else provisionalSeeds[auth] = path
+                },
+                fetchNetworkRoot = { url, _ ->
+                    rootFetchCalls++
+                    rootNetworkHandler(url)
+                },
+                fetchNetworkSubpath = { url, _ ->
+                    subpathFetchCalls++
+                    subpathNetworkHandler(url)
+                },
+                areSimilar = { a, b -> FaviconRepository.arePixelSamplesSimilar(a, b) }
+            )
+        }
+    }
+
+    @Test
+    fun publicFaviconCoordinatorSeparatesNytimesAndAthleticAcrossRestartsAndOrders() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val repoScope = TestScope(dispatcher)
+        val nytIcon = testIcon("nyt", 96, 0xFFFFFFFF.toInt())
+        val athleticIcon = testIcon("athletic", 64, 0xFF111111.toInt())
+
+        // 1. NYTimes cached on disk (e.g. from prior session), then app restarts with empty RAM/baselines,
+        // and user opens https://www.nytimes.com/athletic in WebView: Athletic must NOT overwrite NYT
+        // and must NOT be dropped even though NYT (96px) is wider than Athletic (64px).
+        val store1 = FakeFaviconStore()
+        store1.disk["nytimes.com"] = nytIcon
+        val coord1 = store1.newCoordinator(repoScope, dispatcher)
+
+        val athleticScope = FaviconRepository.resolveScope("https://www.nytimes.com/athletic")!!
+        val res1 = coord1.recordWebViewIcon(
+            originalUrl = "https://www.nytimes.com/athletic",
+            scope = athleticScope,
+            originRootUrl = "https://www.nytimes.com/",
+            incoming = athleticIcon
+        )
+        assertEquals("nytimes.com/athletic", res1.writtenKey)
+        assertEquals(nytIcon, store1.disk["nytimes.com"])
+        assertEquals(athleticIcon, store1.disk["nytimes.com/athletic"])
+
+        // Regular NYTimes article sharing the same icon must NOT create duplicate subpath file
+        val articleScope = FaviconRepository.resolveScope("https://www.nytimes.com/2026/11/story")!!
+        coord1.recordWebViewIcon(
+            originalUrl = "https://www.nytimes.com/2026/11/story",
+            scope = articleScope,
+            originRootUrl = "https://www.nytimes.com/",
+            incoming = testIcon("nyt_article", 48, 0xFFFCFCFC.toInt())
+        )
+        assertNull(store1.disk["nytimes.com/2026"])
+
+        // 2. Athletic visited FIRST in WebView while offline (root network returns null), then app restarts,
+        // then NYTimes root is visited in WebView with smaller bitmap (48px < 96px): provisional marker
+        // allows root to replace nytimes.com while preserving nytimes.com/athletic.
+        val store2 = FakeFaviconStore()
+        val bigAthletic = testIcon("athletic_96", 96, 0xFF111111.toInt())
+        val smallNyt = testIcon("nyt_48", 48, 0xFFFFFFFF.toInt())
+        val coord2a = store2.newCoordinator(repoScope, dispatcher)
+        coord2a.recordWebViewIcon(
+            originalUrl = "https://www.nytimes.com/athletic",
+            scope = athleticScope,
+            originRootUrl = "https://www.nytimes.com/",
+            incoming = bigAthletic
+        )
+        assertEquals(bigAthletic, store2.disk["nytimes.com/athletic"])
+        assertEquals("nytimes.com/athletic", store2.provisionalSeeds["nytimes.com"])
+
+        // Simulate app restart
+        val coord2b = store2.newCoordinator(repoScope, dispatcher)
+        val nytRootScope = FaviconRepository.resolveScope("https://www.nytimes.com/")!!
+        coord2b.recordWebViewIcon(
+            originalUrl = "https://www.nytimes.com/",
+            scope = nytRootScope,
+            originRootUrl = "https://www.nytimes.com/",
+            incoming = smallNyt
+        )
+        assertEquals(smallNyt, store2.disk["nytimes.com"])
+        assertEquals(bigAthletic, store2.disk["nytimes.com/athletic"])
+        assertNull(store2.provisionalSeeds["nytimes.com"])
+
+        // 3. Athletic visited FIRST online: root fetch populates nytimes.com cleanly without polluting root
+        val store3 = FakeFaviconStore()
+        store3.rootNetworkHandler = { nytIcon }
+        val coord3 = store3.newCoordinator(repoScope, dispatcher)
+        coord3.recordWebViewIcon(
+            originalUrl = "https://www.nytimes.com/athletic",
+            scope = athleticScope,
+            originRootUrl = "https://www.nytimes.com/",
+            incoming = athleticIcon
+        )
+        assertEquals(nytIcon, store3.disk["nytimes.com"])
+        assertEquals(athleticIcon, store3.disk["nytimes.com/athletic"])
+    }
+
+    @Test
+    fun publicFaviconCoordinatorBadgesProbeDistinctSubpathsAndRepairLegacyCache() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val repoScope = TestScope(dispatcher)
+        val nytIcon = testIcon("nyt", 96, 0xFFFFFFFF.toInt())
+        val athleticIcon = testIcon("athletic", 96, 0xFF111111.toInt())
+
+        // 1. Even when nytimes.com is already cached, probing nytimes.com/athletic discovers Athletic icon
+        val store = FakeFaviconStore()
+        store.disk["nytimes.com"] = nytIcon
+        store.subpathNetworkHandler = { url ->
+            when {
+                url.contains("/athletic") -> athleticIcon
+                url.contains("/2026") -> nytIcon
+                else -> null
+            }
+        }
+        val coord = store.newCoordinator(repoScope, dispatcher)
+        val athleticScope = FaviconRepository.resolveScope("https://www.nytimes.com/athletic")!!
+        val articleScope = FaviconRepository.resolveScope("https://www.nytimes.com/2026/11/story")!!
+
+        assertTrue(coord.needsBackgroundFetch(athleticScope, probeDistinctSubpath = true))
+        val fetchedAthletic = coord.getOrFetch(
+            originalUrl = "https://www.nytimes.com/athletic",
+            scope = athleticScope,
+            originRootUrl = "https://www.nytimes.com/",
+            probeDistinctSubpath = true
+        )
+        assertEquals("athletic", fetchedAthletic)
+        assertEquals(athleticIcon, store.disk["nytimes.com/athletic"])
+        assertFalse(coord.needsBackgroundFetch(athleticScope, probeDistinctSubpath = true))
+
+        // Regular article subpath matching root icon does NOT write a duplicate entry or re-probe
+        val fetchedArticle = coord.getOrFetch(
+            originalUrl = "https://www.nytimes.com/2026/11/story",
+            scope = articleScope,
+            originRootUrl = "https://www.nytimes.com/",
+            probeDistinctSubpath = true
+        )
+        assertEquals("nyt", fetchedArticle)
+        assertNull(store.disk["nytimes.com/2026"])
+        assertFalse(coord.needsBackgroundFetch(articleScope, probeDistinctSubpath = true))
+
+        // History mode (probeDistinctSubpath = false) loads existing disk subpath after restart with 0 network probes
+        val restartedCoord = store.newCoordinator(repoScope, dispatcher)
+        val callsBeforeHistory = store.subpathFetchCalls
+        val historyAthletic = restartedCoord.getOrFetch(
+            originalUrl = "https://www.nytimes.com/athletic/story",
+            scope = FaviconRepository.resolveScope("https://www.nytimes.com/athletic/story")!!,
+            originRootUrl = "https://www.nytimes.com/",
+            probeDistinctSubpath = false
+        )
+        assertEquals("athletic", historyAthletic)
+        assertEquals(callsBeforeHistory, store.subpathFetchCalls)
+
+        // 2. Legacy v1 cache repair: nytimes.com previously polluted with athleticIcon refreshes once to nytIcon
+        val legacyStore = FakeFaviconStore(
+            disk = mutableMapOf("nytimes.com" to athleticIcon),
+            legacyKeys = mutableSetOf("nytimes.com")
+        )
+        legacyStore.rootNetworkHandler = { nytIcon }
+        val legacyCoord = legacyStore.newCoordinator(repoScope, dispatcher)
+        val nytScope = FaviconRepository.resolveScope("https://www.nytimes.com/")!!
+        assertTrue(legacyCoord.needsBackgroundFetch(nytScope, probeDistinctSubpath = true))
+        val repaired = legacyCoord.getOrFetch(
+            originalUrl = "https://www.nytimes.com/",
+            scope = nytScope,
+            originRootUrl = "https://www.nytimes.com/",
+            probeDistinctSubpath = true
+        )
+        assertEquals("nyt", repaired)
+        assertEquals(nytIcon, legacyStore.disk["nytimes.com"])
+        assertFalse(legacyStore.legacyKeys.contains("nytimes.com"))
+
+        // 3. Blocked subpath probe (returns null) must NOT poison subpath with root icon
+        val blockedStore = FakeFaviconStore(disk = mutableMapOf("nytimes.com" to nytIcon))
+        blockedStore.subpathNetworkHandler = { null }
+        val blockedCoord = blockedStore.newCoordinator(repoScope, dispatcher)
+        val fallbackRes = blockedCoord.getOrFetch(
+            originalUrl = "https://www.nytimes.com/athletic",
+            scope = athleticScope,
+            originRootUrl = "https://www.nytimes.com/",
+            probeDistinctSubpath = true
+        )
+        assertEquals("nyt", fallbackRes)
+        assertNull(blockedStore.disk["nytimes.com/athletic"])
     }
 
     @Test

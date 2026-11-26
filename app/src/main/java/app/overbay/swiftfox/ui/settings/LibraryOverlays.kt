@@ -361,6 +361,7 @@ fun HistoryOverlay(
                         title = entry.title,
                         subtitle = hostSubtitle,
                         faviconUrl = entry.url,
+                        probeDistinctSubpath = false,
                         onClick = { onOpenUrl(entry.url) },
                         onDelete = { onDeleteEntry(entry.url) }
                     )
@@ -503,6 +504,7 @@ private fun LibraryItemRow(
     title: String,
     subtitle: String,
     faviconUrl: String? = null,
+    probeDistinctSubpath: Boolean = true,
     onClick: () -> Unit,
     onDelete: () -> Unit
 ) {
@@ -527,7 +529,8 @@ private fun LibraryItemRow(
                     iconSize = 20.dp,
                     shape = RoundedCornerShape(10.dp),
                     containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    fillImageToContainer = true
+                    fillImageToContainer = true,
+                    probeDistinctSubpath = probeDistinctSubpath
                 )
             }
             Column(modifier = Modifier.weight(1f)) {

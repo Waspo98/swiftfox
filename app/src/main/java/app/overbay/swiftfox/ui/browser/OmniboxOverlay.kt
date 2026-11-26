@@ -765,7 +765,8 @@ private fun SuggestionRow(
                         MaterialTheme.colorScheme.onSurfaceVariant
                     },
                     fallbackVector = fallbackIcon,
-                    fillImageToContainer = true
+                    fillImageToContainer = true,
+                    probeDistinctSubpath = suggestion.kind != SuggestionKind.HISTORY
                 )
             } else {
                 Surface(

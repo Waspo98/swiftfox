@@ -335,4 +335,50 @@ class DarkReaderConfigTest {
         assertTrue(assembled.contains("(ensureDarkReader,createAmoled);"))
         assertFalse(assembled.contains("SwiftfoxNativeChannel"))
     }
+
+    @Test
+    fun darkReaderPatchesProtectCssStyledAndBackgroundlessSvgLogos() {
+        val drFile = listOf(
+            File("src/main/assets/js/darkreader.min.js"),
+            File("app/src/main/assets/js/darkreader.min.js")
+        ).first { it.exists() }
+        val amoledFile = listOf(
+            File("src/main/assets/js/darkreader_amoled.js"),
+            File("app/src/main/assets/js/darkreader_amoled.js")
+        ).first { it.exists() }
+        val subframeFile = listOf(
+            File("src/main/assets/js/darkreader_subframe.js"),
+            File("app/src/main/assets/js/darkreader_subframe.js")
+        ).first { it.exists() }
+
+        val rawBytes = drFile.readBytes()
+        assertFalse(rawBytes.decodeToString().contains("\r\n"))
+
+        val drJs = drFile.readText(Charsets.UTF_8)
+        assertTrue(drJs.contains("Swiftfox patches applied on top of darkreader@4.9.135"))
+        assertTrue(drJs.contains("data-darkreader-inline-attr-fill"))
+        assertTrue(drJs.contains("data-darkreader-inline-attr-stroke"))
+        assertTrue(drJs.contains("@layer darkreader {"))
+        assertTrue(drJs.contains(":where([\${e}])"))
+        assertTrue(drJs.contains("const sfAttrInline = {"))
+        assertTrue(drJs.contains("function sfRemoveInlineAttrs("))
+        assertTrue(drJs.contains("function sfContainerPaintsBackdropRect("))
+        assertTrue(drJs.contains("function sfHasLaterContrastingShape("))
+        assertTrue(drJs.contains("function sfHasLogoSemantics("))
+        assertTrue(drJs.contains("function sfIsForegroundSvgFill("))
+        assertTrue(drJs.contains("el instanceof SVGRectElement"))
+        assertTrue(drJs.contains("""rootSvg.getAttribute("preserveAspectRatio") === "none""""))
+        assertTrue(drJs.contains("""e.hasAttribute("fill")&&!(e.style&&e.style.getPropertyValue("fill"))"""))
+        assertTrue(drJs.contains("""e.hasAttribute("stroke")&&!(e.style&&e.style.getPropertyValue("stroke"))"""))
+
+        // Subframe runtime assembly preserves the patched Dark Reader helper definitions cleanly
+        val injector = DarkReaderInjector(null)
+        val assembledSubframe = injector.assembleSubframeRuntimeScript(
+            drJs,
+            amoledFile.readText(Charsets.UTF_8),
+            subframeFile.readText(Charsets.UTF_8)
+        )
+        assertTrue(assembledSubframe.contains("sfIsForegroundSvgFill"))
+        assertTrue(assembledSubframe.contains("data-darkreader-inline-attr-fill"))
+    }
 }

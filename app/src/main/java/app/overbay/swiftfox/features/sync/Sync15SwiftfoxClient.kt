@@ -408,7 +408,17 @@ private class RoomSwiftfoxSyncLocalStore(
                         spacePins.filter { it.folderId == null || it.folderId !in folderIds }.forEach {
                             add(Triple(it.sortOrder, false, it))
                         }
-                    }.sortedWith(compareBy<Triple<Int, Boolean, Any>> { it.first }.thenByDescending { it.second })
+                    }.sortedWith(
+                        compareBy<Triple<Int, Boolean, Any>> { it.first }
+                            .thenByDescending { it.second }
+                            .thenBy { (_, _, item) ->
+                                when (item) {
+                                    is app.overbay.swiftfox.data.db.PinnedFolderEntity -> item.id
+                                    is app.overbay.swiftfox.data.db.TabEntity -> item.id
+                                    else -> ""
+                                }
+                            }
+                    )
 
                     topLevel.forEachIndexed { idx, (_, _, item) ->
                         when (item) {
@@ -442,7 +452,7 @@ private class RoomSwiftfoxSyncLocalStore(
                     for (folder in spaceFolders) {
                         spacePins
                             .filter { it.folderId == folder.id }
-                            .sortedBy { it.sortOrder }
+                            .sortedWith(compareBy<app.overbay.swiftfox.data.db.TabEntity> { it.sortOrder }.thenBy { it.id })
                             .forEachIndexed { idx, tab ->
                                 if (tab.id in remappedPinIds) {
                                     val bsoId = SwiftfoxSyncCodec.pinnedTabBsoId(tab.id)

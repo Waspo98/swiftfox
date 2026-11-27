@@ -97,9 +97,6 @@ interface TabDao {
     @Query("UPDATE tabs SET folderId = NULL WHERE folderId = :folderId")
     suspend fun clearFolderId(folderId: String)
 
-    @Query("DELETE FROM tabs WHERE folderId = :folderId")
-    suspend fun deleteByFolderId(folderId: String)
-
     @Query("DELETE FROM tabs WHERE id = :tabId")
     suspend fun deleteById(tabId: String)
 

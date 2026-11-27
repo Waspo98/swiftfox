@@ -256,4 +256,65 @@ class WorkspacePinnedFolderLogicTest {
         assertEquals("space_work", converted.spaceId)
         assertNotNull(loadedMove.updatedTabs.firstOrNull { it.id == boundTab.id })
     }
+
+    @Test
+    fun movePinnedTabToFolder_andReorderTopLevelAndFolderChildren_preserveBucketOrder() {
+        val f1 = PinnedFolderEntity(id = "f1", spaceId = "space_personal", name = "Work", isExpanded = false, sortOrder = 0)
+        val p1 = BrowserTabUi(id = "p1", spaceId = "space_personal", title = "Mail", url = "https://mail.test", isPinned = true, sortOrder = 1)
+        val p2 = BrowserTabUi(id = "p2", spaceId = "space_personal", title = "Docs", url = "https://docs.test", isPinned = true, sortOrder = 2)
+
+        // Move p1 into collapsed f1 -> expands f1, places p1 at index 0 inside f1, normalizes top-level p2 to 1
+        val movedIn = WorkspacePinnedFolderLogic.applyMovePinnedTabToFolder(
+            folders = listOf(f1),
+            tabs = listOf(p1, p2),
+            tabId = "p1",
+            targetFolderId = "f1"
+        )!!
+        assertTrue(movedIn.folders.single().isExpanded)
+        val p1Moved = movedIn.tabs.first { it.id == "p1" }
+        assertEquals("f1", p1Moved.folderId)
+        assertEquals(0, p1Moved.sortOrder)
+        assertEquals(1, movedIn.tabs.first { it.id == "p2" }.sortOrder)
+
+        // Move p2 into f1 -> appended at index 1 inside f1
+        val movedSecond = WorkspacePinnedFolderLogic.applyMovePinnedTabToFolder(
+            folders = movedIn.folders,
+            tabs = movedIn.tabs,
+            tabId = "p2",
+            targetFolderId = "f1"
+        )!!
+        assertEquals(1, movedSecond.tabs.first { it.id == "p2" }.sortOrder)
+
+        // Reorder tabs inside f1 -> p2 before p1
+        val (reorderedChildren, touchedIds) = WorkspacePinnedFolderLogic.applyReorderFolderPinnedTabs(
+            tabs = movedSecond.tabs,
+            spaceId = "space_personal",
+            folderId = "f1",
+            orderedTabIds = listOf("p2", "p1")
+        )
+        assertEquals(setOf("p1", "p2"), touchedIds)
+        assertEquals(0, WorkspacePinnedFolderLogic.computeLocalPinnedOrderIndex(movedSecond.folders, reorderedChildren, reorderedChildren.first { it.id == "p2" }))
+        assertEquals(1, WorkspacePinnedFolderLogic.computeLocalPinnedOrderIndex(movedSecond.folders, reorderedChildren, reorderedChildren.first { it.id == "p1" }))
+
+        // Move p2 back out to top level and reorder top level so p2 precedes f1
+        val movedOut = WorkspacePinnedFolderLogic.applyMovePinnedTabToFolder(
+            folders = movedSecond.folders,
+            tabs = reorderedChildren,
+            tabId = "p2",
+            targetFolderId = null
+        )!!
+        val reorderedTop = WorkspacePinnedFolderLogic.applyReorderTopLevelPinned(
+            folders = movedOut.folders,
+            tabs = movedOut.tabs,
+            spaceId = "space_personal",
+            orderedEntryKeys = listOf("tab:p2", "folder:f1")
+        )
+        val display = WorkspacePinnedFolderLogic.buildLocalPinnedDisplayList(
+            reorderedTop.folders,
+            reorderedTop.tabs,
+            "space_personal"
+        )
+        assertEquals(listOf("tab:p2", "folder:f1"), display.map { it.entryKey })
+        assertEquals(0, WorkspacePinnedFolderLogic.computeLocalPinnedOrderIndex(reorderedTop.folders, reorderedTop.tabs, reorderedTop.tabs.first { it.id == "p2" }))
+    }
 }

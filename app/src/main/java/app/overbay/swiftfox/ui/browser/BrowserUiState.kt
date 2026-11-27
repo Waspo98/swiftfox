@@ -357,11 +357,6 @@ data class BrowserUiState(
     val activeSpaceZenPinned: List<ZenPinnedItemEntity>
         get() = zenPinnedItems.filter { it.spaceId == activeSpaceId }
 
-    val activeSpacePinnedFolders: List<PinnedFolderEntity>
-        get() = pinnedFolders
-            .filter { it.spaceId == activeSpaceId }
-            .sortedWith(compareBy<PinnedFolderEntity> { it.sortOrder }.thenBy { it.createdAt })
-
     fun isZenFolderExpanded(spaceId: String, folderName: String): Boolean =
         zenFolderKey(spaceId, folderName) !in collapsedZenFolders
 

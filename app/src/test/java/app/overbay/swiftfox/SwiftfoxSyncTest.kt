@@ -1082,4 +1082,121 @@ class SwiftfoxSyncTest {
         assertEquals(2, syncedPinsById.getValue("pin_bottom").sortOrder)
         assertNull(syncedPinsById.getValue("pin_bottom").folderId)
     }
+
+    @Test
+    fun remoteFolderDeletionAndRenameSyncWithoutOrphanPingPong() {
+        val workSpace = SpaceEntity(id = "space_work", name = "Work", sortOrder = 0)
+        val otherSpace = SpaceEntity(id = "space_play", name = "Play", sortOrder = 1)
+        val folderDev = PinnedFolderEntity(
+            id = "folder_dev",
+            spaceId = "space_work",
+            name = "Dev",
+            customIcon = "icon:code",
+            isExpanded = false,
+            sortOrder = 0,
+            createdAt = 500L
+        )
+        val devPin = TabEntity(
+            id = "pin_gh",
+            spaceId = "space_work",
+            title = "GitHub",
+            url = "https://github.com",
+            isPrivate = false,
+            isPinned = true,
+            sortOrder = 0,
+            pinnedUrl = "https://github.com",
+            folderId = folderDev.id
+        )
+        val localSettings = BrowserSettings()
+        fun snap(folders: List<PinnedFolderEntity>, pins: List<TabEntity>) = SwiftfoxSyncReconciler.LocalSnapshot(
+            settings = localSettings,
+            settingsUpdatedAtMs = 1_000L,
+            siteOverrides = emptyList(),
+            zappedRules = emptyList(),
+            filterLists = emptyList(),
+            userscripts = emptyList(),
+            localSpaces = listOf(workSpace, otherSpace),
+            zenSpacesCount = 0,
+            localEssentials = emptyList(),
+            zenEssentialsCount = 0,
+            localPinnedFolders = folders,
+            localPinnedTabs = pins
+        )
+
+        // Initial push from Device A
+        val push1 = SwiftfoxSyncReconciler.buildPlan(
+            local = snap(listOf(folderDev), listOf(devPin)),
+            baseline = SwiftfoxSyncBaseline(),
+            remoteRawRecords = emptyList(),
+            nowMs = 1_000L
+        )
+        // Device B pulls initial folder + pin and collapses/keeps local isExpanded=false
+        val pullB = SwiftfoxSyncReconciler.buildPlan(
+            local = snap(emptyList(), emptyList()),
+            baseline = SwiftfoxSyncBaseline(),
+            remoteRawRecords = push1.outgoingBsos,
+            nowMs = 2_000L
+        )
+        val folderOnB = pullB.pinnedFoldersPlan.upserts.single().copy(isExpanded = false)
+        val pinOnB = pullB.pinnedTabsPlan.upserts.single()
+
+        // Device A renames folder and changes its icon + moves to otherSpace alongside devPin
+        val renamedFolderA = folderDev.copy(spaceId = otherSpace.id, name = "Engineering", customIcon = "icon:rocket")
+        val movedPinA = devPin.copy(spaceId = otherSpace.id, folderId = renamedFolderA.id, sortOrder = 0)
+        val push2 = SwiftfoxSyncReconciler.buildPlan(
+            local = snap(listOf(renamedFolderA), listOf(movedPinA)),
+            baseline = push1.nextBaseline,
+            remoteRawRecords = push1.outgoingBsos,
+            nowMs = 3_000L
+        )
+        val serverRecordsAfterMove = (push1.outgoingBsos.toMap() + push2.outgoingBsos.toMap()).toList()
+
+        // Device B pulls rename + cross-Space move while preserving local isExpanded=false
+        val pullMoveB = SwiftfoxSyncReconciler.buildPlan(
+            local = snap(listOf(folderOnB), listOf(pinOnB)),
+            baseline = pullB.nextBaseline,
+            remoteRawRecords = serverRecordsAfterMove,
+            nowMs = 4_000L
+        )
+        val movedFolderOnB = pullMoveB.pinnedFoldersPlan.upserts.single()
+        val movedPinOnB = pullMoveB.pinnedTabsPlan.upserts.single()
+        assertEquals("Engineering", movedFolderOnB.name)
+        assertEquals("icon:rocket", movedFolderOnB.customIcon)
+        assertEquals(otherSpace.id, movedFolderOnB.spaceId)
+        assertFalse(movedFolderOnB.isExpanded)
+        assertEquals(otherSpace.id, movedPinOnB.spaceId)
+        assertEquals(renamedFolderA.id, movedPinOnB.folderId)
+
+        // Device A deletes folder while keeping devPin ungrouped
+        val ungroupedPinA = movedPinA.copy(folderId = null, sortOrder = 0)
+        val pushDeleteA = SwiftfoxSyncReconciler.buildPlan(
+            local = snap(emptyList(), listOf(ungroupedPinA)),
+            baseline = push2.nextBaseline,
+            remoteRawRecords = serverRecordsAfterMove,
+            nowMs = 5_000L
+        )
+        val serverRecordsAfterDelete = (serverRecordsAfterMove.toMap() + pushDeleteA.outgoingBsos.toMap()).toList()
+
+        // Device B pulls deletion and ungroups devPin cleanly without pushing stale state back
+        val pullDeleteB = SwiftfoxSyncReconciler.buildPlan(
+            local = snap(listOf(movedFolderOnB), listOf(movedPinOnB)),
+            baseline = pullMoveB.nextBaseline,
+            remoteRawRecords = serverRecordsAfterDelete,
+            nowMs = 6_000L
+        )
+        assertEquals(listOf(renamedFolderA.id), pullDeleteB.pinnedFoldersPlan.deleteIds)
+        val ungroupedOnB = pullDeleteB.pinnedTabsPlan.upserts.single()
+        assertNull(ungroupedOnB.folderId)
+        assertEquals(0, ungroupedOnB.sortOrder)
+
+        val steadyB = SwiftfoxSyncReconciler.buildPlan(
+            local = snap(emptyList(), listOf(ungroupedOnB)),
+            baseline = pullDeleteB.nextBaseline,
+            remoteRawRecords = serverRecordsAfterDelete,
+            nowMs = 7_000L
+        )
+        assertEquals(0, steadyB.pulledCount)
+        assertEquals(0, steadyB.pushedCount)
+        assertTrue(steadyB.outgoingBsos.isEmpty())
+    }
 }

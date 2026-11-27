@@ -645,7 +645,17 @@ object SwiftfoxSyncReconciler {
                 spacePins.filter { it.folderId == null || it.folderId !in folderIds }.forEach {
                     add(Triple(it.sortOrder, false, it.copy(folderId = null)))
                 }
-            }.sortedWith(compareBy<Triple<Int, Boolean, Any>> { it.first }.thenByDescending { it.second })
+            }.sortedWith(
+                compareBy<Triple<Int, Boolean, Any>> { it.first }
+                    .thenByDescending { it.second }
+                    .thenBy { (_, _, item) ->
+                        when (item) {
+                            is PinnedFolderEntity -> item.id
+                            is TabEntity -> item.id
+                            else -> ""
+                        }
+                    }
+            )
 
             topLevelEntries.forEachIndexed { idx, (_, _, item) ->
                 when (item) {
@@ -658,7 +668,7 @@ object SwiftfoxSyncReconciler {
             for (folder in spaceFolders) {
                 spacePins
                     .filter { it.folderId == folder.id }
-                    .sortedBy { it.sortOrder }
+                    .sortedWith(compareBy<TabEntity> { it.sortOrder }.thenBy { it.id })
                     .forEachIndexed { idx, tab ->
                         localPinnedWithOrder += tab to idx
                     }

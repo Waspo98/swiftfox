@@ -1599,7 +1599,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 } else {
                     dbFolders + pendingCreatedPinnedFolders.values.filter { it.id !in dbIds }
                 }
-                val clearedOrphanTabs = mutableListOf<BrowserTabUi>()
                 _uiState.update { state ->
                     val folderSpaceById = mergedFolders.associate { it.id to it.spaceId }
                     val updatedTabs = if (startupTabReconciliationDone.get()) {
@@ -1608,7 +1607,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                             if (!tab.isPrivate && tab.isPinned && !tab.isBoundWorkspaceTab &&
                                 fId != null && folderSpaceById[fId] != tab.spaceId
                             ) {
-                                tab.copy(folderId = null).also { clearedOrphanTabs += it }
+                                tab.copy(folderId = null)
                             } else {
                                 tab
                             }
@@ -1618,7 +1617,6 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                     }
                     state.copy(pinnedFolders = mergedFolders, tabs = updatedTabs)
                 }
-                clearedOrphanTabs.forEach { persistTab(it) }
             }
         }
 
@@ -2119,7 +2117,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         customTitle: String? = null,
         essentialId: String? = null,
         zenPinnedId: String? = null,
-        pinnedUrl: String? = null
+        pinnedUrl: String? = null,
+        folderId: String? = null
     ): BrowserTabUi {
         if (selectImmediately) {
             stopActiveZapperIfRunning()
@@ -2188,12 +2187,23 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             else -> null
         }
 
+        val effectiveFolderId = if (effectivePinned && !folderId.isNullOrBlank() &&
+            currentState.pinnedFolders.any { it.id == folderId && it.spaceId == spaceId }
+        ) {
+            folderId
+        } else {
+            null
+        }
         val tabSortOrder = if (effectivePinned) {
-            WorkspacePinnedFolderLogic.nextTopLevelSortOrder(
-                currentState.pinnedFolders,
-                currentState.tabs,
-                spaceId
-            )
+            if (effectiveFolderId != null) {
+                WorkspacePinnedFolderLogic.nextFolderTabSortOrder(currentState.tabs, spaceId, effectiveFolderId)
+            } else {
+                WorkspacePinnedFolderLogic.nextTopLevelSortOrder(
+                    currentState.pinnedFolders,
+                    currentState.tabs,
+                    spaceId
+                )
+            }
         } else {
             0
         }
@@ -2210,7 +2220,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             pinnedUrl = effectivePinnedUrl,
             customIcon = if (isPrivate) null else customIcon,
             customTitle = if (isPrivate) null else customTitle,
-            folderId = null,
+            folderId = effectiveFolderId,
             sortOrder = tabSortOrder,
             isPopupWindow = isPopupWindow,
             parentTabId = parentTabId,
@@ -2522,7 +2532,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             isPinned = closed.isPinned,
             customIcon = closed.customIcon,
             customTitle = closed.customTitle,
-            pinnedUrl = closed.pinnedUrl
+            pinnedUrl = closed.pinnedUrl,
+            folderId = closed.folderId
         )
     }
 
@@ -3854,9 +3865,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         _uiState.update { state ->
             state.copy(pinnedFolders = state.pinnedFolders.map { if (it.id == folderId) updated else it })
         }
-        viewModelScope.launch {
-            db.pinnedFolderDao().upsert(updated)
-        }
+        persistPinnedFolder(folderId, scheduleSwiftfoxPush = false)
     }
 
     fun renamePinnedFolder(folderId: String, newName: String) {
@@ -3867,10 +3876,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         _uiState.update { state ->
             state.copy(pinnedFolders = state.pinnedFolders.map { if (it.id == folderId) updated else it })
         }
-        viewModelScope.launch {
-            db.pinnedFolderDao().upsert(updated)
-            app.mozillaSyncCoordinator.scheduleSwiftfoxPush()
-        }
+        persistPinnedFolder(folderId, scheduleSwiftfoxPush = true)
         showSnackbar("Renamed folder to \"$trimmed\"")
     }
 
@@ -3882,10 +3888,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         _uiState.update { state ->
             state.copy(pinnedFolders = state.pinnedFolders.map { if (it.id == folderId) updated else it })
         }
-        viewModelScope.launch {
-            db.pinnedFolderDao().upsert(updated)
-            app.mozillaSyncCoordinator.scheduleSwiftfoxPush()
-        }
+        persistPinnedFolder(folderId, scheduleSwiftfoxPush = true)
         if (oldIcon != nextIcon) cleanupUnusedCustomImage(oldIcon)
     }
 
@@ -3997,17 +4000,22 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
 
         val removedList = result.removedTabs.map { it.id }
-        val foldersToUpsert = result.updatedFolders.filter { it.spaceId == spaceId }
-        val tabsToUpsert = result.updatedTabs
-            .filter { !it.isPrivate && it.isPinned && !it.isBoundWorkspaceTab && it.spaceId == spaceId }
-            .map { tab ->
-                toTabEntity(
-                    tab,
-                    WorkspacePinnedFolderLogic.computeLocalPinnedOrderIndex(result.updatedFolders, result.updatedTabs, tab)
-                )
-            }
         viewModelScope.launch {
             tabDbMutex.withLock {
+                val liveState = _uiState.value
+                val foldersToUpsert = liveState.pinnedFolders.filter { it.spaceId == spaceId }
+                val tabsToUpsert = liveState.tabs
+                    .filter { !it.isPrivate && it.isPinned && !it.isBoundWorkspaceTab && it.spaceId == spaceId }
+                    .map { tab ->
+                        toTabEntity(
+                            tab,
+                            WorkspacePinnedFolderLogic.computeLocalPinnedOrderIndex(
+                                liveState.pinnedFolders,
+                                liveState.tabs,
+                                tab
+                            )
+                        )
+                    }
                 if (removedList.isNotEmpty()) {
                     db.tabDao().deleteByIds(removedList)
                 }
@@ -4103,17 +4111,22 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             )
         }
 
-        val persistedEntity = toTabEntity(
-            result.createdOrUpdatedLocalTab,
-            WorkspacePinnedFolderLogic.computeLocalPinnedOrderIndex(
-                state.pinnedFolders,
-                result.updatedTabs,
-                result.createdOrUpdatedLocalTab
-            )
-        )
+        val convertedTabId = result.createdOrUpdatedLocalTab.id
         viewModelScope.launch {
             tabDbMutex.withLock {
-                db.tabDao().upsert(persistedEntity)
+                val liveState = _uiState.value
+                val liveTab = liveState.tabs.firstOrNull { it.id == convertedTabId }
+                if (liveTab != null && !liveTab.isPrivate) {
+                    val persistedEntity = toTabEntity(
+                        liveTab,
+                        WorkspacePinnedFolderLogic.computeLocalPinnedOrderIndex(
+                            liveState.pinnedFolders,
+                            liveState.tabs,
+                            liveTab
+                        )
+                    )
+                    db.tabDao().upsert(persistedEntity)
+                }
                 db.zenPinnedItemDao().deleteById(zenPinnedId)
             }
             app.mozillaSyncCoordinator.mirrorZenPinnedDeleted(zenItem)
@@ -6710,37 +6723,50 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    private fun persistPinnedFolder(folderId: String, scheduleSwiftfoxPush: Boolean = false) {
+        viewModelScope.launch {
+            tabDbMutex.withLock {
+                // Read latest live state under lock so superseded async writes never overwrite newer edits or resurrect deleted folders
+                val latest = _uiState.value.pinnedFolders.firstOrNull { it.id == folderId } ?: return@withLock
+                db.pinnedFolderDao().upsert(latest)
+            }
+            if (scheduleSwiftfoxPush) {
+                app.mozillaSyncCoordinator.scheduleSwiftfoxPush()
+            }
+        }
+    }
+
     private fun persistSpacePinnedState(
         spaceId: String,
         includeRegularTabs: Boolean,
         scheduleSwiftfoxPush: Boolean
     ) {
-        val state = _uiState.value
-        val folders = state.pinnedFolders.filter { it.spaceId == spaceId }
-        val spaceTabs = state.tabs.filter {
-            !it.isPrivate && !it.isBoundWorkspaceTab && it.spaceId == spaceId
-        }
-        val pinnedEntities = spaceTabs.filter { it.isPinned }.map { tab ->
-            toTabEntity(
-                tab,
-                WorkspacePinnedFolderLogic.computeLocalPinnedOrderIndex(state.pinnedFolders, state.tabs, tab)
-            )
-        }
-        val regularEntities = if (includeRegularTabs) {
-            spaceTabs.filter { !it.isPinned }.mapIndexed { idx, tab ->
-                toTabEntity(tab.copy(isUnloaded = false, pinnedUrl = null, folderId = null), idx)
-            }
-        } else {
-            emptyList()
-        }
-        val tabEntities = pinnedEntities + regularEntities
-        if (folders.isEmpty() && tabEntities.isEmpty()) return
         viewModelScope.launch {
             tabDbMutex.withLock {
-                val liveTabIds = _uiState.value.tabs.mapTo(mutableSetOf()) { it.id }
-                val liveFolderIds = _uiState.value.pinnedFolders.mapTo(mutableSetOf()) { it.id }
-                val liveTabs = tabEntities.filter { it.id in liveTabIds }
-                val liveFolders = folders.filter { it.id in liveFolderIds }
+                val liveState = _uiState.value
+                val liveFolders = liveState.pinnedFolders.filter { it.spaceId == spaceId }
+                val spaceTabs = liveState.tabs.filter {
+                    !it.isPrivate && !it.isBoundWorkspaceTab && it.spaceId == spaceId
+                }
+                val pinnedEntities = spaceTabs.filter { it.isPinned }.map { tab ->
+                    toTabEntity(
+                        tab,
+                        WorkspacePinnedFolderLogic.computeLocalPinnedOrderIndex(
+                            liveState.pinnedFolders,
+                            liveState.tabs,
+                            tab
+                        )
+                    )
+                }
+                val regularEntities = if (includeRegularTabs) {
+                    spaceTabs.filter { !it.isPinned }.mapIndexed { idx, tab ->
+                        toTabEntity(tab.copy(isUnloaded = false, pinnedUrl = null, folderId = null), idx)
+                    }
+                } else {
+                    emptyList()
+                }
+                val liveTabs = pinnedEntities + regularEntities
+                if (liveFolders.isEmpty() && liveTabs.isEmpty()) return@withLock
                 if (liveFolders.isNotEmpty()) {
                     db.pinnedFolderDao().upsertAll(liveFolders)
                 }
@@ -6755,28 +6781,28 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun persistTabsForSpace(spaceId: String, scheduleSwiftfoxPush: Boolean = false) {
-        val state = _uiState.value
-        val spaceTabs = state.tabs.filter {
-            !it.isPrivate && !it.isBoundWorkspaceTab && it.spaceId == spaceId
-        }
-        val pinnedEntities = spaceTabs.filter { it.isPinned }.map { tab ->
-            toTabEntity(
-                tab,
-                WorkspacePinnedFolderLogic.computeLocalPinnedOrderIndex(state.pinnedFolders, state.tabs, tab)
-            )
-        }
-        val regularEntities = spaceTabs.filter { !it.isPinned }.mapIndexed { idx, tab ->
-            toTabEntity(tab.copy(isUnloaded = false, pinnedUrl = null, folderId = null), idx)
-        }
-        val all = pinnedEntities + regularEntities
-        if (all.isEmpty()) return
         viewModelScope.launch {
             tabDbMutex.withLock {
-                val liveIds = _uiState.value.tabs.mapTo(mutableSetOf()) { it.id }
-                val liveEntities = all.filter { it.id in liveIds }
-                if (liveEntities.isNotEmpty()) {
-                    db.tabDao().upsertAll(liveEntities)
+                val liveState = _uiState.value
+                val spaceTabs = liveState.tabs.filter {
+                    !it.isPrivate && !it.isBoundWorkspaceTab && it.spaceId == spaceId
                 }
+                val pinnedEntities = spaceTabs.filter { it.isPinned }.map { tab ->
+                    toTabEntity(
+                        tab,
+                        WorkspacePinnedFolderLogic.computeLocalPinnedOrderIndex(
+                            liveState.pinnedFolders,
+                            liveState.tabs,
+                            tab
+                        )
+                    )
+                }
+                val regularEntities = spaceTabs.filter { !it.isPinned }.mapIndexed { idx, tab ->
+                    toTabEntity(tab.copy(isUnloaded = false, pinnedUrl = null, folderId = null), idx)
+                }
+                val liveEntities = pinnedEntities + regularEntities
+                if (liveEntities.isEmpty()) return@withLock
+                db.tabDao().upsertAll(liveEntities)
             }
             if (scheduleSwiftfoxPush) {
                 app.mozillaSyncCoordinator.scheduleSwiftfoxPush()

@@ -4509,6 +4509,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         omniboxHolder.onQueryChanged(query)
     }
 
+    fun applyOmniboxSuggestionQuery(query: String) {
+        omniboxHolder.applyExternalQuery(query)
+    }
+
     fun goBack(): Boolean {
         val active = _uiState.value.activeTab ?: return false
         val session = pool.getExisting(active.id) ?: return false

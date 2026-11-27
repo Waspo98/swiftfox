@@ -665,6 +665,40 @@ class OmniboxEngineTest {
     }
 
     @Test
+    fun autocompleteGateDoesNotSwallowRapidDoubleBackspaceWhenAlreadySuppressed() {
+        val gate = OmniboxAutocompleteGate(initialSuppressed = false)
+        gate.onUserTextCommitted("gi", "git")
+        assertFalse(gate.isSuppressed)
+
+        // First Backspace dismisses inline autocomplete suffix
+        assertTrue(
+            gate.interceptBackspaceToDismiss(
+                originalText = "git",
+                proposedText = "gi",
+                proposedSelectionCollapsedAtEnd = true,
+                hasActiveAutocomplete = true
+            )
+        )
+        assertTrue(gate.isSuppressed)
+
+        // Second rapid Backspace arriving before recomposition updates hasActiveAutocomplete must NOT revert
+        assertFalse(
+            gate.interceptBackspaceToDismiss(
+                originalText = "git",
+                proposedText = "gi",
+                proposedSelectionCollapsedAtEnd = true,
+                hasActiveAutocomplete = true
+            )
+        )
+        gate.onUserTextCommitted("git", "gi")
+        assertTrue(gate.isSuppressed)
+
+        // Typing past the dismissed prefix re-enables inline autocomplete cleanly
+        gate.onUserTextCommitted("gi", "gith")
+        assertFalse(gate.isSuppressed)
+    }
+
+    @Test
     fun oneTimeSearchScopeOverridesDefaultEngineAndForcesSearchOnDomains() {
         val defaultGoogle = BrowserSettings(
             searchEngine = SearchEngineId.GOOGLE,

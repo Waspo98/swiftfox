@@ -119,7 +119,7 @@ class OmniboxAutocompleteGate(initialSuppressed: Boolean = false) {
         proposedSelectionCollapsedAtEnd: Boolean,
         hasActiveAutocomplete: Boolean
     ): Boolean {
-        if (!hasActiveAutocomplete || !proposedSelectionCollapsedAtEnd) return false
+        if (isSuppressed || !hasActiveAutocomplete || !proposedSelectionCollapsedAtEnd) return false
         val orig = originalText.toString()
         val next = proposedText.toString()
         if (orig.isNotEmpty() && next.length == orig.length - 1 && orig.startsWith(next)) {

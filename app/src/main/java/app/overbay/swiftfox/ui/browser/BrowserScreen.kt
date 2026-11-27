@@ -136,6 +136,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onPlaced
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -1306,6 +1307,8 @@ private fun FocusedOmniboxHost(
         sourceRect = sourceRect,
         isFadeOnlyExit = isFadeOnlyExit,
         query = omniboxState.query,
+        focusVersion = omniboxState.focusVersion,
+        externalQueryVersion = omniboxState.externalQueryVersion,
         defaultSearchEngine = defaultSearchEngine,
         customSearchUrlTemplate = customSearchUrlTemplate,
         activeSearchScope = omniboxState.searchScope,
@@ -1327,7 +1330,7 @@ private fun FocusedOmniboxHost(
                 onMarkNavigationClose()
                 viewModel.selectTab(suggestion.tabId)
             } else if (suggestion.targetUrl.endsWith(" ")) {
-                viewModel.onOmniboxQueryChanged(suggestion.targetUrl)
+                viewModel.applyOmniboxSuggestionQuery(suggestion.targetUrl)
             } else {
                 onMarkNavigationClose()
                 viewModel.navigateActiveTab(suggestion.targetUrl)
@@ -2819,30 +2822,31 @@ private fun FindInPageBar(
     onClose: () -> Unit
 ) {
     val focusRequester = remember { FocusRequester() }
+    val focusManager = LocalFocusManager.current
     val textFieldState = rememberTextFieldState(initialText = state.query)
-    val currentText = textFieldState.text.toString()
-    var lastSyncedQuery by remember { mutableStateOf(state.query) }
+    val latestQuery by rememberUpdatedState(state.query)
+    val latestVisible by rememberUpdatedState(state.visible)
+    var lastDispatchedQuery by remember { mutableStateOf(state.query) }
     LaunchedEffect(textFieldState) {
         snapshotFlow { textFieldState.text.toString() }
             .distinctUntilChanged()
             .collect { typed ->
-                if (typed != lastSyncedQuery) {
-                    lastSyncedQuery = typed
+                if (latestVisible && typed != lastDispatchedQuery) {
+                    lastDispatchedQuery = typed
                     onQueryChange(typed)
                 }
             }
     }
-    LaunchedEffect(state.query) {
-        if (state.query != lastSyncedQuery) {
-            lastSyncedQuery = state.query
-            if (textFieldState.text.toString() != state.query) {
-                textFieldState.setTextAndPlaceCursorAtEnd(state.query)
-            }
-        }
-    }
     LaunchedEffect(state.visible) {
         if (state.visible) {
+            val initial = latestQuery
+            lastDispatchedQuery = initial
+            if (textFieldState.text.toString() != initial) {
+                textFieldState.setTextAndPlaceCursorAtEnd(initial)
+            }
             focusRequester.requestFocus()
+        } else {
+            focusManager.clearFocus(force = true)
         }
     }
 
@@ -2868,7 +2872,8 @@ private fun FindInPageBar(
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                 onKeyboardAction = { onFindNext(true) },
                 decorator = { inner ->
-                    if (currentText.isEmpty()) {
+                    val isEmpty by remember { derivedStateOf { textFieldState.text.isEmpty() } }
+                    if (isEmpty) {
                         Text(
                             text = "Find in page",
                             style = MaterialTheme.typography.bodyMedium,
@@ -2883,7 +2888,8 @@ private fun FindInPageBar(
                     .focusRequester(focusRequester)
             )
 
-            if (currentText.isNotEmpty()) {
+            val hasText by remember { derivedStateOf { textFieldState.text.isNotEmpty() } }
+            if (hasText) {
                 val displayIdx = if (state.totalMatches == 0) 0 else state.activeMatchOrdinal + 1
                 Text(
                     text = "$displayIdx / ${state.totalMatches}",

@@ -1,5 +1,7 @@
 package app.overbay.swiftfox.ui.browser
 
+import app.overbay.swiftfox.data.db.BookmarkEntity
+import app.overbay.swiftfox.data.db.HistoryEntity
 import app.overbay.swiftfox.data.db.SwiftfoxDatabase
 import app.overbay.swiftfox.features.omnibox.InlineUrlAutocomplete
 import app.overbay.swiftfox.features.omnibox.OmniboxCandidateBuilder
@@ -21,13 +23,23 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+internal interface OmniboxSuggestionBackend {
+    suspend fun searchBookmarksByPrefix(rawPrefix: String, limit: Int): List<BookmarkEntity>
+    suspend fun searchBookmarks(query: String, limit: Int): List<BookmarkEntity>
+    suspend fun searchHistoryByPrefix(rawPrefix: String, limit: Int): List<HistoryEntity>
+    suspend fun searchHistory(query: String, limit: Int): List<HistoryEntity>
+    suspend fun querySyncedHistory(query: String, limit: Int): List<MozillaSyncCoordinator.PlacesOmniboxMatch>
+}
+
 data class OmniboxUiState(
     val query: String = "",
     val searchScope: OmniboxSearchScope? = null,
     val suggestions: List<OmniboxSuggestion> = emptyList(),
     val suggestionsQuery: String = "",
     val suggestionsScope: OmniboxSearchScope? = null,
-    val inlineAutocomplete: InlineUrlAutocomplete? = null
+    val inlineAutocomplete: InlineUrlAutocomplete? = null,
+    val focusVersion: Long = 0L,
+    val externalQueryVersion: Long = 0L
 )
 
 /**
@@ -37,17 +49,45 @@ data class OmniboxUiState(
  */
 internal class OmniboxStateHolder(
     private val scope: CoroutineScope,
-    private val db: SwiftfoxDatabase,
+    private val backend: OmniboxSuggestionBackend,
     private val topDomainsRepository: TopDomainsRepository,
-    private val syncCoordinator: MozillaSyncCoordinator,
     private val browserStateProvider: () -> BrowserUiState
 ) {
+    constructor(
+        scope: CoroutineScope,
+        db: SwiftfoxDatabase,
+        topDomainsRepository: TopDomainsRepository,
+        syncCoordinator: MozillaSyncCoordinator,
+        browserStateProvider: () -> BrowserUiState
+    ) : this(
+        scope = scope,
+        backend = object : OmniboxSuggestionBackend {
+            override suspend fun searchBookmarksByPrefix(rawPrefix: String, limit: Int) =
+                db.bookmarkDao().searchByRawUrlPrefix(rawPrefix, limit = limit)
+
+            override suspend fun searchBookmarks(query: String, limit: Int) =
+                db.bookmarkDao().search(query, limit = limit)
+
+            override suspend fun searchHistoryByPrefix(rawPrefix: String, limit: Int) =
+                db.historyDao().searchByRawUrlPrefix(rawPrefix, limit = limit)
+
+            override suspend fun searchHistory(query: String, limit: Int) =
+                db.historyDao().search(query, limit = limit)
+
+            override suspend fun querySyncedHistory(query: String, limit: Int) =
+                syncCoordinator.querySyncedHistoryForOmnibox(query, limit = limit)
+        },
+        topDomainsRepository = topDomainsRepository,
+        browserStateProvider = browserStateProvider
+    )
     private val _state = MutableStateFlow(OmniboxUiState())
     val state: StateFlow<OmniboxUiState> = _state.asStateFlow()
 
     private var suggestionJob: Job? = null
     private var localSubmitJob: Job? = null
     private var pendingLocalSubmitQuery: String? = null
+    private var nextFocusVersion = 0L
+    private var nextExternalQueryVersion = 0L
 
     fun reset() {
         suggestionJob?.cancel()
@@ -81,13 +121,24 @@ internal class OmniboxStateHolder(
 
     fun onFocused(initialText: String, effectiveScope: OmniboxSearchScope?) {
         cancelPendingLocalSubmit()
+        val focusVer = ++nextFocusVersion
         _state.update {
             it.copy(
                 query = initialText,
-                searchScope = effectiveScope
+                searchScope = effectiveScope,
+                focusVersion = focusVer
             )
         }
         onQueryChanged(initialText)
+    }
+
+    /**
+     * Replaces the omnibox query from an external UI action (such as tapping a bang-hint
+     * suggestion row) and increments [OmniboxUiState.externalQueryVersion] so the text field syncs
+     * only explicit external edits rather than echoing user keystrokes.
+     */
+    fun applyExternalQuery(query: String) {
+        onQueryChanged(query = query, externalQueryVersion = ++nextExternalQueryVersion)
     }
 
     fun setSearchScope(effectiveScope: OmniboxSearchScope?) {
@@ -163,20 +214,18 @@ internal class OmniboxStateHolder(
         scope = searchScope,
         query = query,
         state = browserState,
-        searchBookmarksByPrefix = { rawPrefix, limit ->
-            db.bookmarkDao().searchByRawUrlPrefix(rawPrefix, limit = limit)
-        },
-        searchBookmarks = { q, limit -> db.bookmarkDao().search(q, limit = limit) },
-        searchHistoryByPrefix = { rawPrefix, limit ->
-            db.historyDao().searchByRawUrlPrefix(rawPrefix, limit = limit)
-        },
-        searchHistory = { q, limit -> db.historyDao().search(q, limit = limit) },
-        searchSyncedHistory = { q, limit ->
-            syncCoordinator.querySyncedHistoryForOmnibox(q, limit = limit)
-        }
+        searchBookmarksByPrefix = backend::searchBookmarksByPrefix,
+        searchBookmarks = backend::searchBookmarks,
+        searchHistoryByPrefix = backend::searchHistoryByPrefix,
+        searchHistory = backend::searchHistory,
+        searchSyncedHistory = backend::querySyncedHistory
     )
 
     fun onQueryChanged(query: String) {
+        onQueryChanged(query = query, externalQueryVersion = null)
+    }
+
+    private fun onQueryChanged(query: String, externalQueryVersion: Long?) {
         if (pendingLocalSubmitQuery != null && query != pendingLocalSubmitQuery) {
             cancelPendingLocalSubmit()
         }
@@ -199,7 +248,8 @@ internal class OmniboxStateHolder(
         _state.update {
             it.copy(
                 query = query,
-                inlineAutocomplete = instantAutocomplete
+                inlineAutocomplete = instantAutocomplete,
+                externalQueryVersion = externalQueryVersion ?: it.externalQueryVersion
             )
         }
         suggestionJob?.cancel()
@@ -362,11 +412,11 @@ internal class OmniboxStateHolder(
 
             val rawHostPrefix = OmniboxEngine.extractRawHostPrefixForDbQuery(query)
             val dbPrefixBookmarks = if (rawHostPrefix != null) {
-                db.bookmarkDao().searchByRawUrlPrefix(rawHostPrefix, limit = 12)
+                backend.searchBookmarksByPrefix(rawHostPrefix, limit = 12)
             } else {
                 emptyList()
             }
-            val dbSearchBookmarks = db.bookmarkDao().search(trimmed, limit = 12)
+            val dbSearchBookmarks = backend.searchBookmarks(trimmed, limit = 12)
             val combinedBookmarks = (dbPrefixBookmarks + dbSearchBookmarks).distinctBy { it.id }
             combinedBookmarks.take(3).forEach { bm ->
                 if (results.none { it.targetUrl.trimEnd('/').equals(bm.url.trimEnd('/'), ignoreCase = true) }) {
@@ -381,12 +431,12 @@ internal class OmniboxStateHolder(
             }
 
             val dbPrefixHistory = if (!inPrivate && rawHostPrefix != null) {
-                db.historyDao().searchByRawUrlPrefix(rawHostPrefix, limit = 20)
+                backend.searchHistoryByPrefix(rawHostPrefix, limit = 20)
             } else {
                 emptyList()
             }
             val dbSearchHistory = if (!inPrivate) {
-                db.historyDao().search(trimmed, limit = 16)
+                backend.searchHistory(trimmed, limit = 16)
             } else {
                 emptyList()
             }
@@ -408,7 +458,7 @@ internal class OmniboxStateHolder(
             }
 
             val placesMatches = if (!inPrivate && bang == null && postDebounceBrowser.settings.syncHistoryEnabled) {
-                syncCoordinator.querySyncedHistoryForOmnibox(trimmed, limit = 10)
+                backend.querySyncedHistory(trimmed, limit = 10)
             } else {
                 emptyList()
             }

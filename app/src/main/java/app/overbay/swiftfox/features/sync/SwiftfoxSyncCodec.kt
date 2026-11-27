@@ -2,6 +2,7 @@ package app.overbay.swiftfox.features.sync
 
 import app.overbay.swiftfox.data.db.EssentialEntity
 import app.overbay.swiftfox.data.db.FilterListEntity
+import app.overbay.swiftfox.data.db.PinnedFolderEntity
 import app.overbay.swiftfox.data.db.SiteOverrideEntity
 import app.overbay.swiftfox.data.db.SpaceEntity
 import app.overbay.swiftfox.data.db.TabEntity
@@ -67,6 +68,7 @@ object SwiftfoxSyncCodec {
     const val KIND_USERSCRIPT = "userscript"
     const val KIND_SPACE = "space"
     const val KIND_ESSENTIAL = "essential"
+    const val KIND_PINNED_FOLDER = "pinned_folder"
     const val KIND_PINNED_TAB = "pinned_tab"
 
     private const val GZIP_THRESHOLD_BYTES = 16 * 1024
@@ -138,6 +140,14 @@ object SwiftfoxSyncCodec {
             val localOrder: Int
         ) : DecodedSwiftfoxRecord()
 
+        data class PinnedFolder(
+            override val bsoId: String,
+            val updatedAt: Long,
+            val contentHash: String,
+            val entity: PinnedFolderEntity,
+            val localOrder: Int
+        ) : DecodedSwiftfoxRecord()
+
         data class PinnedTab(
             override val bsoId: String,
             val updatedAt: Long,
@@ -185,6 +195,9 @@ object SwiftfoxSyncCodec {
 
     fun essentialBsoId(essentialId: String): String =
         "ess_${sha256UrlSafe24(essentialId.trim())}"
+
+    fun pinnedFolderBsoId(folderId: String): String =
+        "pf_${sha256UrlSafe24(folderId.trim())}"
 
     fun pinnedTabBsoId(tabId: String): String =
         "pin_${sha256UrlSafe24(tabId.trim())}"
@@ -458,6 +471,34 @@ object SwiftfoxSyncCodec {
             essentialDataObject(entity, localOrder)
         )
 
+    fun pinnedFolderDataObject(entity: PinnedFolderEntity, localOrder: Int): JsonObject = buildJsonObject {
+        put("id", JsonPrimitive(entity.id))
+        put("spaceId", JsonPrimitive(entity.spaceId))
+        put("name", JsonPrimitive(entity.name.trim()))
+        put("localOrder", JsonPrimitive(localOrder))
+        put("customIcon", entity.customIcon?.let(::JsonPrimitive) ?: JsonNull)
+        put("createdAt", JsonPrimitive(entity.createdAt))
+    }
+
+    fun pinnedFolderContentHash(entity: PinnedFolderEntity, localOrder: Int): String {
+        val canonical = buildJsonObject {
+            put("id", JsonPrimitive(entity.id))
+            put("spaceId", JsonPrimitive(entity.spaceId))
+            put("name", JsonPrimitive(entity.name.trim()))
+            put("localOrder", JsonPrimitive(localOrder))
+            put("customIcon", entity.customIcon?.let(::JsonPrimitive) ?: JsonNull)
+        }
+        return sha256Hex(canonical.toString())
+    }
+
+    fun encodePinnedFolderRecord(entity: PinnedFolderEntity, localOrder: Int, updatedAt: Long): JsonObject =
+        wrapRecord(
+            pinnedFolderBsoId(entity.id),
+            KIND_PINNED_FOLDER,
+            updatedAt,
+            pinnedFolderDataObject(entity, localOrder)
+        )
+
     fun pinnedTabHomeUrl(entity: TabEntity): String =
         entity.pinnedUrl?.trim()?.takeIf { it.isNotEmpty() } ?: entity.url.trim()
 
@@ -476,6 +517,9 @@ object SwiftfoxSyncCodec {
             put("url", JsonPrimitive(homeUrl))
             put("localOrder", JsonPrimitive(localOrder))
             put("customIcon", entity.customIcon?.let(::JsonPrimitive) ?: JsonNull)
+            entity.folderId?.trim()?.takeIf { it.isNotEmpty() }?.let {
+                put("folderId", JsonPrimitive(it))
+            }
         }
     }
 
@@ -510,6 +554,7 @@ object SwiftfoxSyncCodec {
             KIND_USERSCRIPT -> decodeUserscript(bsoId, updatedAt, data)
             KIND_SPACE -> decodeSpace(bsoId, updatedAt, data)
             KIND_ESSENTIAL -> decodeEssential(bsoId, updatedAt, data)
+            KIND_PINNED_FOLDER -> decodePinnedFolder(bsoId, updatedAt, data)
             KIND_PINNED_TAB -> decodePinnedTab(bsoId, updatedAt, data)
             else -> null
         }
@@ -822,6 +867,35 @@ object SwiftfoxSyncCodec {
         )
     }
 
+    private fun decodePinnedFolder(
+        bsoId: String,
+        updatedAt: Long,
+        data: JsonObject
+    ): DecodedSwiftfoxRecord.PinnedFolder? {
+        val id = stringOrNull(data["id"])?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        val spaceId = stringOrNull(data["spaceId"])?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        val name = stringOrNull(data["name"])?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        val localOrder = (intOrNull(data["localOrder"]) ?: 0).coerceAtLeast(0)
+        val customIcon = CustomIconSpec.parse(stringOrNull(data["customIcon"])).encodeExplicit()
+        val createdAt = longOrNull(data["createdAt"]) ?: updatedAt.takeIf { it > 0L } ?: System.currentTimeMillis()
+        val entity = PinnedFolderEntity(
+            id = id,
+            spaceId = spaceId,
+            name = name,
+            customIcon = customIcon,
+            isExpanded = true,
+            sortOrder = localOrder,
+            createdAt = createdAt
+        )
+        return DecodedSwiftfoxRecord.PinnedFolder(
+            bsoId = pinnedFolderBsoId(id),
+            updatedAt = updatedAt,
+            contentHash = pinnedFolderContentHash(entity, localOrder),
+            entity = entity,
+            localOrder = localOrder
+        )
+    }
+
     private fun decodePinnedTab(
         bsoId: String,
         updatedAt: Long,
@@ -836,6 +910,7 @@ object SwiftfoxSyncCodec {
         val title = stringOrNull(data["title"])?.trim()?.takeIf { it.isNotEmpty() } ?: domain
         val localOrder = (intOrNull(data["localOrder"]) ?: 0).coerceAtLeast(0)
         val customIcon = CustomIconSpec.parse(stringOrNull(data["customIcon"])).encodeExplicit()
+        val folderId = stringOrNull(data["folderId"])?.trim()?.takeIf { it.isNotEmpty() }
         val entity = TabEntity(
             id = id,
             spaceId = spaceId,
@@ -851,7 +926,8 @@ object SwiftfoxSyncCodec {
             essentialId = null,
             zenPinnedId = null,
             isUnloaded = true,
-            pinnedUrl = url
+            pinnedUrl = url,
+            folderId = folderId
         )
         return DecodedSwiftfoxRecord.PinnedTab(
             bsoId = pinnedTabBsoId(id),

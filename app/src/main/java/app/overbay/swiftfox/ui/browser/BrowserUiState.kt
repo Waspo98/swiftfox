@@ -6,6 +6,7 @@ import app.overbay.swiftfox.data.db.DownloadRecordEntity
 import app.overbay.swiftfox.data.db.EssentialEntity
 import app.overbay.swiftfox.data.db.FilterListEntity
 import app.overbay.swiftfox.data.db.HistoryEntity
+import app.overbay.swiftfox.data.db.PinnedFolderEntity
 import app.overbay.swiftfox.data.db.SiteOverrideEntity
 import app.overbay.swiftfox.data.db.SpaceEntity
 import app.overbay.swiftfox.data.db.SyncedRemoteTabEntity
@@ -76,6 +77,7 @@ data class BrowserTabUi(
     val pinnedUrl: String? = null,
     val customIcon: String? = null,
     val customTitle: String? = null,
+    val folderId: String? = null,
     val sortOrder: Int = 0,
     val isPopupWindow: Boolean = false,
     val parentTabId: String? = null,
@@ -124,6 +126,8 @@ data class BrowserUiState(
     val spaces: List<SpaceEntity> = emptyList(),
     val activeSpaceId: String = "space_personal",
     val essentials: List<EssentialEntity> = emptyList(),
+    val pinnedFolders: List<PinnedFolderEntity> = emptyList(),
+    val collapsedZenFolders: Set<String> = emptySet(),
     val tabs: List<BrowserTabUi> = emptyList(),
     val activeTabId: String? = null,
     val isPrivateView: Boolean = false,
@@ -352,6 +356,18 @@ data class BrowserUiState(
 
     val activeSpaceZenPinned: List<ZenPinnedItemEntity>
         get() = zenPinnedItems.filter { it.spaceId == activeSpaceId }
+
+    val activeSpacePinnedFolders: List<PinnedFolderEntity>
+        get() = pinnedFolders
+            .filter { it.spaceId == activeSpaceId }
+            .sortedWith(compareBy<PinnedFolderEntity> { it.sortOrder }.thenBy { it.createdAt })
+
+    fun isZenFolderExpanded(spaceId: String, folderName: String): Boolean =
+        zenFolderKey(spaceId, folderName) !in collapsedZenFolders
+
+    companion object {
+        fun zenFolderKey(spaceId: String, folderName: String): String = "$spaceId|${folderName.trim()}"
+    }
 
     fun essentialsForSpace(spaceId: String): List<EssentialEntity> {
         val separate = settings.syncZenSeparateEssentials

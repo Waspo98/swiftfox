@@ -15,6 +15,7 @@ import kotlinx.coroutines.sync.withLock
     entities = [
         SpaceEntity::class,
         EssentialEntity::class,
+        PinnedFolderEntity::class,
         TabEntity::class,
         BookmarkEntity::class,
         HistoryEntity::class,
@@ -28,12 +29,13 @@ import kotlinx.coroutines.sync.withLock
         ZenPinnedItemEntity::class,
         WebAppEntity::class
     ],
-    version = 9,
+    version = 10,
     exportSchema = true
 )
 abstract class SwiftfoxDatabase : RoomDatabase() {
     abstract fun spaceDao(): SpaceDao
     abstract fun essentialDao(): EssentialDao
+    abstract fun pinnedFolderDao(): PinnedFolderDao
     abstract fun tabDao(): TabDao
     abstract fun bookmarkDao(): BookmarkDao
     abstract fun historyDao(): HistoryDao
@@ -359,6 +361,28 @@ abstract class SwiftfoxDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_9_10: Migration = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `tabs` ADD COLUMN `folderId` TEXT")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_tabs_folderId` ON `tabs` (`folderId`)")
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `pinned_folders` (" +
+                        "`id` TEXT NOT NULL, " +
+                        "`spaceId` TEXT NOT NULL, " +
+                        "`name` TEXT NOT NULL, " +
+                        "`customIcon` TEXT, " +
+                        "`isExpanded` INTEGER NOT NULL, " +
+                        "`sortOrder` INTEGER NOT NULL, " +
+                        "`createdAt` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`id`))"
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_pinned_folders_spaceId` ON `pinned_folders` (`spaceId`)")
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_pinned_folders_spaceId_sortOrder` ON `pinned_folders` (`spaceId`, `sortOrder`)"
+                )
+            }
+        }
+
         @Volatile
         private var instance: SwiftfoxDatabase? = null
 
@@ -376,7 +400,8 @@ abstract class SwiftfoxDatabase : RoomDatabase() {
                     MIGRATION_5_6,
                     MIGRATION_6_7,
                     MIGRATION_7_8,
-                    MIGRATION_8_9
+                    MIGRATION_8_9,
+                    MIGRATION_9_10
                 )
                     .fallbackToDestructiveMigrationOnDowngrade(dropAllTables = true)
                     .build()

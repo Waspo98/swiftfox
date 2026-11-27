@@ -125,6 +125,7 @@ class SwiftfoxApp : Application() {
                 database.webAppDao().countByCustomIcon(spec) > 0 ||
                     database.spaceDao().getAll().any { it.iconKey == spec } ||
                     database.essentialDao().getAll().any { it.customIcon == spec } ||
+                    database.pinnedFolderDao().getAll().any { it.customIcon == spec } ||
                     database.tabDao().getNormalTabs().any { it.customIcon == spec } ||
                     database.zenPinnedItemDao().getAll().any { it.customIcon == spec }
             }

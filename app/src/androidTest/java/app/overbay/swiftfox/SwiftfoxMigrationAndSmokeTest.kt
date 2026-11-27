@@ -7,9 +7,11 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import app.overbay.swiftfox.data.db.FilterListEntity
+import app.overbay.swiftfox.data.db.PinnedFolderEntity
 import app.overbay.swiftfox.data.db.SiteOverrideEntity
 import app.overbay.swiftfox.data.db.SwiftfoxDatabase
 import app.overbay.swiftfox.data.db.SyncedRemoteTabEntity
+import app.overbay.swiftfox.data.db.TabEntity
 import app.overbay.swiftfox.data.db.UserscriptEntity
 import app.overbay.swiftfox.data.db.WebAppEntity
 import app.overbay.swiftfox.data.db.ZappedRuleEntity
@@ -118,7 +120,8 @@ class SwiftfoxMigrationAndSmokeTest {
                 SwiftfoxDatabase.MIGRATION_5_6,
                 SwiftfoxDatabase.MIGRATION_6_7,
                 SwiftfoxDatabase.MIGRATION_7_8,
-                SwiftfoxDatabase.MIGRATION_8_9
+                SwiftfoxDatabase.MIGRATION_8_9,
+                SwiftfoxDatabase.MIGRATION_9_10
             )
             .build()
         try {
@@ -310,7 +313,8 @@ class SwiftfoxMigrationAndSmokeTest {
                 SwiftfoxDatabase.MIGRATION_5_6,
                 SwiftfoxDatabase.MIGRATION_6_7,
                 SwiftfoxDatabase.MIGRATION_7_8,
-                SwiftfoxDatabase.MIGRATION_8_9
+                SwiftfoxDatabase.MIGRATION_8_9,
+                SwiftfoxDatabase.MIGRATION_9_10
             )
             .build()
         try {
@@ -483,7 +487,8 @@ class SwiftfoxMigrationAndSmokeTest {
                 SwiftfoxDatabase.MIGRATION_5_6,
                 SwiftfoxDatabase.MIGRATION_6_7,
                 SwiftfoxDatabase.MIGRATION_7_8,
-                SwiftfoxDatabase.MIGRATION_8_9
+                SwiftfoxDatabase.MIGRATION_8_9,
+                SwiftfoxDatabase.MIGRATION_9_10
             )
             .build()
         try {
@@ -624,7 +629,8 @@ class SwiftfoxMigrationAndSmokeTest {
                 SwiftfoxDatabase.MIGRATION_5_6,
                 SwiftfoxDatabase.MIGRATION_6_7,
                 SwiftfoxDatabase.MIGRATION_7_8,
-                SwiftfoxDatabase.MIGRATION_8_9
+                SwiftfoxDatabase.MIGRATION_8_9,
+                SwiftfoxDatabase.MIGRATION_9_10
             )
             .build()
         try {
@@ -767,7 +773,8 @@ class SwiftfoxMigrationAndSmokeTest {
                 SwiftfoxDatabase.MIGRATION_5_6,
                 SwiftfoxDatabase.MIGRATION_6_7,
                 SwiftfoxDatabase.MIGRATION_7_8,
-                SwiftfoxDatabase.MIGRATION_8_9
+                SwiftfoxDatabase.MIGRATION_8_9,
+                SwiftfoxDatabase.MIGRATION_9_10
             )
             .build()
         try {
@@ -895,7 +902,8 @@ class SwiftfoxMigrationAndSmokeTest {
                 SwiftfoxDatabase.MIGRATION_5_6,
                 SwiftfoxDatabase.MIGRATION_6_7,
                 SwiftfoxDatabase.MIGRATION_7_8,
-                SwiftfoxDatabase.MIGRATION_8_9
+                SwiftfoxDatabase.MIGRATION_8_9,
+                SwiftfoxDatabase.MIGRATION_9_10
             )
             .build()
         try {
@@ -1000,7 +1008,8 @@ class SwiftfoxMigrationAndSmokeTest {
                 SwiftfoxDatabase.MIGRATION_5_6,
                 SwiftfoxDatabase.MIGRATION_6_7,
                 SwiftfoxDatabase.MIGRATION_7_8,
-                SwiftfoxDatabase.MIGRATION_8_9
+                SwiftfoxDatabase.MIGRATION_8_9,
+                SwiftfoxDatabase.MIGRATION_9_10
             )
             .build()
         try {
@@ -1076,7 +1085,8 @@ class SwiftfoxMigrationAndSmokeTest {
                 SwiftfoxDatabase.MIGRATION_5_6,
                 SwiftfoxDatabase.MIGRATION_6_7,
                 SwiftfoxDatabase.MIGRATION_7_8,
-                SwiftfoxDatabase.MIGRATION_8_9
+                SwiftfoxDatabase.MIGRATION_8_9,
+                SwiftfoxDatabase.MIGRATION_9_10
             )
             .build()
         try {
@@ -1085,6 +1095,85 @@ class SwiftfoxMigrationAndSmokeTest {
             assertEquals("Docs", stored!!.name)
             assertEquals(false, stored.drawBehindStatusBar)
             assertEquals(1, migrated.webAppDao().countByCustomIcon("img:docs.png"))
+        } finally {
+            migrated.close()
+            context.deleteDatabase(dbName)
+        }
+    }
+
+    @Test
+    fun roomDatabaseMigratesCleanlyFromV9ToV10WithPinnedFolders() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val dbName = "swiftfox_migration_v9_v10_test.db"
+        context.deleteDatabase(dbName)
+
+        val v9Helper = object : SQLiteOpenHelper(context, dbName, null, 9) {
+            override fun onCreate(db: SQLiteDatabase) {
+                seedV7SchemaAndIndices(db)
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `web_apps` (" +
+                        "`id` TEXT NOT NULL, `name` TEXT NOT NULL, `shortName` TEXT NOT NULL, " +
+                        "`startUrl` TEXT NOT NULL, `scopeUrl` TEXT NOT NULL, `manifestUrl` TEXT, " +
+                        "`host` TEXT NOT NULL, `displayMode` TEXT NOT NULL, " +
+                        "`openAsStandalone` INTEGER NOT NULL, `showSlimHeader` INTEGER NOT NULL, " +
+                        "`drawBehindStatusBar` INTEGER NOT NULL, `themeColorHex` TEXT, `backgroundColorHex` TEXT, " +
+                        "`iconUrl` TEXT, `iconPath` TEXT, `iconMaskable` INTEGER NOT NULL, `customIcon` TEXT, " +
+                        "`shortcutsJson` TEXT NOT NULL, `isPwaCapable` INTEGER NOT NULL, " +
+                        "`pinnedShortcutId` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, " +
+                        "`lastLaunchedAt` INTEGER NOT NULL, PRIMARY KEY(`id`))"
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_web_apps_startUrl` ON `web_apps` (`startUrl`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_web_apps_host` ON `web_apps` (`host`)")
+                db.execSQL(
+                    "INSERT INTO `tabs` (`id`, `spaceId`, `title`, `url`, `isPrivate`, `isPinned`, " +
+                        "`siteModeOverride`, `lastAccessedAt`, `sortOrder`, `customIcon`, `customTitle`, " +
+                        "`essentialId`, `zenPinnedId`, `isUnloaded`, `pinnedUrl`) " +
+                        "VALUES ('pin_v9', 'space_personal', 'Docs', 'https://kotlinlang.org', 0, 1, " +
+                        "NULL, 1000, 0, NULL, 'Kotlin Docs', NULL, NULL, 1, 'https://kotlinlang.org')"
+                )
+            }
+
+            override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+        }
+        v9Helper.writableDatabase.close()
+        v9Helper.close()
+
+        val migrated = Room.databaseBuilder(context, SwiftfoxDatabase::class.java, dbName)
+            .addMigrations(
+                SwiftfoxDatabase.MIGRATION_1_2,
+                SwiftfoxDatabase.MIGRATION_2_3,
+                SwiftfoxDatabase.MIGRATION_3_4,
+                SwiftfoxDatabase.MIGRATION_4_5,
+                SwiftfoxDatabase.MIGRATION_5_6,
+                SwiftfoxDatabase.MIGRATION_6_7,
+                SwiftfoxDatabase.MIGRATION_7_8,
+                SwiftfoxDatabase.MIGRATION_8_9,
+                SwiftfoxDatabase.MIGRATION_9_10
+            )
+            .build()
+        try {
+            val existingPin = migrated.tabDao().getNormalTabs().single { it.id == "pin_v9" }
+            assertNull(existingPin.folderId)
+
+            val folder = PinnedFolderEntity(
+                id = "folder_dev",
+                spaceId = "space_personal",
+                name = "Dev",
+                customIcon = "icon:code",
+                isExpanded = true,
+                sortOrder = 0,
+                createdAt = 2000L
+            )
+            migrated.pinnedFolderDao().upsert(folder)
+            migrated.tabDao().upsert(existingPin.copy(folderId = folder.id, sortOrder = 0))
+
+            val folders = migrated.pinnedFolderDao().getAll()
+            assertEquals(1, folders.size)
+            assertEquals("Dev", folders.single().name)
+            assertEquals(folder.id, migrated.tabDao().getNormalTabs().single { it.id == "pin_v9" }.folderId)
+
+            migrated.tabDao().clearFolderId(folder.id)
+            assertNull(migrated.tabDao().getNormalTabs().single { it.id == "pin_v9" }.folderId)
         } finally {
             migrated.close()
             context.deleteDatabase(dbName)

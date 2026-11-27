@@ -267,6 +267,7 @@ object WorkspaceTabResolver {
                         url = if (homeUrlChanged || prev.isUnloaded) homeUrl else prev.url,
                         customTitle = displayTitle,
                         customIcon = entity.customIcon,
+                        folderId = entity.folderId,
                         sortOrder = entity.sortOrder,
                         pinnedUrl = homeUrl,
                         isUnloaded = if (homeUrlChanged) true else prev.isUnloaded
@@ -292,6 +293,7 @@ object WorkspaceTabResolver {
                         pinnedUrl = homeUrl,
                         customIcon = entity.customIcon,
                         customTitle = displayTitle,
+                        folderId = entity.folderId,
                         sortOrder = entity.sortOrder,
                         siteModeOverride = tabOverride,
                         resolvedSiteMode = SiteModeResolver.resolve(tabOverride, siteOverride, postureProfile),

@@ -2,6 +2,7 @@ package app.overbay.swiftfox.features.sync
 
 import app.overbay.swiftfox.data.db.EssentialEntity
 import app.overbay.swiftfox.data.db.FilterListEntity
+import app.overbay.swiftfox.data.db.PinnedFolderEntity
 import app.overbay.swiftfox.data.db.SiteOverrideEntity
 import app.overbay.swiftfox.data.db.SpaceEntity
 import app.overbay.swiftfox.data.db.SwiftfoxDatabase
@@ -52,6 +53,7 @@ object SwiftfoxSyncReconciler {
         val zenSpacesCount: Int,
         val localEssentials: List<EssentialEntity>,
         val zenEssentialsCount: Int,
+        val localPinnedFolders: List<PinnedFolderEntity> = emptyList(),
         val localPinnedTabs: List<TabEntity> = emptyList(),
         val zenSpaceIds: Set<String> = emptySet()
     )
@@ -64,6 +66,11 @@ object SwiftfoxSyncReconciler {
 
     data class SyncedEssentialPlan(
         val upserts: List<EssentialEntity>,
+        val deleteIds: List<String>
+    )
+
+    data class SyncedPinnedFolderPlan(
+        val upserts: List<PinnedFolderEntity>,
         val deleteIds: List<String>
     )
 
@@ -85,6 +92,7 @@ object SwiftfoxSyncReconciler {
         val userscriptIdsToDelete: List<String>,
         val spacesPlan: SyncedSpacePlan,
         val essentialsPlan: SyncedEssentialPlan,
+        val pinnedFoldersPlan: SyncedPinnedFolderPlan = SyncedPinnedFolderPlan(emptyList(), emptyList()),
         val pinnedTabsPlan: SyncedPinnedTabPlan = SyncedPinnedTabPlan(emptyList(), emptyList()),
         val outgoingBsos: List<Pair<String, JsonObject>>,
         val nextBaseline: SwiftfoxSyncBaseline,
@@ -610,7 +618,7 @@ object SwiftfoxSyncReconciler {
             }
         }
 
-        // 8. Local Pinned Tabs (non-private, non-bound local pinned tabs, ordered per Space)
+        // 8. Local Pinned Folders & Local Pinned Tabs (ordered per Space with interleaved top-level sortOrder)
         val syncableLocalPinned = local.localPinnedTabs.filter { tab ->
             if (tab.isPrivate || !tab.isPinned || tab.essentialId != null || tab.zenPinnedId != null) {
                 return@filter false
@@ -618,26 +626,129 @@ object SwiftfoxSyncReconciler {
             val parsed = SwiftfoxSyncCodec.pinnedTabHomeUrl(tab).toHttpUrlOrNull() ?: return@filter false
             parsed.scheme == "http" || parsed.scheme == "https"
         }
+
+        val localFoldersBySpace = local.localPinnedFolders.groupBy { it.spaceId }
+        val localPinsBySpace = syncableLocalPinned.groupBy { it.spaceId }
+        val allLocalPinnedSpaces = (localFoldersBySpace.keys + localPinsBySpace.keys).distinct()
+
+        val localFolderWithOrder = mutableListOf<Pair<PinnedFolderEntity, Int>>()
         val localPinnedWithOrder = mutableListOf<Pair<TabEntity, Int>>()
-        syncableLocalPinned
-            .groupBy { it.spaceId }
-            .values
-            .forEach { spaceTabs ->
-                spaceTabs.sortedBy { it.sortOrder }.forEachIndexed { idx, tab ->
-                    localPinnedWithOrder += tab to idx
+
+        for (spaceId in allLocalPinnedSpaces) {
+            val spaceFolders = localFoldersBySpace[spaceId].orEmpty()
+            val folderIds = spaceFolders.mapTo(mutableSetOf()) { it.id }
+            val spacePins = localPinsBySpace[spaceId].orEmpty()
+
+            // Top-level entries in this Space: folders + ungrouped pinned tabs share one order sequence
+            val topLevelEntries = buildList<Triple<Int, Boolean, Any>> {
+                spaceFolders.forEach { add(Triple(it.sortOrder, true, it)) }
+                spacePins.filter { it.folderId == null || it.folderId !in folderIds }.forEach {
+                    add(Triple(it.sortOrder, false, it.copy(folderId = null)))
+                }
+            }.sortedWith(compareBy<Triple<Int, Boolean, Any>> { it.first }.thenByDescending { it.second })
+
+            topLevelEntries.forEachIndexed { idx, (_, _, item) ->
+                when (item) {
+                    is PinnedFolderEntity -> localFolderWithOrder += item to idx
+                    is TabEntity -> localPinnedWithOrder += item to idx
                 }
             }
-        val localPinnedMap = localPinnedWithOrder.associate { (tab, perSpaceIdx) ->
+
+            // Grouped pins inside each folder have their own 0..M-1 sortOrder within that folder
+            for (folder in spaceFolders) {
+                spacePins
+                    .filter { it.folderId == folder.id }
+                    .sortedBy { it.sortOrder }
+                    .forEachIndexed { idx, tab ->
+                        localPinnedWithOrder += tab to idx
+                    }
+            }
+        }
+
+        val validSpaceIds = (sortedResultSpaces.map { it.id } + local.zenSpaceIds).toSet()
+        val defaultSpaceFallback = fallbackSpaceId
+            ?: local.zenSpaceIds.firstOrNull()
+            ?: SwiftfoxDatabase.DEFAULT_SPACE_ID
+
+        val localFolderMap = localFolderWithOrder.associate { (folder, topIdx) ->
+            val bsoId = SwiftfoxSyncCodec.pinnedFolderBsoId(folder.id)
+            bsoId to LocalItemWrapper(
+                bsoId = bsoId,
+                kind = SwiftfoxSyncCodec.KIND_PINNED_FOLDER,
+                value = folder to topIdx,
+                contentHash = SwiftfoxSyncCodec.pinnedFolderContentHash(folder, topIdx),
+                explicitUpdatedAt = null,
+                isUnmodifiedSeed = false,
+                allowRemoteDelete = true,
+                encode = { ts -> SwiftfoxSyncCodec.encodePinnedFolderRecord(folder, topIdx, ts) }
+            )
+        }
+        val remoteFolderMap = buildRemoteMap<SwiftfoxSyncCodec.DecodedSwiftfoxRecord.PinnedFolder>(
+            decodedById = decodedById,
+            kind = SwiftfoxSyncCodec.KIND_PINNED_FOLDER,
+            extract = { rec ->
+                if (rec is SwiftfoxSyncCodec.DecodedSwiftfoxRecord.PinnedFolder) {
+                    Triple(rec.updatedAt, rec.contentHash, rec)
+                } else null
+            }
+        )
+
+        val folderMergeOutcomes = mergeCollection(
+            SwiftfoxSyncCodec.KIND_PINNED_FOLDER,
+            localFolderMap,
+            baseline,
+            remoteFolderMap,
+            unsupportedFutureIds,
+            nowMs
+        )
+        val mergedFoldersById = linkedMapOf<String, Pair<PinnedFolderEntity, Int>>()
+        localFolderWithOrder.forEach { (folder, topIdx) ->
+            mergedFoldersById[folder.id] = folder to topIdx
+        }
+
+        val pinnedFolderIdsToDelete = mutableListOf<String>()
+        val mutatedPinnedSpaces = mutableSetOf<String>()
+        val remappedFolderIds = mutableSetOf<String>()
+        for (outcome in folderMergeOutcomes) {
+            outcome.pullUpsert?.let { remote ->
+                val prev = mergedFoldersById[remote.entity.id]?.first
+                val resolvedSpaceId = if (remote.entity.spaceId in validSpaceIds) {
+                    remote.entity.spaceId
+                } else {
+                    remappedFolderIds += remote.entity.id
+                    defaultSpaceFallback
+                }
+                val mergedFolder = remote.entity.copy(
+                    spaceId = resolvedSpaceId,
+                    isExpanded = prev?.isExpanded ?: true,
+                    createdAt = prev?.createdAt ?: remote.entity.createdAt
+                )
+                mergedFoldersById[mergedFolder.id] = mergedFolder to remote.localOrder
+                mutatedPinnedSpaces += resolvedSpaceId
+                if (prev != null) mutatedPinnedSpaces += prev.spaceId
+            }
+            outcome.pullDelete?.let { (folder, _) ->
+                pinnedFolderIdsToDelete += folder.id
+                mergedFoldersById.remove(folder.id)
+                mutatedPinnedSpaces += folder.spaceId
+            }
+            outcome.outgoingBso?.let { outgoingBsos += it }
+            outcome.baselineItem?.let { nextBaselineItems[it.bsoId] = it }
+            if (outcome.pulled) pulledCount++
+            if (outcome.pushed) pushedCount++
+        }
+
+        val localPinnedMap = localPinnedWithOrder.associate { (tab, perBucketIdx) ->
             val bsoId = SwiftfoxSyncCodec.pinnedTabBsoId(tab.id)
             bsoId to LocalItemWrapper(
                 bsoId = bsoId,
                 kind = SwiftfoxSyncCodec.KIND_PINNED_TAB,
-                value = tab to perSpaceIdx,
-                contentHash = SwiftfoxSyncCodec.pinnedTabContentHash(tab, perSpaceIdx),
+                value = tab to perBucketIdx,
+                contentHash = SwiftfoxSyncCodec.pinnedTabContentHash(tab, perBucketIdx),
                 explicitUpdatedAt = null,
                 isUnmodifiedSeed = false,
                 allowRemoteDelete = true,
-                encode = { ts -> SwiftfoxSyncCodec.encodePinnedTabRecord(tab, perSpaceIdx, ts) }
+                encode = { ts -> SwiftfoxSyncCodec.encodePinnedTabRecord(tab, perBucketIdx, ts) }
             )
         }
         val remotePinnedMap = buildRemoteMap<SwiftfoxSyncCodec.DecodedSwiftfoxRecord.PinnedTab>(
@@ -650,11 +761,6 @@ object SwiftfoxSyncReconciler {
             }
         )
 
-        val validSpaceIds = (sortedResultSpaces.map { it.id } + local.zenSpaceIds).toSet()
-        val defaultSpaceFallback = fallbackSpaceId
-            ?: local.zenSpaceIds.firstOrNull()
-            ?: SwiftfoxDatabase.DEFAULT_SPACE_ID
-
         val pinnedMergeOutcomes = mergeCollection(
             SwiftfoxSyncCodec.KIND_PINNED_TAB,
             localPinnedMap,
@@ -664,12 +770,11 @@ object SwiftfoxSyncReconciler {
             nowMs
         )
         val mergedPinnedById = linkedMapOf<String, Pair<TabEntity, Int>>()
-        localPinnedWithOrder.forEach { (tab, perSpaceIdx) ->
-            mergedPinnedById[tab.id] = tab to perSpaceIdx
+        localPinnedWithOrder.forEach { (tab, perBucketIdx) ->
+            mergedPinnedById[tab.id] = tab to perBucketIdx
         }
 
         val pinnedTabIdsToDelete = mutableListOf<String>()
-        val mutatedPinnedSpaces = mutableSetOf<String>()
         val remappedSpacePinIds = mutableSetOf<String>()
         for (outcome in pinnedMergeOutcomes) {
             outcome.pullUpsert?.let { remote ->
@@ -691,7 +796,8 @@ object SwiftfoxSyncReconciler {
                         customTitle = remote.entity.title,
                         customIcon = remote.entity.customIcon,
                         isUnloaded = if (homeUrlChanged) true else prev.isUnloaded,
-                        pinnedUrl = remoteHomeUrl
+                        pinnedUrl = remoteHomeUrl,
+                        folderId = remote.entity.folderId
                     )
                 } else {
                     remote.entity.copy(spaceId = resolvedSpaceId)
@@ -711,31 +817,115 @@ object SwiftfoxSyncReconciler {
             if (outcome.pushed) pushedCount++
         }
 
-        val localPinnedPrevById = localPinnedWithOrder.associate { (tab, _) -> tab.id to tab }
+        val localFolderPrevById = local.localPinnedFolders.associateBy { it.id }
+        val localPinnedPrevById = local.localPinnedTabs.associateBy { it.id }
+        val pinnedFolderUpserts = mutableListOf<PinnedFolderEntity>()
         val pinnedTabUpserts = mutableListOf<TabEntity>()
-        mergedPinnedById.values
-            .groupBy { it.first.spaceId }
-            .forEach { (spaceId, items) ->
-                items.sortedBy { it.second }.forEachIndexed { idx, (tab, _) ->
-                    val finalTab = tab.copy(sortOrder = idx)
-                    val prev = localPinnedPrevById[finalTab.id]
-                    if (spaceId in mutatedPinnedSpaces || prev == null || prev != finalTab) {
-                        pinnedTabUpserts += finalTab
+
+        val mergedFoldersBySpace = mergedFoldersById.values.groupBy { it.first.spaceId }
+        val mergedPinsBySpace = mergedPinnedById.values.groupBy { it.first.spaceId }
+        val allMergedSpaces = (mergedFoldersBySpace.keys + mergedPinsBySpace.keys).distinct()
+
+        for (spaceId in allMergedSpaces) {
+            val spaceFolders = mergedFoldersBySpace[spaceId].orEmpty()
+            val validFolderIdsInSpace = spaceFolders.mapTo(mutableSetOf()) { it.first.id }
+            val spacePins = mergedPinsBySpace[spaceId].orEmpty().map { (tab, order) ->
+                val resolvedFolderId = tab.folderId?.takeIf { it in validFolderIdsInSpace }
+                if (resolvedFolderId != tab.folderId) {
+                    remappedSpacePinIds += tab.id
+                    tab.copy(folderId = null) to order
+                } else {
+                    tab to order
+                }
+            }
+
+            // Normalize top-level sortOrder across folders + ungrouped pins
+            val topLevelItems = buildList<Triple<Int, Boolean, Any>> {
+                spaceFolders.forEach { (folder, order) -> add(Triple(order, true, folder)) }
+                spacePins.filter { it.first.folderId == null }.forEach { (tab, order) ->
+                    add(Triple(order, false, tab))
+                }
+            }.sortedWith(
+                compareBy<Triple<Int, Boolean, Any>> { it.first }
+                    .thenByDescending { it.second }
+                    .thenBy { (_, _, item) ->
+                        when (item) {
+                            is PinnedFolderEntity -> item.id
+                            is TabEntity -> item.id
+                            else -> ""
+                        }
                     }
-                    val bsoId = SwiftfoxSyncCodec.pinnedTabBsoId(finalTab.id)
-                    val base = nextBaselineItems[bsoId]
-                    if (base != null && !base.deleted &&
-                        (finalTab.id in remappedSpacePinIds || base.localContentHash != null)
-                    ) {
-                        val storedHash = SwiftfoxSyncCodec.pinnedTabContentHash(finalTab, idx)
-                        nextBaselineItems[bsoId] = if (storedHash == base.contentHash) {
-                            base.copy(localContentHash = null)
-                        } else {
-                            base.copy(localContentHash = storedHash)
+            )
+
+            topLevelItems.forEachIndexed { idx, (_, _, item) ->
+                when (item) {
+                    is PinnedFolderEntity -> {
+                        val finalFolder = item.copy(sortOrder = idx)
+                        val prev = localFolderPrevById[finalFolder.id]
+                        if (spaceId in mutatedPinnedSpaces || prev == null || prev != finalFolder) {
+                            pinnedFolderUpserts += finalFolder
+                        }
+                        val bsoId = SwiftfoxSyncCodec.pinnedFolderBsoId(finalFolder.id)
+                        val base = nextBaselineItems[bsoId]
+                        if (base != null && !base.deleted &&
+                            (finalFolder.id in remappedFolderIds || base.localContentHash != null)
+                        ) {
+                            val storedHash = SwiftfoxSyncCodec.pinnedFolderContentHash(finalFolder, idx)
+                            nextBaselineItems[bsoId] = if (storedHash == base.contentHash) {
+                                base.copy(localContentHash = null)
+                            } else {
+                                base.copy(localContentHash = storedHash)
+                            }
+                        }
+                    }
+                    is TabEntity -> {
+                        val finalTab = item.copy(sortOrder = idx)
+                        val prev = localPinnedPrevById[finalTab.id]
+                        if (spaceId in mutatedPinnedSpaces || prev == null || prev != finalTab) {
+                            pinnedTabUpserts += finalTab
+                        }
+                        val bsoId = SwiftfoxSyncCodec.pinnedTabBsoId(finalTab.id)
+                        val base = nextBaselineItems[bsoId]
+                        if (base != null && !base.deleted &&
+                            (finalTab.id in remappedSpacePinIds || base.localContentHash != null)
+                        ) {
+                            val storedHash = SwiftfoxSyncCodec.pinnedTabContentHash(finalTab, idx)
+                            nextBaselineItems[bsoId] = if (storedHash == base.contentHash) {
+                                base.copy(localContentHash = null)
+                            } else {
+                                base.copy(localContentHash = storedHash)
+                            }
                         }
                     }
                 }
             }
+
+            // Normalize per-folder sortOrder for pins inside each folder
+            for ((folder, _) in spaceFolders) {
+                spacePins
+                    .filter { it.first.folderId == folder.id }
+                    .sortedWith(compareBy<Pair<TabEntity, Int>> { it.second }.thenBy { it.first.id })
+                    .forEachIndexed { idx, (tab, _) ->
+                        val finalTab = tab.copy(sortOrder = idx)
+                        val prev = localPinnedPrevById[finalTab.id]
+                        if (spaceId in mutatedPinnedSpaces || prev == null || prev != finalTab) {
+                            pinnedTabUpserts += finalTab
+                        }
+                        val bsoId = SwiftfoxSyncCodec.pinnedTabBsoId(finalTab.id)
+                        val base = nextBaselineItems[bsoId]
+                        if (base != null && !base.deleted &&
+                            (finalTab.id in remappedSpacePinIds || base.localContentHash != null)
+                        ) {
+                            val storedHash = SwiftfoxSyncCodec.pinnedTabContentHash(finalTab, idx)
+                            nextBaselineItems[bsoId] = if (storedHash == base.contentHash) {
+                                base.copy(localContentHash = null)
+                            } else {
+                                base.copy(localContentHash = storedHash)
+                            }
+                        }
+                    }
+            }
+        }
 
         return SwiftfoxSyncPlan(
             settingsToApply = settingsToApply,
@@ -756,6 +946,10 @@ object SwiftfoxSyncReconciler {
             essentialsPlan = SyncedEssentialPlan(
                 upserts = essentialUpserts,
                 deleteIds = essentialIdsToDelete
+            ),
+            pinnedFoldersPlan = SyncedPinnedFolderPlan(
+                upserts = pinnedFolderUpserts,
+                deleteIds = pinnedFolderIdsToDelete
             ),
             pinnedTabsPlan = SyncedPinnedTabPlan(
                 upserts = pinnedTabUpserts,

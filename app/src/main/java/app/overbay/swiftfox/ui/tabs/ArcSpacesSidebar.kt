@@ -2,6 +2,7 @@ package app.overbay.swiftfox.ui.tabs
 
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
@@ -46,10 +47,15 @@ import androidx.compose.material.icons.rounded.Add
 import app.overbay.swiftfox.ui.icons.rounded.ChevronLeft
 import app.overbay.swiftfox.ui.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Close
+import app.overbay.swiftfox.ui.icons.rounded.CreateNewFolder
 import app.overbay.swiftfox.ui.icons.rounded.DeleteOutline
 import app.overbay.swiftfox.ui.icons.rounded.DesktopWindows
 import app.overbay.swiftfox.ui.icons.rounded.DragIndicator
+import app.overbay.swiftfox.ui.icons.rounded.DriveFileMove
 import androidx.compose.material.icons.rounded.Edit
+import app.overbay.swiftfox.ui.icons.rounded.ExpandMore
+import app.overbay.swiftfox.ui.icons.rounded.Folder
+import app.overbay.swiftfox.ui.icons.rounded.FolderOpen
 import app.overbay.swiftfox.ui.icons.rounded.Palette
 import app.overbay.swiftfox.ui.icons.rounded.PushPin
 import androidx.compose.material.icons.rounded.Refresh
@@ -83,6 +89,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import app.overbay.swiftfox.data.db.EssentialEntity
+import app.overbay.swiftfox.data.db.PinnedFolderEntity
 import app.overbay.swiftfox.data.db.SpaceEntity
 import app.overbay.swiftfox.data.db.ZenPinnedItemEntity
 import app.overbay.swiftfox.data.prefs.SiteMode
@@ -119,6 +126,7 @@ private enum class SidebarReorderMode {
     SPACES,
     ESSENTIALS,
     PINNED_TABS,
+    FOLDER_TABS,
     ZEN_PINNED,
     OPEN_TABS
 }
@@ -145,6 +153,7 @@ fun ArcSpacesSidebar(
     var showCreateSpaceDialog by remember { mutableStateOf(false) }
     var showCloseAllSheet by remember { mutableStateOf(false) }
     var reorderMode by remember { mutableStateOf(SidebarReorderMode.NONE) }
+    var reorderingFolderId by remember { mutableStateOf<String?>(null) }
 
     // Active action-sheet & dialog targets
     var actionSpace by remember { mutableStateOf<SpaceEntity?>(null) }
@@ -156,13 +165,26 @@ fun ArcSpacesSidebar(
     var essentialToEdit by remember { mutableStateOf<EssentialEntity?>(null) }
     var essentialToPickIcon by remember { mutableStateOf<EssentialEntity?>(null) }
 
+    var showCreateFolderDialog by remember { mutableStateOf(false) }
+    var createFolderInitialTabId by remember { mutableStateOf<String?>(null) }
+    var actionFolder by remember { mutableStateOf<PinnedFolderEntity?>(null) }
+    var folderToRename by remember { mutableStateOf<PinnedFolderEntity?>(null) }
+    var folderToPickIcon by remember { mutableStateOf<PinnedFolderEntity?>(null) }
+    var folderToDelete by remember { mutableStateOf<PinnedFolderEntity?>(null) }
+
     var actionTab by remember { mutableStateOf<BrowserTabUi?>(null) }
     var tabToEdit by remember { mutableStateOf<BrowserTabUi?>(null) }
     var tabToPickIcon by remember { mutableStateOf<BrowserTabUi?>(null) }
+    var tabToMoveToFolder by remember { mutableStateOf<BrowserTabUi?>(null) }
+    var tabToMoveToSpace by remember { mutableStateOf<BrowserTabUi?>(null) }
 
     var actionZenPinned by remember { mutableStateOf<ZenPinnedItemEntity?>(null) }
     var zenPinnedToEdit by remember { mutableStateOf<ZenPinnedItemEntity?>(null) }
     var zenPinnedToPickIcon by remember { mutableStateOf<ZenPinnedItemEntity?>(null) }
+    var zenPinnedToMoveToSpace by remember { mutableStateOf<ZenPinnedItemEntity?>(null) }
+
+    var railQuickPickLocalFolderId by remember { mutableStateOf<String?>(null) }
+    var railQuickPickZenFolder by remember { mutableStateOf<Pair<String, String>?>(null) }
 
     val reduceMotion = rememberReduceMotion()
     val isEffectiveExpanded = isOverlayDrawer || expanded
@@ -170,6 +192,12 @@ fun ArcSpacesSidebar(
     // Exit reorder mode cleanly if the sidebar collapses or switches private/space view
     LaunchedEffect(isEffectiveExpanded, state.isPrivateView, state.activeSpaceId) {
         reorderMode = SidebarReorderMode.NONE
+        reorderingFolderId = null
+    }
+    LaunchedEffect(reorderMode) {
+        if (reorderMode != SidebarReorderMode.FOLDER_TABS) {
+            reorderingFolderId = null
+        }
     }
 
     val expandedWidth = if (state.windowState.windowWidthDp < 780) 232.dp else 264.dp
@@ -256,7 +284,11 @@ fun ArcSpacesSidebar(
                         state = state,
                         isOverlayDrawer = isOverlayDrawer,
                         reorderMode = reorderMode,
-                        onExitReorderMode = { reorderMode = SidebarReorderMode.NONE },
+                        reorderingFolderId = reorderingFolderId,
+                        onExitReorderMode = {
+                            reorderMode = SidebarReorderMode.NONE
+                            reorderingFolderId = null
+                        },
                         onToggleExpanded = onToggleExpanded,
                         onCloseDrawer = onCloseDrawer,
                         onSelectSpace = onSelectSpace,
@@ -266,9 +298,14 @@ fun ArcSpacesSidebar(
                         onCreateTab = onCreateTab,
                         onCreatePrivateTab = onCreatePrivateTab,
                         onRequestCreateSpace = { showCreateSpaceDialog = true },
+                        onRequestCreateFolder = {
+                            createFolderInitialTabId = null
+                            showCreateFolderDialog = true
+                        },
                         onRequestCloseAll = { showCloseAllSheet = true },
                         onLongPressSpace = { actionSpace = it },
                         onLongPressEssential = { actionEssential = it },
+                        onLongPressFolder = { actionFolder = it },
                         onLongPressTab = { actionTab = it },
                         onLongPressZenPinned = { actionZenPinned = it },
                         itemCallbacks = itemCallbacks
@@ -284,6 +321,11 @@ fun ArcSpacesSidebar(
                         onCreatePrivateTab = onCreatePrivateTab,
                         onLongPressSpace = { actionSpace = it },
                         onLongPressEssential = { actionEssential = it },
+                        onOpenLocalFolderQuickPick = { folderId -> railQuickPickLocalFolderId = folderId },
+                        onOpenZenFolderQuickPick = { spaceId, folderName ->
+                            railQuickPickZenFolder = spaceId to folderName
+                        },
+                        onLongPressFolder = { actionFolder = it },
                         onLongPressTab = { actionTab = it },
                         onLongPressZenPinned = { actionZenPinned = it },
                         itemCallbacks = itemCallbacks
@@ -324,31 +366,51 @@ fun ArcSpacesSidebar(
                     }
                 }
             },
-            actions = listOf(
-                SheetActionItem(
-                    label = "Rename Space",
-                    icon = Icons.Rounded.Edit,
-                    onClick = { spaceToRename = target }
-                ),
-                SheetActionItem(
-                    label = "Change icon",
-                    icon = Icons.Rounded.Palette,
-                    onClick = { spaceToPickIcon = target }
-                ),
-                SheetActionItem(
-                    label = "Reorder Spaces",
-                    icon = Icons.Rounded.SwapVert,
-                    enabled = state.spaces.size > 1 && isEffectiveExpanded,
-                    onClick = { reorderMode = SidebarReorderMode.SPACES }
-                ),
-                SheetActionItem(
-                    label = "Delete Space",
-                    icon = Icons.Rounded.DeleteOutline,
-                    isDestructive = true,
-                    enabled = state.spaces.size > 1,
-                    onClick = { spaceToDelete = target }
+            actions = buildList {
+                add(
+                    SheetActionItem(
+                        label = "Rename Space",
+                        icon = Icons.Rounded.Edit,
+                        onClick = { spaceToRename = target }
+                    )
                 )
-            ),
+                add(
+                    SheetActionItem(
+                        label = "Change icon",
+                        icon = Icons.Rounded.Palette,
+                        onClick = { spaceToPickIcon = target }
+                    )
+                )
+                if (!state.isPrivateView && target.id == state.activeSpaceId) {
+                    add(
+                        SheetActionItem(
+                            label = "New pinned folder",
+                            icon = Icons.Rounded.CreateNewFolder,
+                            onClick = {
+                                createFolderInitialTabId = null
+                                showCreateFolderDialog = true
+                            }
+                        )
+                    )
+                }
+                add(
+                    SheetActionItem(
+                        label = "Reorder Spaces",
+                        icon = Icons.Rounded.SwapVert,
+                        enabled = state.spaces.size > 1 && isEffectiveExpanded,
+                        onClick = { reorderMode = SidebarReorderMode.SPACES }
+                    )
+                )
+                add(
+                    SheetActionItem(
+                        label = "Delete Space",
+                        icon = Icons.Rounded.DeleteOutline,
+                        isDestructive = true,
+                        enabled = state.spaces.size > 1,
+                        onClick = { spaceToDelete = target }
+                    )
+                )
+            },
             onDismiss = { actionSpace = null }
         )
     }
@@ -554,27 +616,65 @@ fun ArcSpacesSidebar(
                         onClick = { tabToPickIcon = target }
                     )
                 )
-            }
-            val groupSize = if (target.isPinned && !isPrivate) {
-                state.visiblePinnedTabs.size
-            } else {
-                state.visibleRegularTabs.size
+                if (target.isPinned) {
+                    add(
+                        SheetActionItem(
+                            label = "Move to folder",
+                            icon = Icons.Rounded.FolderOpen,
+                            onClick = { tabToMoveToFolder = target }
+                        )
+                    )
+                }
+                if (state.spaces.size > 1) {
+                    add(
+                        SheetActionItem(
+                            label = "Move to Space",
+                            icon = Icons.Rounded.DriveFileMove,
+                            onClick = { tabToMoveToSpace = target }
+                        )
+                    )
+                }
             }
             if (isEffectiveExpanded) {
-                add(
-                    SheetActionItem(
-                        label = if (target.isPinned) "Reorder pinned tabs" else "Reorder tabs",
-                        icon = Icons.Rounded.SwapVert,
-                        enabled = groupSize > 1,
-                        onClick = {
-                            reorderMode = if (target.isPinned && !isPrivate) {
-                                SidebarReorderMode.PINNED_TABS
-                            } else {
-                                SidebarReorderMode.OPEN_TABS
-                            }
-                        }
+                if (target.isPinned && !isPrivate) {
+                    val folderId = target.folderId
+                    if (folderId != null) {
+                        val folderTabCount = state.visiblePinnedTabs.count { it.folderId == folderId }
+                        add(
+                            SheetActionItem(
+                                label = "Reorder tabs in folder",
+                                icon = Icons.Rounded.SwapVert,
+                                enabled = folderTabCount > 1,
+                                onClick = {
+                                    reorderingFolderId = folderId
+                                    reorderMode = SidebarReorderMode.FOLDER_TABS
+                                }
+                            )
+                        )
+                    }
+                    val topLevelCount = WorkspacePinnedFolderLogic.buildLocalPinnedDisplayList(
+                        state.pinnedFolders,
+                        state.tabs,
+                        target.spaceId
+                    ).size
+                    add(
+                        SheetActionItem(
+                            label = "Reorder pinned",
+                            icon = Icons.Rounded.SwapVert,
+                            enabled = topLevelCount > 1,
+                            onClick = { reorderMode = SidebarReorderMode.PINNED_TABS }
+                        )
                     )
-                )
+                } else {
+                    add(
+                        SheetActionItem(
+                            label = "Reorder tabs",
+                            icon = Icons.Rounded.SwapVert,
+                            enabled = state.visibleRegularTabs.size > 1,
+                            onClick = { reorderMode = SidebarReorderMode.OPEN_TABS }
+                        )
+                    )
+                }
             }
             add(
                 SheetActionItem(
@@ -708,6 +808,15 @@ fun ArcSpacesSidebar(
                     onClick = { itemCallbacks.onAddZenPinnedToEssentials(target.id) }
                 )
             )
+            if (state.spaces.size > 1) {
+                add(
+                    SheetActionItem(
+                        label = "Move to Space",
+                        icon = Icons.Rounded.DriveFileMove,
+                        onClick = { zenPinnedToMoveToSpace = target }
+                    )
+                )
+            }
             add(
                 SheetActionItem(
                     label = "Reorder synced pinned",
@@ -773,6 +882,286 @@ fun ArcSpacesSidebar(
             onDismiss = { zenPinnedToPickIcon = null }
         )
     }
+
+    if (showCreateFolderDialog) {
+        PinnedFolderNameDialog(
+            dialogTitle = "New Pinned Folder",
+            confirmLabel = "Create",
+            onDismiss = {
+                showCreateFolderDialog = false
+                createFolderInitialTabId = null
+            },
+            onConfirm = { name ->
+                val initialId = createFolderInitialTabId
+                showCreateFolderDialog = false
+                createFolderInitialTabId = null
+                itemCallbacks.onCreatePinnedFolder(name, initialId)
+            }
+        )
+    }
+
+    actionFolder?.let { target ->
+        val folderTabs = state.tabs.filter {
+            !it.isPrivate && it.isPinned && !it.isBoundWorkspaceTab &&
+                it.spaceId == target.spaceId && it.folderId == target.id
+        }
+        val topLevelCount = WorkspacePinnedFolderLogic.buildLocalPinnedDisplayList(
+            state.pinnedFolders,
+            state.tabs,
+            target.spaceId
+        ).size
+        ItemActionBottomSheet(
+            title = target.name,
+            subtitle = "Pinned folder · ${folderTabs.size} ${if (folderTabs.size == 1) "tab" else "tabs"}",
+            leadingIcon = {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    modifier = Modifier.size(40.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        val iconSpec = target.customIcon
+                        if (iconSpec != null) {
+                            SpaceIconGlyph(
+                                iconKey = iconSpec,
+                                tint = MaterialTheme.colorScheme.primary,
+                                size = 22.dp
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Rounded.FolderOpen,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                    }
+                }
+            },
+            actions = buildList {
+                add(
+                    SheetActionItem(
+                        label = "Rename folder",
+                        icon = Icons.Rounded.Edit,
+                        onClick = { folderToRename = target }
+                    )
+                )
+                add(
+                    SheetActionItem(
+                        label = "Set custom icon",
+                        icon = Icons.Rounded.Palette,
+                        onClick = { folderToPickIcon = target }
+                    )
+                )
+                if (isEffectiveExpanded) {
+                    add(
+                        SheetActionItem(
+                            label = "Reorder tabs in folder",
+                            icon = Icons.Rounded.SwapVert,
+                            enabled = folderTabs.size > 1,
+                            onClick = {
+                                if (!target.isExpanded) {
+                                    itemCallbacks.onTogglePinnedFolderExpanded(target.id)
+                                }
+                                reorderingFolderId = target.id
+                                reorderMode = SidebarReorderMode.FOLDER_TABS
+                            }
+                        )
+                    )
+                    add(
+                        SheetActionItem(
+                            label = "Reorder pinned",
+                            icon = Icons.Rounded.SwapVert,
+                            enabled = topLevelCount > 1,
+                            onClick = { reorderMode = SidebarReorderMode.PINNED_TABS }
+                        )
+                    )
+                }
+                add(
+                    SheetActionItem(
+                        label = "Delete folder",
+                        icon = Icons.Rounded.DeleteOutline,
+                        isDestructive = true,
+                        onClick = { folderToDelete = target }
+                    )
+                )
+            },
+            onDismiss = { actionFolder = null }
+        )
+    }
+
+    folderToRename?.let { target ->
+        PinnedFolderNameDialog(
+            dialogTitle = "Rename Folder",
+            initialName = target.name,
+            confirmLabel = "Save",
+            onDismiss = { folderToRename = null },
+            onConfirm = { newName ->
+                itemCallbacks.onRenamePinnedFolder(target.id, newName)
+                folderToRename = null
+            }
+        )
+    }
+
+    folderToPickIcon?.let { target ->
+        CustomIconPickerSheet(
+            title = "Icon for ${target.name}",
+            currentIconSpec = target.customIcon ?: "icon:folder",
+            allowResetToFavicon = false,
+            onSelectIcon = { spec ->
+                itemCallbacks.onSetPinnedFolderCustomIcon(target.id, spec)
+            },
+            onDismiss = { folderToPickIcon = null }
+        )
+    }
+
+    folderToDelete?.let { target ->
+        val containedCount = state.tabs.count {
+            !it.isPrivate && it.isPinned && !it.isBoundWorkspaceTab &&
+                it.spaceId == target.spaceId && it.folderId == target.id
+        }
+        DeletePinnedFolderDialog(
+            folder = target,
+            containedTabCount = containedCount,
+            onDismiss = { folderToDelete = null },
+            onKeepPinnedTabs = {
+                folderToDelete = null
+                itemCallbacks.onDeletePinnedFolder(target.id, false)
+            },
+            onDeleteFolderAndPins = {
+                folderToDelete = null
+                itemCallbacks.onDeletePinnedFolder(target.id, true)
+            }
+        )
+    }
+
+    tabToMoveToFolder?.let { target ->
+        val spaceFolders = remember(state.pinnedFolders, target.spaceId) {
+            state.pinnedFolders
+                .filter { it.spaceId == target.spaceId }
+                .sortedWith(compareBy({ it.sortOrder }, { it.createdAt }))
+        }
+        val tabCounts = remember(state.tabs, target.spaceId) {
+            state.tabs
+                .filter { !it.isPrivate && it.isPinned && !it.isBoundWorkspaceTab && it.spaceId == target.spaceId && it.folderId != null }
+                .groupingBy { it.folderId!! }
+                .eachCount()
+        }
+        MoveToFolderBottomSheet(
+            tabTitle = target.displayTitle,
+            currentFolderId = target.folderId,
+            foldersInSpace = spaceFolders,
+            tabCountByFolder = tabCounts,
+            onMoveToFolder = { folderId -> itemCallbacks.onMovePinnedTabToFolder(target.id, folderId) },
+            onRequestNewFolder = {
+                createFolderInitialTabId = target.id
+                showCreateFolderDialog = true
+            },
+            onDismiss = { tabToMoveToFolder = null }
+        )
+    }
+
+    tabToMoveToSpace?.let { target ->
+        MoveToSpaceBottomSheet(
+            tabTitle = target.displayTitle,
+            currentSpaceId = target.spaceId,
+            spaces = state.spaces,
+            onSelectSpace = { destSpaceId -> itemCallbacks.onMoveTabToSpace(target.id, destSpaceId) },
+            onDismiss = { tabToMoveToSpace = null }
+        )
+    }
+
+    zenPinnedToMoveToSpace?.let { target ->
+        MoveToSpaceBottomSheet(
+            tabTitle = target.title,
+            currentSpaceId = target.spaceId,
+            spaces = state.spaces,
+            onSelectSpace = { destSpaceId -> itemCallbacks.onMoveZenPinnedToSpace(target.id, destSpaceId) },
+            onDismiss = { zenPinnedToMoveToSpace = null }
+        )
+    }
+
+    railQuickPickLocalFolderId?.let { folderId ->
+        val folder = state.pinnedFolders.firstOrNull { it.id == folderId }
+        if (folder == null) {
+            LaunchedEffect(folderId) { railQuickPickLocalFolderId = null }
+        } else {
+            val childTabs = remember(state.tabs, folder.id, folder.spaceId) {
+                state.tabs
+                    .filter {
+                        !it.isPrivate && it.isPinned && !it.isBoundWorkspaceTab &&
+                            it.spaceId == folder.spaceId && it.folderId == folder.id
+                    }
+                    .sortedWith(compareBy<BrowserTabUi> { it.sortOrder }.thenBy { it.id })
+            }
+            val quickItems = remember(childTabs, state.activeTabId) {
+                childTabs.map { tab ->
+                    RailFolderQuickPickItem(
+                        id = tab.id,
+                        title = tab.displayTitle,
+                        url = tab.url,
+                        subtitle = tab.displayHost.ifBlank { "Start Page" },
+                        customIcon = tab.customIcon,
+                        isLoaded = !tab.isUnloaded,
+                        isActive = !tab.isUnloaded && tab.id == state.activeTabId,
+                        isDesktopMode = tab.resolvedSiteMode == SiteMode.DESKTOP,
+                        isPlayingMedia = tab.isPlayingMedia
+                    )
+                }
+            }
+            CollapsedRailFolderQuickPickSheet(
+                folderName = folder.name,
+                folderCustomIcon = folder.customIcon,
+                isSyncedZenFolder = false,
+                items = quickItems,
+                onSelectItem = { tabId -> itemCallbacks.onActivatePinnedTab(tabId) },
+                onLongPressItem = { tabId ->
+                    actionTab = childTabs.firstOrNull { it.id == tabId }
+                },
+                onCloseLoadedItem = { tabId -> itemCallbacks.onClosePinnedTab(tabId) },
+                onManageFolder = { actionFolder = folder },
+                onDismiss = { railQuickPickLocalFolderId = null }
+            )
+        }
+    }
+
+    railQuickPickZenFolder?.let { (spaceId, folderName) ->
+        val zenItems = remember(state.zenPinnedItems, spaceId, folderName) {
+            state.zenPinnedItems.filter {
+                it.spaceId == spaceId && it.folderName?.trim() == folderName
+            }
+        }
+        val quickItems = remember(zenItems, state.tabs, state.activeTabId) {
+            zenItems.map { item ->
+                val boundTab = state.tabForZenPinned(item.id)
+                RailFolderQuickPickItem(
+                    id = item.id,
+                    title = item.title,
+                    url = item.url,
+                    subtitle = boundTab?.displayHost?.takeIf { it.isNotBlank() }
+                        ?: OmniboxEngine.extractHost(item.url),
+                    customIcon = item.customIcon,
+                    isLoaded = boundTab != null,
+                    isActive = boundTab != null && boundTab.id == state.activeTabId,
+                    isDesktopMode = boundTab?.resolvedSiteMode == SiteMode.DESKTOP,
+                    isPlayingMedia = boundTab?.isPlayingMedia == true
+                )
+            }
+        }
+        CollapsedRailFolderQuickPickSheet(
+            folderName = folderName,
+            folderCustomIcon = null,
+            isSyncedZenFolder = true,
+            items = quickItems,
+            onSelectItem = { zenId -> itemCallbacks.onActivateZenPinned(zenId) },
+            onLongPressItem = { zenId ->
+                actionZenPinned = zenItems.firstOrNull { it.id == zenId }
+            },
+            onCloseLoadedItem = { zenId -> itemCallbacks.onCloseZenPinnedTab(zenId) },
+            onManageFolder = null,
+            onDismiss = { railQuickPickZenFolder = null }
+        )
+    }
 }
 
 @Composable
@@ -780,6 +1169,7 @@ private fun ColumnScope.ArcExpandedSidebarContent(
     state: BrowserUiState,
     isOverlayDrawer: Boolean,
     reorderMode: SidebarReorderMode,
+    reorderingFolderId: String?,
     onExitReorderMode: () -> Unit,
     onToggleExpanded: () -> Unit,
     onCloseDrawer: () -> Unit,
@@ -790,9 +1180,11 @@ private fun ColumnScope.ArcExpandedSidebarContent(
     onCreateTab: () -> Unit,
     onCreatePrivateTab: () -> Unit,
     onRequestCreateSpace: () -> Unit,
+    onRequestCreateFolder: () -> Unit,
     onRequestCloseAll: () -> Unit,
     onLongPressSpace: (SpaceEntity) -> Unit,
     onLongPressEssential: (EssentialEntity) -> Unit,
+    onLongPressFolder: (PinnedFolderEntity) -> Unit,
     onLongPressTab: (BrowserTabUi) -> Unit,
     onLongPressZenPinned: (ZenPinnedItemEntity) -> Unit,
     itemCallbacks: WorkspaceItemCallbacks
@@ -816,11 +1208,33 @@ private fun ColumnScope.ArcExpandedSidebarContent(
     ) {
         state.activeSpaceEssentials
     }
-    val localPinnedTabs = remember(state.tabs, state.activeSpaceId, state.isPrivateView) {
-        state.visiblePinnedTabs
+    val localPinnedEntries = remember(
+        state.pinnedFolders,
+        state.tabs,
+        state.activeSpaceId,
+        state.isPrivateView
+    ) {
+        if (state.isPrivateView) emptyList()
+        else WorkspacePinnedFolderLogic.buildLocalPinnedDisplayList(
+            folders = state.pinnedFolders,
+            pinnedTabs = state.tabs,
+            spaceId = state.activeSpaceId
+        )
+    }
+    val activeReorderingFolderTabs = remember(localPinnedEntries, reorderingFolderId) {
+        if (reorderingFolderId == null) emptyList()
+        else {
+            (localPinnedEntries.firstOrNull {
+                it is SidebarPinnedEntry.FolderGroup && it.folder.id == reorderingFolderId
+            } as? SidebarPinnedEntry.FolderGroup)?.tabs.orEmpty()
+        }
     }
     val zenPinned = remember(state.zenPinnedItems, state.activeSpaceId, state.isPrivateView) {
         state.activeSpaceZenPinned
+    }
+    val zenPinnedEntries = remember(zenPinned, state.activeSpaceId, state.isPrivateView) {
+        if (state.isPrivateView) emptyList()
+        else WorkspacePinnedFolderLogic.buildZenPinnedDisplayList(zenPinned, state.activeSpaceId)
     }
     val regularTabs = remember(state.tabs, state.activeSpaceId, state.isPrivateView) {
         state.visibleRegularTabs
@@ -860,12 +1274,23 @@ private fun ColumnScope.ArcExpandedSidebarContent(
         onCommitOrder = itemCallbacks.onReorderEssentials,
         enabled = reorderMode == SidebarReorderMode.ESSENTIALS
     )
-    val pinnedTabsReorder = rememberDragReorderController(
-        sourceItems = localPinnedTabs,
+    val topLevelPinnedReorder = rememberDragReorderController(
+        sourceItems = localPinnedEntries,
+        keyOf = { it.entryKey },
+        axis = DragAxis.VERTICAL,
+        onCommitOrder = itemCallbacks.onReorderTopLevelPinned,
+        enabled = reorderMode == SidebarReorderMode.PINNED_TABS
+    )
+    val folderTabsReorder = rememberDragReorderController(
+        sourceItems = activeReorderingFolderTabs,
         keyOf = { it.id },
         axis = DragAxis.VERTICAL,
-        onCommitOrder = { ids -> itemCallbacks.onReorderTabs(ids, true) },
-        enabled = reorderMode == SidebarReorderMode.PINNED_TABS
+        onCommitOrder = { ids ->
+            reorderingFolderId?.let { folderId ->
+                itemCallbacks.onReorderFolderPinnedTabs(folderId, ids)
+            }
+        },
+        enabled = reorderMode == SidebarReorderMode.FOLDER_TABS && reorderingFolderId != null
     )
     val zenPinnedReorder = rememberDragReorderController(
         sourceItems = zenPinned,
@@ -929,12 +1354,14 @@ private fun ColumnScope.ArcExpandedSidebarContent(
     // Active reorder mode banner for list/grid sections
     val isVerticalListReordering = reorderMode == SidebarReorderMode.ESSENTIALS ||
         reorderMode == SidebarReorderMode.PINNED_TABS ||
+        reorderMode == SidebarReorderMode.FOLDER_TABS ||
         reorderMode == SidebarReorderMode.ZEN_PINNED ||
         reorderMode == SidebarReorderMode.OPEN_TABS
     if (isVerticalListReordering) {
         val bannerText = when (reorderMode) {
             SidebarReorderMode.ESSENTIALS -> "Drag essentials to reorder"
-            SidebarReorderMode.PINNED_TABS -> "Drag pinned tabs"
+            SidebarReorderMode.PINNED_TABS -> "Drag folders & pinned tabs"
+            SidebarReorderMode.FOLDER_TABS -> "Drag folder tabs to reorder"
             SidebarReorderMode.ZEN_PINNED -> "Drag synced pinned"
             SidebarReorderMode.OPEN_TABS -> "Drag tabs to reorder"
             SidebarReorderMode.SPACES, SidebarReorderMode.NONE -> "Drag to reorder"
@@ -948,7 +1375,7 @@ private fun ColumnScope.ArcExpandedSidebarContent(
 
     // 2. Scrollable Essentials icon grid + Pinned Tabs section + Open Tabs + New Tab row
     val displayedEssentials = if (reorderMode == SidebarReorderMode.ESSENTIALS) essentialsReorder.items.toList() else essentials
-    val displayedPinnedTabs = if (reorderMode == SidebarReorderMode.PINNED_TABS) pinnedTabsReorder.items.toList() else localPinnedTabs
+    val displayedTopLevelPinned = if (reorderMode == SidebarReorderMode.PINNED_TABS) topLevelPinnedReorder.items.toList() else localPinnedEntries
     val displayedZenPinned = if (reorderMode == SidebarReorderMode.ZEN_PINNED) zenPinnedReorder.items.toList() else zenPinned
     val displayedRegularTabs = if (reorderMode == SidebarReorderMode.OPEN_TABS) openTabsReorder.items.toList() else regularTabs
 
@@ -1016,63 +1443,273 @@ private fun ColumnScope.ArcExpandedSidebarContent(
             }
         }
 
-        // Dedicated Arc/Zen-style Pinned Tabs section (local pinned tabs + Zen synced pinned items)
-        if (!state.isPrivateView && (displayedPinnedTabs.isNotEmpty() || displayedZenPinned.isNotEmpty())) {
+        // Dedicated Arc/Zen-style Pinned Tabs section (local folders + local pinned tabs + Zen synced pinned items)
+        if (!state.isPrivateView && (displayedTopLevelPinned.isNotEmpty() || displayedZenPinned.isNotEmpty())) {
             item(key = "pinned_section_header", contentType = "sidebar_section_header") {
-                Text(
-                    text = "Pinned",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.padding(top = 2.dp, bottom = 2.dp)
-                )
-            }
-            items(
-                items = displayedPinnedTabs,
-                key = { "pinned_${it.id}" },
-                contentType = { "sidebar_pinned_tab_row" }
-            ) { tab ->
-                val isReorderingPinned = reorderMode == SidebarReorderMode.PINNED_TABS
-                SidebarTabRow(
-                    tab = tab,
-                    isActive = !tab.isUnloaded && tab.id == state.activeTabId,
-                    isPinnedStyle = true,
-                    isLoaded = !tab.isUnloaded,
-                    isReorderMode = isReorderingPinned,
-                    onSelect = { if (!isReorderingPinned) itemCallbacks.onActivatePinnedTab(tab.id) },
-                    onLongPress = { if (!isReorderingPinned) onLongPressTab(tab) },
-                    onClose = { itemCallbacks.onClosePinnedTab(tab.id) },
+                Row(
                     modifier = Modifier
-                        .then(if (!isReorderingPinned) Modifier.animateItem() else Modifier)
-                        .dragReorderItem(
-                            key = tab.id,
-                            enabled = isReorderingPinned,
-                            controller = pinnedTabsReorder
-                        )
-                )
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "Pinned",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    if (!isVerticalListReordering) {
+                        IconButton(
+                            onClick = onRequestCreateFolder,
+                            modifier = Modifier.size(48.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.CreateNewFolder,
+                                contentDescription = "New pinned folder",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+                }
             }
-            items(
-                items = displayedZenPinned,
-                key = { "zen_${it.id}" },
-                contentType = { "sidebar_zen_pinned_row" }
-            ) { item ->
-                val isReorderingZen = reorderMode == SidebarReorderMode.ZEN_PINNED
-                val boundTab = tabByZenPinnedId[item.id]
-                SidebarZenPinnedRow(
-                    item = item,
-                    boundTab = boundTab,
-                    isActive = boundTab != null && boundTab.id == state.activeTabId,
-                    isReorderMode = isReorderingZen,
-                    onClick = { if (!isReorderingZen) itemCallbacks.onActivateZenPinned(item.id) },
-                    onLongPress = { if (!isReorderingZen) onLongPressZenPinned(item) },
-                    modifier = Modifier
-                        .then(if (!isReorderingZen) Modifier.animateItem() else Modifier)
-                        .dragReorderItem(
+
+            displayedTopLevelPinned.forEach { entry ->
+                when (entry) {
+                    is SidebarPinnedEntry.FolderGroup -> {
+                        val folder = entry.folder
+                        val isReorderingTopLevel = reorderMode == SidebarReorderMode.PINNED_TABS
+                        val isReorderingThisFolderTabs = reorderMode == SidebarReorderMode.FOLDER_TABS &&
+                            reorderingFolderId == folder.id
+                        val hasActiveChild = entry.tabs.any { !it.isUnloaded && it.id == state.activeTabId }
+                        val hasLoadedChild = entry.tabs.any { !it.isUnloaded }
+                        val isExpandedInUi = (folder.isExpanded || isReorderingThisFolderTabs) && !isReorderingTopLevel
+
+                        item(
+                            key = entry.entryKey,
+                            contentType = "sidebar_pinned_folder_row"
+                        ) {
+                            SidebarCollapsibleFolderRow(
+                                name = folder.name,
+                                itemCount = entry.tabs.size,
+                                customIcon = folder.customIcon,
+                                isExpanded = isExpandedInUi,
+                                isSyncedZenFolder = false,
+                                hasActiveChild = hasActiveChild,
+                                hasLoadedChild = hasLoadedChild,
+                                isReorderMode = isReorderingTopLevel,
+                                onToggleExpand = {
+                                    if (!isReorderingTopLevel && !isReorderingThisFolderTabs) {
+                                        itemCallbacks.onTogglePinnedFolderExpanded(folder.id)
+                                    }
+                                },
+                                onLongPress = {
+                                    if (!isVerticalListReordering) {
+                                        onLongPressFolder(folder)
+                                    }
+                                },
+                                modifier = Modifier
+                                    .then(if (!isReorderingTopLevel) Modifier.animateItem() else Modifier)
+                                    .dragReorderItem(
+                                        key = entry.entryKey,
+                                        enabled = isReorderingTopLevel,
+                                        controller = topLevelPinnedReorder
+                                    )
+                            )
+                        }
+
+                        if (isExpandedInUi) {
+                            val childTabs = if (isReorderingThisFolderTabs) {
+                                folderTabsReorder.items.toList()
+                            } else {
+                                entry.tabs
+                            }
+                            if (childTabs.isEmpty()) {
+                                item(
+                                    key = "empty_folder_${folder.id}",
+                                    contentType = "sidebar_empty_folder_hint"
+                                ) {
+                                    Text(
+                                        text = "Empty folder · Long-press a pin to add",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                        modifier = Modifier.padding(start = 26.dp, top = 2.dp, bottom = 4.dp)
+                                    )
+                                }
+                            } else {
+                                items(
+                                    items = childTabs,
+                                    key = { "pinned_${it.id}" },
+                                    contentType = { "sidebar_pinned_tab_row" }
+                                ) { tab ->
+                                    SidebarTabRow(
+                                        tab = tab,
+                                        isActive = !tab.isUnloaded && tab.id == state.activeTabId,
+                                        isPinnedStyle = true,
+                                        isLoaded = !tab.isUnloaded,
+                                        isReorderMode = isReorderingThisFolderTabs,
+                                        onSelect = {
+                                            if (!isReorderingThisFolderTabs) itemCallbacks.onActivatePinnedTab(tab.id)
+                                        },
+                                        onLongPress = {
+                                            if (!isVerticalListReordering) onLongPressTab(tab)
+                                        },
+                                        onClose = { itemCallbacks.onClosePinnedTab(tab.id) },
+                                        modifier = Modifier
+                                            .then(if (!isReorderingThisFolderTabs) Modifier.animateItem() else Modifier)
+                                            .padding(start = 16.dp)
+                                            .dragReorderItem(
+                                                key = tab.id,
+                                                enabled = isReorderingThisFolderTabs,
+                                                controller = folderTabsReorder
+                                            )
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    is SidebarPinnedEntry.StandalonePin -> {
+                        val tab = entry.tab
+                        val isReorderingPinned = reorderMode == SidebarReorderMode.PINNED_TABS
+                        item(
+                            key = "pinned_${tab.id}",
+                            contentType = "sidebar_pinned_tab_row"
+                        ) {
+                            SidebarTabRow(
+                                tab = tab,
+                                isActive = !tab.isUnloaded && tab.id == state.activeTabId,
+                                isPinnedStyle = true,
+                                isLoaded = !tab.isUnloaded,
+                                isReorderMode = isReorderingPinned,
+                                onSelect = {
+                                    if (!isReorderingPinned && reorderMode != SidebarReorderMode.FOLDER_TABS) {
+                                        itemCallbacks.onActivatePinnedTab(tab.id)
+                                    }
+                                },
+                                onLongPress = {
+                                    if (!isVerticalListReordering) onLongPressTab(tab)
+                                },
+                                onClose = { itemCallbacks.onClosePinnedTab(tab.id) },
+                                modifier = Modifier
+                                    .then(if (!isReorderingPinned) Modifier.animateItem() else Modifier)
+                                    .dragReorderItem(
+                                        key = entry.entryKey,
+                                        enabled = isReorderingPinned,
+                                        controller = topLevelPinnedReorder
+                                    )
+                            )
+                        }
+                    }
+                }
+            }
+
+            if (reorderMode == SidebarReorderMode.ZEN_PINNED) {
+                items(
+                    items = displayedZenPinned,
+                    key = { "zen_${it.id}" },
+                    contentType = { "sidebar_zen_pinned_row" }
+                ) { item ->
+                    val boundTab = tabByZenPinnedId[item.id]
+                    SidebarZenPinnedRow(
+                        item = item,
+                        boundTab = boundTab,
+                        isActive = boundTab != null && boundTab.id == state.activeTabId,
+                        isReorderMode = true,
+                        onClick = {},
+                        onLongPress = {},
+                        modifier = Modifier.dragReorderItem(
                             key = item.id,
-                            enabled = isReorderingZen,
+                            enabled = true,
                             controller = zenPinnedReorder
                         )
-                )
+                    )
+                }
+            } else {
+                zenPinnedEntries.forEach { zenEntry ->
+                    when (zenEntry) {
+                        is SidebarZenPinnedEntry.FolderGroup -> {
+                            val isExpanded = state.isZenFolderExpanded(state.activeSpaceId, zenEntry.folderName)
+                            val hasActive = zenEntry.items.any { item ->
+                                val bound = tabByZenPinnedId[item.id]
+                                bound != null && bound.id == state.activeTabId
+                            }
+                            val hasLoaded = zenEntry.items.any { item -> tabByZenPinnedId[item.id] != null }
+                            item(
+                                key = zenEntry.entryKey,
+                                contentType = "sidebar_zen_folder_row"
+                            ) {
+                                SidebarCollapsibleFolderRow(
+                                    name = zenEntry.folderName,
+                                    itemCount = zenEntry.items.size,
+                                    customIcon = null,
+                                    isExpanded = isExpanded,
+                                    isSyncedZenFolder = true,
+                                    hasActiveChild = hasActive,
+                                    hasLoadedChild = hasLoaded,
+                                    isReorderMode = false,
+                                    onToggleExpand = {
+                                        if (!isVerticalListReordering) {
+                                            itemCallbacks.onToggleZenFolderExpanded(state.activeSpaceId, zenEntry.folderName)
+                                        }
+                                    },
+                                    onLongPress = null,
+                                    modifier = Modifier.animateItem()
+                                )
+                            }
+                            if (isExpanded) {
+                                items(
+                                    items = zenEntry.items,
+                                    key = { "zen_${it.id}" },
+                                    contentType = { "sidebar_zen_pinned_row" }
+                                ) { item ->
+                                    val boundTab = tabByZenPinnedId[item.id]
+                                    SidebarZenPinnedRow(
+                                        item = item,
+                                        boundTab = boundTab,
+                                        isActive = boundTab != null && boundTab.id == state.activeTabId,
+                                        isReorderMode = false,
+                                        showFolderSubtitle = false,
+                                        onClick = {
+                                            if (!isVerticalListReordering) itemCallbacks.onActivateZenPinned(item.id)
+                                        },
+                                        onLongPress = {
+                                            if (!isVerticalListReordering) onLongPressZenPinned(item)
+                                        },
+                                        modifier = Modifier
+                                            .animateItem()
+                                            .padding(start = 16.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        is SidebarZenPinnedEntry.StandaloneItem -> {
+                            val item = zenEntry.item
+                            val boundTab = tabByZenPinnedId[item.id]
+                            item(
+                                key = "zen_${item.id}",
+                                contentType = "sidebar_zen_pinned_row"
+                            ) {
+                                SidebarZenPinnedRow(
+                                    item = item,
+                                    boundTab = boundTab,
+                                    isActive = boundTab != null && boundTab.id == state.activeTabId,
+                                    isReorderMode = false,
+                                    onClick = {
+                                        if (!isVerticalListReordering) itemCallbacks.onActivateZenPinned(item.id)
+                                    },
+                                    onLongPress = {
+                                        if (!isVerticalListReordering) onLongPressZenPinned(item)
+                                    },
+                                    modifier = Modifier.animateItem()
+                                )
+                            }
+                        }
+                    }
+                }
             }
+
             item(key = "pinned_section_divider", contentType = "sidebar_divider") {
                 HorizontalDivider(
                     modifier = Modifier.padding(vertical = 4.dp),
@@ -1419,11 +2056,142 @@ private fun SidebarEssentialTile(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
+private fun SidebarCollapsibleFolderRow(
+    name: String,
+    itemCount: Int,
+    customIcon: String?,
+    isExpanded: Boolean,
+    isSyncedZenFolder: Boolean,
+    hasActiveChild: Boolean,
+    hasLoadedChild: Boolean,
+    isReorderMode: Boolean,
+    onToggleExpand: () -> Unit,
+    onLongPress: (() -> Unit)?,
+    modifier: Modifier = Modifier
+) {
+    val reduceMotion = rememberReduceMotion()
+    val chevronRotation by animateFloatAsState(
+        targetValue = if (isExpanded) 0f else -90f,
+        animationSpec = if (reduceMotion) snap() else tween(160),
+        label = "folder_chevron_rotation"
+    )
+    val showCollapsedIndicator = !isExpanded && !isReorderMode && (hasActiveChild || hasLoadedChild)
+    val containerColor = when {
+        hasActiveChild && !isExpanded -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.72f)
+        isExpanded -> MaterialTheme.colorScheme.surfaceContainerHigh
+        else -> MaterialTheme.colorScheme.surfaceContainerLow
+    }
+    val border = when {
+        isReorderMode -> BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
+        hasActiveChild && !isExpanded -> BorderStroke(1.2.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.7f))
+        hasLoadedChild && !isExpanded -> BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f))
+        else -> BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f))
+    }
+
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = containerColor,
+        border = border,
+        modifier = modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .then(
+                if (!isReorderMode) {
+                    Modifier.combinedClickable(
+                        onClick = onToggleExpand,
+                        onLongClick = onLongPress
+                    )
+                } else {
+                    Modifier
+                }
+            )
+            .semantics {
+                val stateWord = if (isExpanded) "Expanded" else "Collapsed"
+                contentDescription = "$name folder, $itemCount items, $stateWord"
+            }
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.ExpandMore,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .size(18.dp)
+                    .graphicsLayer { rotationZ = chevronRotation }
+            )
+            Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
+                modifier = Modifier.size(28.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    if (customIcon != null) {
+                        SpaceIconGlyph(
+                            iconKey = customIcon,
+                            tint = MaterialTheme.colorScheme.primary,
+                            size = 18.dp
+                        )
+                    } else {
+                        Icon(
+                            imageVector = if (isExpanded) Icons.Rounded.FolderOpen else Icons.Rounded.Folder,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = name,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = buildString {
+                        append("$itemCount ${if (itemCount == 1) "item" else "items"}")
+                        if (isSyncedZenFolder) append(" · Synced")
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            if (isReorderMode) {
+                Icon(
+                    imageVector = Icons.Rounded.DragIndicator,
+                    contentDescription = "Drag to reorder",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(20.dp)
+                )
+            } else if (showCollapsedIndicator) {
+                Box(
+                    modifier = Modifier
+                        .size(if (hasActiveChild) 8.dp else 7.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.primary)
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
 private fun SidebarZenPinnedRow(
     item: ZenPinnedItemEntity,
     boundTab: BrowserTabUi?,
     isActive: Boolean,
     isReorderMode: Boolean,
+    showFolderSubtitle: Boolean = true,
     onClick: () -> Unit,
     onLongPress: () -> Unit,
     modifier: Modifier = Modifier
@@ -1505,7 +2273,7 @@ private fun SidebarZenPinnedRow(
                 )
                 val subtitle = when {
                     boundTab != null && boundTab.displayHost.isNotBlank() -> boundTab.displayHost
-                    !item.folderName.isNullOrBlank() -> item.folderName
+                    showFolderSubtitle && !item.folderName.isNullOrBlank() -> item.folderName
                     else -> OmniboxEngine.extractHost(item.url)
                 }
                 if (subtitle.isNotBlank()) {
@@ -1791,6 +2559,9 @@ private fun ColumnScope.ArcCollapsedSidebarRail(
     onCreatePrivateTab: () -> Unit,
     onLongPressSpace: (SpaceEntity) -> Unit,
     onLongPressEssential: (EssentialEntity) -> Unit,
+    onOpenLocalFolderQuickPick: (String) -> Unit,
+    onOpenZenFolderQuickPick: (spaceId: String, folderName: String) -> Unit,
+    onLongPressFolder: (PinnedFolderEntity) -> Unit,
     onLongPressTab: (BrowserTabUi) -> Unit,
     onLongPressZenPinned: (ZenPinnedItemEntity) -> Unit,
     itemCallbacks: WorkspaceItemCallbacks
@@ -1886,8 +2657,25 @@ private fun ColumnScope.ArcCollapsedSidebarRail(
     val railZenPinned = remember(state.zenPinnedItems, state.activeSpaceId, state.isPrivateView) {
         state.activeSpaceZenPinned
     }
-    val railVisibleTabs = remember(state.tabs, state.activeSpaceId, state.isPrivateView) {
-        state.visibleTabs
+    val railLocalPinnedEntries = remember(
+        state.pinnedFolders,
+        state.tabs,
+        state.activeSpaceId,
+        state.isPrivateView
+    ) {
+        if (state.isPrivateView) emptyList()
+        else WorkspacePinnedFolderLogic.buildLocalPinnedDisplayList(
+            folders = state.pinnedFolders,
+            pinnedTabs = state.tabs,
+            spaceId = state.activeSpaceId
+        )
+    }
+    val railZenEntries = remember(railZenPinned, state.activeSpaceId, state.isPrivateView) {
+        if (state.isPrivateView) emptyList()
+        else WorkspacePinnedFolderLogic.buildZenPinnedDisplayList(railZenPinned, state.activeSpaceId)
+    }
+    val railOpenOrPrivateTabs = remember(state.tabs, state.activeSpaceId, state.isPrivateView) {
+        if (state.isPrivateView) state.visibleTabs else state.visibleRegularTabs
     }
     val railTabByEssentialId = remember(state.tabs) {
         buildMap {
@@ -1938,158 +2726,152 @@ private fun ColumnScope.ArcCollapsedSidebarRail(
                 )
             }
         }
-        if (!state.isPrivateView && railZenPinned.isNotEmpty()) {
+        if (!state.isPrivateView && railLocalPinnedEntries.isNotEmpty()) {
             items(
-                items = railZenPinned,
-                key = { "rail_zen_${it.id}" },
-                contentType = { "sidebar_zen_collapsed" }
-            ) { item ->
-                val boundTab = railTabByZenPinnedId[item.id]
-                val isLoaded = boundTab != null
-                val isActive = boundTab != null && boundTab.id == state.activeTabId
-                Surface(
-                    shape = RoundedCornerShape(14.dp),
-                    color = when {
-                        isActive -> MaterialTheme.colorScheme.primaryContainer
-                        isLoaded -> MaterialTheme.colorScheme.surfaceContainerHigh
-                        else -> MaterialTheme.colorScheme.surfaceContainer
-                    },
-                    border = when {
-                        isActive -> BorderStroke(1.8.dp, MaterialTheme.colorScheme.primary)
-                        isLoaded -> BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.48f))
-                        else -> BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.28f))
-                    },
-                    modifier = Modifier
-                        .animateItem()
-                        .size(48.dp)
-                        .clip(RoundedCornerShape(14.dp))
-                        .combinedClickable(
-                            onClick = { itemCallbacks.onActivateZenPinned(item.id) },
-                            onLongClick = { onLongPressZenPinned(item) }
+                items = railLocalPinnedEntries,
+                key = { "rail_${it.entryKey}" },
+                contentType = { entry ->
+                    when (entry) {
+                        is SidebarPinnedEntry.FolderGroup -> "sidebar_folder_collapsed"
+                        is SidebarPinnedEntry.StandalonePin -> "sidebar_tab_collapsed"
+                    }
+                }
+            ) { entry ->
+                when (entry) {
+                    is SidebarPinnedEntry.FolderGroup -> {
+                        val hasActive = entry.tabs.any { !it.isUnloaded && it.id == state.activeTabId }
+                        val hasLoaded = entry.tabs.any { !it.isUnloaded }
+                        CollapsedRailFolderTile(
+                            name = entry.folder.name,
+                            customIcon = entry.folder.customIcon,
+                            isActive = hasActive,
+                            isLoaded = hasLoaded,
+                            onClick = { onOpenLocalFolderQuickPick(entry.folder.id) },
+                            onLongClick = { onLongPressFolder(entry.folder) },
+                            modifier = Modifier.animateItem()
                         )
-                        .semantics {
-                            val status = when {
-                                isActive -> "Active"
-                                isLoaded -> "Loaded"
-                                else -> "Unloaded"
-                            }
-                            contentDescription = "${item.title}, $status"
+                    }
+
+                    is SidebarPinnedEntry.StandalonePin -> {
+                        val tab = entry.tab
+                        CollapsedRailTabTile(
+                            tab = tab,
+                            isActive = !tab.isUnloaded && tab.id == state.activeTabId,
+                            isLoaded = !tab.isUnloaded,
+                            onClick = { itemCallbacks.onActivatePinnedTab(tab.id) },
+                            onLongClick = { onLongPressTab(tab) },
+                            modifier = Modifier.animateItem()
+                        )
+                    }
+                }
+            }
+        }
+        if (!state.isPrivateView && railZenEntries.isNotEmpty()) {
+            items(
+                items = railZenEntries,
+                key = { "rail_${it.entryKey}" },
+                contentType = { entry ->
+                    when (entry) {
+                        is SidebarZenPinnedEntry.FolderGroup -> "sidebar_zen_folder_collapsed"
+                        is SidebarZenPinnedEntry.StandaloneItem -> "sidebar_zen_collapsed"
+                    }
+                }
+            ) { entry ->
+                when (entry) {
+                    is SidebarZenPinnedEntry.FolderGroup -> {
+                        val hasActive = entry.items.any { item ->
+                            val bound = railTabByZenPinnedId[item.id]
+                            bound != null && bound.id == state.activeTabId
                         }
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        SiteIconBadge(
-                            url = item.url,
-                            fallbackLabel = item.title,
-                            customIcon = item.customIcon,
-                            size = 48.dp,
-                            iconSize = 24.dp,
-                            shape = RoundedCornerShape(14.dp),
-                            tint = if (isActive || isLoaded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                            fillImageToContainer = true,
-                            modifier = Modifier.graphicsLayer { alpha = if (isLoaded || isActive) 1f else 0.66f }
+                        val hasLoaded = entry.items.any { item -> railTabByZenPinnedId[item.id] != null }
+                        CollapsedRailFolderTile(
+                            name = entry.folderName,
+                            customIcon = null,
+                            isActive = hasActive,
+                            isLoaded = hasLoaded,
+                            onClick = { onOpenZenFolderQuickPick(state.activeSpaceId, entry.folderName) },
+                            onLongClick = null,
+                            modifier = Modifier.animateItem()
                         )
-                        if (isLoaded) {
-                            Surface(
-                                shape = CircleShape,
-                                color = MaterialTheme.colorScheme.primary,
-                                border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.surface.copy(alpha = 0.75f)),
-                                modifier = Modifier
-                                    .align(Alignment.BottomCenter)
-                                    .padding(bottom = 3.5.dp)
-                                    .width(if (isActive) 20.dp else 12.dp)
-                                    .height(3.5.dp)
-                            ) {}
+                    }
+
+                    is SidebarZenPinnedEntry.StandaloneItem -> {
+                        val item = entry.item
+                        val boundTab = railTabByZenPinnedId[item.id]
+                        val isLoaded = boundTab != null
+                        val isActive = boundTab != null && boundTab.id == state.activeTabId
+                        Surface(
+                            shape = RoundedCornerShape(14.dp),
+                            color = when {
+                                isActive -> MaterialTheme.colorScheme.primaryContainer
+                                isLoaded -> MaterialTheme.colorScheme.surfaceContainerHigh
+                                else -> MaterialTheme.colorScheme.surfaceContainer
+                            },
+                            border = when {
+                                isActive -> BorderStroke(1.8.dp, MaterialTheme.colorScheme.primary)
+                                isLoaded -> BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.48f))
+                                else -> BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.28f))
+                            },
+                            modifier = Modifier
+                                .animateItem()
+                                .size(48.dp)
+                                .clip(RoundedCornerShape(14.dp))
+                                .combinedClickable(
+                                    onClick = { itemCallbacks.onActivateZenPinned(item.id) },
+                                    onLongClick = { onLongPressZenPinned(item) }
+                                )
+                                .semantics {
+                                    val status = when {
+                                        isActive -> "Active"
+                                        isLoaded -> "Loaded"
+                                        else -> "Unloaded"
+                                    }
+                                    contentDescription = "${item.title}, $status"
+                                }
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                SiteIconBadge(
+                                    url = item.url,
+                                    fallbackLabel = item.title,
+                                    customIcon = item.customIcon,
+                                    size = 48.dp,
+                                    iconSize = 24.dp,
+                                    shape = RoundedCornerShape(14.dp),
+                                    tint = if (isActive || isLoaded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fillImageToContainer = true,
+                                    modifier = Modifier.graphicsLayer { alpha = if (isLoaded || isActive) 1f else 0.66f }
+                                )
+                                if (isLoaded) {
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.surface.copy(alpha = 0.75f)),
+                                        modifier = Modifier
+                                            .align(Alignment.BottomCenter)
+                                            .padding(bottom = 3.5.dp)
+                                            .width(if (isActive) 20.dp else 12.dp)
+                                            .height(3.5.dp)
+                                    ) {}
+                                }
+                            }
                         }
                     }
                 }
             }
         }
         items(
-            items = railVisibleTabs,
+            items = railOpenOrPrivateTabs,
             key = { it.id },
             contentType = { "sidebar_tab_collapsed" }
         ) { tab ->
-            val isLoaded = !tab.isUnloaded
-            val isActive = isLoaded && tab.id == state.activeTabId
-            Surface(
-                shape = RoundedCornerShape(14.dp),
-                color = when {
-                    isActive && tab.isPrivate -> foxColors.privateContainer
-                    isActive -> MaterialTheme.colorScheme.primaryContainer
-                    tab.isPinned && !isLoaded -> MaterialTheme.colorScheme.surfaceContainer
-                    else -> MaterialTheme.colorScheme.surfaceContainerHigh
-                },
-                border = when {
-                    isActive && tab.isPrivate -> BorderStroke(1.5.dp, foxColors.privateAccent)
-                    isActive -> BorderStroke(1.8.dp, MaterialTheme.colorScheme.primary)
-                    tab.isPinned && isLoaded -> BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.48f))
-                    tab.isPinned -> BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.28f))
-                    else -> null
-                },
-                modifier = Modifier
-                    .animateItem()
-                    .size(48.dp)
-                    .clip(RoundedCornerShape(14.dp))
-                    .combinedClickable(
-                        onClick = {
-                            if (tab.isPinned && !tab.isPrivate) {
-                                itemCallbacks.onActivatePinnedTab(tab.id)
-                            } else {
-                                onSelectTab(tab.id)
-                            }
-                        },
-                        onLongClick = { onLongPressTab(tab) }
-                    )
-                    .semantics {
-                        contentDescription = "Switch to ${tab.displayTitle} (${tab.displayHost.ifBlank { "Start Page" }})"
-                    }
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    val iconAlpha = if (isLoaded || isActive || !tab.isPinned) 1f else 0.66f
-                    if (tab.isStartPage && tab.customIcon == null) {
-                        val brandAppearance = LocalSwiftfoxBrandAppearance.current
-                        SwiftfoxEmblem(
-                            size = 22.dp,
-                            variant = if (tab.isPrivate) {
-                                SwiftfoxEmblemVariant.PURPLE
-                            } else {
-                                brandAppearance.effectiveEmblemVariant
-                            },
-                            isLightBackground = !tab.isPrivate && brandAppearance.isLightChrome,
-                            modifier = Modifier.graphicsLayer { alpha = iconAlpha }
-                        )
-                    } else {
-                        SiteIconBadge(
-                            url = tab.url,
-                            fallbackLabel = tab.displayHost.ifBlank { tab.displayTitle },
-                            customIcon = if (tab.isPrivate) null else tab.customIcon,
-                            privateTabId = if (tab.isPrivate) tab.id else null,
-                            size = 48.dp,
-                            iconSize = 24.dp,
-                            shape = RoundedCornerShape(14.dp),
-                            tint = when {
-                                isActive && tab.isPrivate -> foxColors.privateAccent
-                                isActive -> MaterialTheme.colorScheme.primary
-                                else -> MaterialTheme.colorScheme.onSurface
-                            },
-                            fillImageToContainer = true,
-                            modifier = Modifier.graphicsLayer { alpha = iconAlpha }
-                        )
-                    }
-                    if (tab.isPinned && !tab.isPrivate && isLoaded) {
-                        Surface(
-                            shape = CircleShape,
-                            color = MaterialTheme.colorScheme.primary,
-                            border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.surface.copy(alpha = 0.75f)),
-                            modifier = Modifier
-                                .align(Alignment.BottomCenter)
-                                .padding(bottom = 3.5.dp)
-                                .width(if (isActive) 20.dp else 12.dp)
-                                .height(3.5.dp)
-                        ) {}
-                    }
-                }
-            }
+            CollapsedRailTabTile(
+                tab = tab,
+                isActive = !tab.isUnloaded && tab.id == state.activeTabId,
+                isLoaded = !tab.isUnloaded,
+                onClick = { onSelectTab(tab.id) },
+                onLongClick = { onLongPressTab(tab) },
+                modifier = Modifier.animateItem()
+            )
         }
     }
 
@@ -2143,6 +2925,164 @@ private fun ColumnScope.ArcCollapsedSidebarRail(
                     contentDescription = newTabLabel,
                     modifier = Modifier.size(20.dp)
                 )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun CollapsedRailFolderTile(
+    name: String,
+    customIcon: String?,
+    isActive: Boolean,
+    isLoaded: Boolean,
+    onClick: () -> Unit,
+    onLongClick: (() -> Unit)?,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = when {
+            isActive -> MaterialTheme.colorScheme.primaryContainer
+            isLoaded -> MaterialTheme.colorScheme.surfaceContainerHigh
+            else -> MaterialTheme.colorScheme.surfaceContainer
+        },
+        border = when {
+            isActive -> BorderStroke(1.8.dp, MaterialTheme.colorScheme.primary)
+            isLoaded -> BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.48f))
+            else -> BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.28f))
+        },
+        modifier = modifier
+            .size(48.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick
+            )
+            .semantics {
+                contentDescription = "$name folder"
+            }
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            if (customIcon != null) {
+                SpaceIconGlyph(
+                    iconKey = customIcon,
+                    tint = if (isActive || isLoaded) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    size = 22.dp
+                )
+            } else {
+                Icon(
+                    imageVector = Icons.Rounded.Folder,
+                    contentDescription = null,
+                    tint = if (isActive || isLoaded) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    modifier = Modifier.size(22.dp)
+                )
+            }
+            if (isLoaded) {
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.primary,
+                    border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.surface.copy(alpha = 0.75f)),
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 3.5.dp)
+                        .width(if (isActive) 20.dp else 12.dp)
+                        .height(3.5.dp)
+                ) {}
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun CollapsedRailTabTile(
+    tab: BrowserTabUi,
+    isActive: Boolean,
+    isLoaded: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val foxColors = LocalSwiftfoxColors.current
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = when {
+            isActive && tab.isPrivate -> foxColors.privateContainer
+            isActive -> MaterialTheme.colorScheme.primaryContainer
+            tab.isPinned && !isLoaded -> MaterialTheme.colorScheme.surfaceContainer
+            else -> MaterialTheme.colorScheme.surfaceContainerHigh
+        },
+        border = when {
+            isActive && tab.isPrivate -> BorderStroke(1.5.dp, foxColors.privateAccent)
+            isActive -> BorderStroke(1.8.dp, MaterialTheme.colorScheme.primary)
+            tab.isPinned && isLoaded -> BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.48f))
+            tab.isPinned -> BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.28f))
+            else -> null
+        },
+        modifier = modifier
+            .size(48.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick
+            )
+            .semantics {
+                contentDescription = "Switch to ${tab.displayTitle} (${tab.displayHost.ifBlank { "Start Page" }})"
+            }
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            val iconAlpha = if (isLoaded || isActive || !tab.isPinned) 1f else 0.66f
+            if (tab.isStartPage && tab.customIcon == null) {
+                val brandAppearance = LocalSwiftfoxBrandAppearance.current
+                SwiftfoxEmblem(
+                    size = 22.dp,
+                    variant = if (tab.isPrivate) {
+                        SwiftfoxEmblemVariant.PURPLE
+                    } else {
+                        brandAppearance.effectiveEmblemVariant
+                    },
+                    isLightBackground = !tab.isPrivate && brandAppearance.isLightChrome,
+                    modifier = Modifier.graphicsLayer { alpha = iconAlpha }
+                )
+            } else {
+                SiteIconBadge(
+                    url = tab.url,
+                    fallbackLabel = tab.displayHost.ifBlank { tab.displayTitle },
+                    customIcon = if (tab.isPrivate) null else tab.customIcon,
+                    privateTabId = if (tab.isPrivate) tab.id else null,
+                    size = 48.dp,
+                    iconSize = 24.dp,
+                    shape = RoundedCornerShape(14.dp),
+                    tint = when {
+                        isActive && tab.isPrivate -> foxColors.privateAccent
+                        isActive -> MaterialTheme.colorScheme.primary
+                        else -> MaterialTheme.colorScheme.onSurface
+                    },
+                    fillImageToContainer = true,
+                    modifier = Modifier.graphicsLayer { alpha = iconAlpha }
+                )
+            }
+            if (tab.isPinned && !tab.isPrivate && isLoaded) {
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.primary,
+                    border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.surface.copy(alpha = 0.75f)),
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 3.5.dp)
+                        .width(if (isActive) 20.dp else 12.dp)
+                        .height(3.5.dp)
+                ) {}
             }
         }
     }

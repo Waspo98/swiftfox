@@ -57,6 +57,30 @@ interface EssentialDao {
 }
 
 @Dao
+interface PinnedFolderDao {
+    @Query("SELECT * FROM pinned_folders ORDER BY sortOrder ASC, createdAt ASC")
+    fun observeAll(): Flow<List<PinnedFolderEntity>>
+
+    @Query("SELECT * FROM pinned_folders ORDER BY sortOrder ASC, createdAt ASC")
+    suspend fun getAll(): List<PinnedFolderEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(folder: PinnedFolderEntity)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAll(folders: List<PinnedFolderEntity>)
+
+    @Query("DELETE FROM pinned_folders WHERE id = :id")
+    suspend fun deleteById(id: String)
+
+    @Query("DELETE FROM pinned_folders WHERE id IN (:ids)")
+    suspend fun deleteByIds(ids: List<String>)
+
+    @Query("DELETE FROM pinned_folders WHERE spaceId = :spaceId")
+    suspend fun deleteBySpace(spaceId: String)
+}
+
+@Dao
 interface TabDao {
     @Query("SELECT * FROM tabs WHERE isPrivate = 0 ORDER BY isPinned DESC, sortOrder ASC, lastAccessedAt DESC")
     suspend fun getNormalTabs(): List<TabEntity>
@@ -67,8 +91,14 @@ interface TabDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAll(tabs: List<TabEntity>)
 
-    @Query("UPDATE tabs SET spaceId = :newSpaceId WHERE spaceId = :oldSpaceId AND isPrivate = 0 AND essentialId IS NULL AND zenPinnedId IS NULL")
+    @Query("UPDATE tabs SET spaceId = :newSpaceId, folderId = NULL WHERE spaceId = :oldSpaceId AND isPrivate = 0 AND essentialId IS NULL AND zenPinnedId IS NULL")
     suspend fun reassignSpace(oldSpaceId: String, newSpaceId: String)
+
+    @Query("UPDATE tabs SET folderId = NULL WHERE folderId = :folderId")
+    suspend fun clearFolderId(folderId: String)
+
+    @Query("DELETE FROM tabs WHERE folderId = :folderId")
+    suspend fun deleteByFolderId(folderId: String)
 
     @Query("DELETE FROM tabs WHERE id = :tabId")
     suspend fun deleteById(tabId: String)

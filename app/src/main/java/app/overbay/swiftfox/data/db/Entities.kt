@@ -30,11 +30,29 @@ data class EssentialEntity(
 )
 
 @Entity(
+    tableName = "pinned_folders",
+    indices = [
+        Index(value = ["spaceId"], name = "index_pinned_folders_spaceId"),
+        Index(value = ["spaceId", "sortOrder"], name = "index_pinned_folders_spaceId_sortOrder")
+    ]
+)
+data class PinnedFolderEntity(
+    @PrimaryKey val id: String,
+    val spaceId: String,
+    val name: String,
+    val customIcon: String? = null,
+    val isExpanded: Boolean = true,
+    val sortOrder: Int = 0,
+    val createdAt: Long = System.currentTimeMillis()
+)
+
+@Entity(
     tableName = "tabs",
     indices = [
         Index(value = ["spaceId"], name = "index_tabs_spaceId"),
         Index(value = ["essentialId"], name = "index_tabs_essentialId"),
         Index(value = ["zenPinnedId"], name = "index_tabs_zenPinnedId"),
+        Index(value = ["folderId"], name = "index_tabs_folderId"),
         Index(value = ["isPrivate", "isPinned", "sortOrder"], name = "index_tabs_isPrivate_isPinned_sortOrder")
     ]
 )
@@ -53,7 +71,8 @@ data class TabEntity(
     val essentialId: String? = null,
     val zenPinnedId: String? = null,
     val isUnloaded: Boolean = false,
-    val pinnedUrl: String? = null
+    val pinnedUrl: String? = null,
+    val folderId: String? = null
 )
 
 @Entity(

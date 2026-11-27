@@ -2,6 +2,7 @@ package app.overbay.swiftfox
 
 import app.overbay.swiftfox.data.db.EssentialEntity
 import app.overbay.swiftfox.data.db.FilterListEntity
+import app.overbay.swiftfox.data.db.PinnedFolderEntity
 import app.overbay.swiftfox.data.db.SiteOverrideEntity
 import app.overbay.swiftfox.data.db.SpaceEntity
 import app.overbay.swiftfox.data.db.SwiftfoxDatabase
@@ -967,5 +968,118 @@ class SwiftfoxSyncTest {
         assertEquals(1, plan4.pushedCount)
         assertEquals(pinBsoId, plan4.outgoingBsos.single().first)
         assertNull(plan4.nextBaseline.items[pinBsoId]?.localContentHash)
+    }
+
+    @Test
+    fun pinnedFoldersAndGroupedPinsSyncInterleavedOrderAndCleanOrphans() {
+        val workSpace = SpaceEntity(id = "space_work", name = "Work", sortOrder = 0)
+        val topPin = TabEntity(
+            id = "pin_top",
+            spaceId = "space_work",
+            title = "Inbox",
+            url = "https://mail.example.com",
+            isPrivate = false,
+            isPinned = true,
+            sortOrder = 0,
+            pinnedUrl = "https://mail.example.com"
+        )
+        val folderDev = PinnedFolderEntity(
+            id = "folder_dev",
+            spaceId = "space_work",
+            name = "Dev Tools",
+            customIcon = "icon:code",
+            isExpanded = false,
+            sortOrder = 1,
+            createdAt = 500L
+        )
+        val devPin = TabEntity(
+            id = "pin_gh",
+            spaceId = "space_work",
+            title = "GitHub",
+            url = "https://github.com",
+            isPrivate = false,
+            isPinned = true,
+            sortOrder = 0,
+            pinnedUrl = "https://github.com",
+            folderId = folderDev.id
+        )
+        val bottomPin = TabEntity(
+            id = "pin_bottom",
+            spaceId = "space_work",
+            title = "Docs",
+            url = "https://kotlinlang.org",
+            isPrivate = false,
+            isPinned = true,
+            sortOrder = 2,
+            pinnedUrl = "https://kotlinlang.org"
+        )
+
+        val encodedFolder = SwiftfoxSyncCodec.encodePinnedFolderRecord(folderDev, localOrder = 1, updatedAt = 1_000L)
+        val decodedFolder = SwiftfoxSyncCodec.decodeRecord(
+            SwiftfoxSyncCodec.pinnedFolderBsoId(folderDev.id),
+            encodedFolder
+        ) as SwiftfoxSyncCodec.DecodedSwiftfoxRecord.PinnedFolder
+        assertEquals("Dev Tools", decodedFolder.entity.name)
+        assertEquals("icon:code", decodedFolder.entity.customIcon)
+        assertEquals(1, decodedFolder.localOrder)
+
+        val encodedGroupedPin = SwiftfoxSyncCodec.encodePinnedTabRecord(devPin, localOrder = 0, updatedAt = 1_000L)
+        val decodedGroupedPin = SwiftfoxSyncCodec.decodeRecord(
+            SwiftfoxSyncCodec.pinnedTabBsoId(devPin.id),
+            encodedGroupedPin
+        ) as SwiftfoxSyncCodec.DecodedSwiftfoxRecord.PinnedTab
+        assertEquals(folderDev.id, decodedGroupedPin.entity.folderId)
+
+        // Device A pushes interleaved topPin (0), folderDev (1), bottomPin (2), plus devPin (0 inside folderDev)
+        val planA = SwiftfoxSyncReconciler.buildPlan(
+            local = SwiftfoxSyncReconciler.LocalSnapshot(
+                settings = BrowserSettings(),
+                settingsUpdatedAtMs = 1_000L,
+                siteOverrides = emptyList(),
+                zappedRules = emptyList(),
+                filterLists = emptyList(),
+                userscripts = emptyList(),
+                localSpaces = listOf(workSpace),
+                zenSpacesCount = 0,
+                localEssentials = emptyList(),
+                zenEssentialsCount = 0,
+                localPinnedFolders = listOf(folderDev),
+                localPinnedTabs = listOf(topPin, devPin, bottomPin)
+            ),
+            baseline = SwiftfoxSyncBaseline(),
+            remoteRawRecords = emptyList(),
+            nowMs = 2_000L
+        )
+
+        // Device B starts empty (only workSpace) and pulls everything
+        val planB = SwiftfoxSyncReconciler.buildPlan(
+            local = SwiftfoxSyncReconciler.LocalSnapshot(
+                settings = BrowserSettings(),
+                settingsUpdatedAtMs = 0L,
+                siteOverrides = emptyList(),
+                zappedRules = emptyList(),
+                filterLists = emptyList(),
+                userscripts = emptyList(),
+                localSpaces = listOf(workSpace),
+                zenSpacesCount = 0,
+                localEssentials = emptyList(),
+                zenEssentialsCount = 0
+            ),
+            baseline = SwiftfoxSyncBaseline(),
+            remoteRawRecords = planA.outgoingBsos,
+            nowMs = 3_000L
+        )
+
+        val syncedFolder = planB.pinnedFoldersPlan.upserts.single()
+        assertEquals("Dev Tools", syncedFolder.name)
+        assertEquals(1, syncedFolder.sortOrder)
+
+        val syncedPinsById = planB.pinnedTabsPlan.upserts.associateBy { it.id }
+        assertEquals(0, syncedPinsById.getValue("pin_top").sortOrder)
+        assertNull(syncedPinsById.getValue("pin_top").folderId)
+        assertEquals(0, syncedPinsById.getValue("pin_gh").sortOrder)
+        assertEquals(folderDev.id, syncedPinsById.getValue("pin_gh").folderId)
+        assertEquals(2, syncedPinsById.getValue("pin_bottom").sortOrder)
+        assertNull(syncedPinsById.getValue("pin_bottom").folderId)
     }
 }

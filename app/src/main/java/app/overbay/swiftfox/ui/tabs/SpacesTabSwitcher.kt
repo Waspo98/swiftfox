@@ -39,6 +39,8 @@ import app.overbay.swiftfox.ui.icons.rounded.DeleteOutline
 import app.overbay.swiftfox.ui.icons.rounded.DesktopWindows
 import app.overbay.swiftfox.ui.icons.rounded.Devices
 import androidx.compose.material.icons.rounded.Edit
+import app.overbay.swiftfox.ui.icons.rounded.DriveFileMove
+import app.overbay.swiftfox.ui.icons.rounded.FolderOpen
 import app.overbay.swiftfox.ui.icons.rounded.Palette
 import app.overbay.swiftfox.ui.icons.rounded.PushPin
 import androidx.compose.material.icons.rounded.Refresh
@@ -146,9 +148,14 @@ fun SpacesTabSwitcher(
     var actionTab by remember { mutableStateOf<BrowserTabUi?>(null) }
     var tabToEdit by remember { mutableStateOf<BrowserTabUi?>(null) }
     var tabToPickIcon by remember { mutableStateOf<BrowserTabUi?>(null) }
+    var tabToMoveToFolder by remember { mutableStateOf<BrowserTabUi?>(null) }
+    var tabToMoveToSpace by remember { mutableStateOf<BrowserTabUi?>(null) }
+    var showCreateFolderDialog by remember { mutableStateOf(false) }
+    var createFolderInitialTabId by remember { mutableStateOf<String?>(null) }
 
     var zenPinnedToEdit by remember { mutableStateOf<ZenPinnedItemEntity?>(null) }
     var zenPinnedToPickIcon by remember { mutableStateOf<ZenPinnedItemEntity?>(null) }
+    var zenPinnedToMoveToSpace by remember { mutableStateOf<ZenPinnedItemEntity?>(null) }
 
     val foxColors = LocalSwiftfoxColors.current
 
@@ -662,6 +669,15 @@ fun SpacesTabSwitcher(
                                 onClick = { itemCallbacks.onAddZenPinnedToEssentials(boundZenPinned.id) }
                             )
                         )
+                        if (state.spaces.size > 1) {
+                            add(
+                                SheetActionItem(
+                                    label = "Move to Space",
+                                    icon = Icons.Rounded.DriveFileMove,
+                                    onClick = { zenPinnedToMoveToSpace = boundZenPinned }
+                                )
+                            )
+                        }
                     }
                     else -> {
                         if (target.isPinned) {
@@ -689,6 +705,24 @@ fun SpacesTabSwitcher(
                                 onClick = { itemCallbacks.onSetTabPinned(target.id, !target.isPinned) }
                             )
                         )
+                        if (target.isPinned) {
+                            add(
+                                SheetActionItem(
+                                    label = "Move to folder",
+                                    icon = Icons.Rounded.FolderOpen,
+                                    onClick = { tabToMoveToFolder = target }
+                                )
+                            )
+                        }
+                        if (state.spaces.size > 1) {
+                            add(
+                                SheetActionItem(
+                                    label = "Move to Space",
+                                    icon = Icons.Rounded.DriveFileMove,
+                                    onClick = { tabToMoveToSpace = target }
+                                )
+                            )
+                        }
                         if (!target.isStartPage) {
                             add(
                                 SheetActionItem(
@@ -809,6 +843,69 @@ fun SpacesTabSwitcher(
             previewLabel = target.title,
             onSelectIcon = { spec -> itemCallbacks.onSetZenPinnedCustomIcon(target.id, spec) },
             onDismiss = { zenPinnedToPickIcon = null }
+        )
+    }
+
+    tabToMoveToFolder?.let { target ->
+        val spaceFolders = remember(state.pinnedFolders, target.spaceId) {
+            state.pinnedFolders
+                .filter { it.spaceId == target.spaceId }
+                .sortedWith(compareBy({ it.sortOrder }, { it.createdAt }))
+        }
+        val tabCounts = remember(state.tabs, target.spaceId) {
+            state.tabs
+                .filter { !it.isPrivate && it.isPinned && !it.isBoundWorkspaceTab && it.spaceId == target.spaceId && it.folderId != null }
+                .groupingBy { it.folderId!! }
+                .eachCount()
+        }
+        MoveToFolderBottomSheet(
+            tabTitle = target.displayTitle,
+            currentFolderId = target.folderId,
+            foldersInSpace = spaceFolders,
+            tabCountByFolder = tabCounts,
+            onMoveToFolder = { folderId -> itemCallbacks.onMovePinnedTabToFolder(target.id, folderId) },
+            onRequestNewFolder = {
+                createFolderInitialTabId = target.id
+                showCreateFolderDialog = true
+            },
+            onDismiss = { tabToMoveToFolder = null }
+        )
+    }
+
+    if (showCreateFolderDialog) {
+        PinnedFolderNameDialog(
+            dialogTitle = "New Pinned Folder",
+            confirmLabel = "Create",
+            onDismiss = {
+                showCreateFolderDialog = false
+                createFolderInitialTabId = null
+            },
+            onConfirm = { name ->
+                val initialId = createFolderInitialTabId
+                showCreateFolderDialog = false
+                createFolderInitialTabId = null
+                itemCallbacks.onCreatePinnedFolder(name, initialId)
+            }
+        )
+    }
+
+    tabToMoveToSpace?.let { target ->
+        MoveToSpaceBottomSheet(
+            tabTitle = target.displayTitle,
+            currentSpaceId = target.spaceId,
+            spaces = state.spaces,
+            onSelectSpace = { destSpaceId -> itemCallbacks.onMoveTabToSpace(target.id, destSpaceId) },
+            onDismiss = { tabToMoveToSpace = null }
+        )
+    }
+
+    zenPinnedToMoveToSpace?.let { target ->
+        MoveToSpaceBottomSheet(
+            tabTitle = target.title,
+            currentSpaceId = target.spaceId,
+            spaces = state.spaces,
+            onSelectSpace = { destSpaceId -> itemCallbacks.onMoveZenPinnedToSpace(target.id, destSpaceId) },
+            onDismiss = { zenPinnedToMoveToSpace = null }
         )
     }
 }
